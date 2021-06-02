@@ -30,6 +30,7 @@ import android.graphics.PorterDuff;
 import android.graphics.PorterDuffColorFilter;
 import android.graphics.Rect;
 import android.graphics.Typeface;
+import android.os.Build;
 import android.os.Parcel;
 import android.os.ParcelUuid;
 import android.os.Parcelable;
@@ -148,13 +149,14 @@ public class SubscriptionInfo implements Parcelable {
 
     /**
      * The access rules for this subscription, if it is embedded and defines any.
+     * This does not include access rules for non-embedded subscriptions.
      */
     @Nullable
     private UiccAccessRule[] mNativeAccessRules;
 
     /**
      * The carrier certificates for this subscription that are saved in carrier configs.
-     * The other carrier certificates are embedded on Uicc and stored as part of mNativeAccessRules.
+     * This does not include access rules from the Uicc, whether embedded or non-embedded.
      */
     @Nullable
     private UiccAccessRule[] mCarrierConfigAccessRules;
@@ -354,7 +356,7 @@ public class SubscriptionInfo implements Parcelable {
      * Sets the name displayed to the user that identifies this subscription
      * @hide
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public void setDisplayName(CharSequence name) {
         this.mDisplayName = name;
     }
@@ -379,7 +381,7 @@ public class SubscriptionInfo implements Parcelable {
      * NAME_SOURCE_USER_INPUT.
      * @hide
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public int getNameSource() {
         return this.mNameSource;
     }
@@ -446,7 +448,7 @@ public class SubscriptionInfo implements Parcelable {
      * Sets the color displayed to the user that identifies this subscription
      * @hide
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public void setIconTint(int iconTint) {
         this.mIconTint = iconTint;
     }
@@ -661,7 +663,6 @@ public class SubscriptionInfo implements Parcelable {
      * is authorized to manage this subscription.
      * TODO and fix it properly in R / master: either deprecate this and have 3 APIs
      *  native + carrier + all, or have this return all by default.
-     * @throws UnsupportedOperationException if this subscription is not embedded.
      * @hide
      */
     @SystemApi

@@ -906,9 +906,26 @@ public class LocationManagerService extends ILocationManager.Stub {
                 if (enabled == null) {
                     // this generally shouldn't occur, but might be possible due to race conditions
                     // on when we are notified of new users
+
+                    // hack to fix b/171910679. mutating the user enabled state within this method
+                    // may cause unexpected changes to other state (for instance, this could cause
+                    // provider enable/disable notifications to be sent to clients, which could
+                    // result in a dead client being detected, which could result in the client
+                    // being removed, which means that if this function is called while clients are
+                    // being iterated over we have now unexpectedly mutated the iterated
+                    // collection). instead, we return a correct value immediately here, and
+                    // schedule the actual update for later. this has been completely rewritten and
+                    // is no longer a problem in the next version of android.
+                    enabled = mProvider.getState().allowed
+                            && mUserInfoHelper.isCurrentUserId(userId)
+                            && mSettingsHelper.isLocationEnabled(userId);
+
                     Log.w(TAG, mName + " provider saw user " + userId + " unexpectedly");
-                    onEnabledChangedLocked(userId);
-                    enabled = Objects.requireNonNull(mEnabled.get(userId));
+                    mHandler.post(() -> {
+                        synchronized (mLock) {
+                            onEnabledChangedLocked(userId);
+                        }
+                    });
                 }
 
                 return enabled;
@@ -1586,6 +1603,7 @@ public class LocationManagerService extends ILocationManager.Stub {
                 }
 
                 record.mRequest = locationRequest;
+                record.mReceiver.updateMonitoring(true);
                 requests.add(locationRequest);
                 if (!locationRequest.isLowPowerMode()) {
                     providerRequest.setLowPowerMode(false);
@@ -2063,10 +2081,12 @@ public class LocationManagerService extends ILocationManager.Stub {
         }
     }
 
+    @Nullable
     @Override
-    public boolean getCurrentLocation(LocationRequest locationRequest,
-            ICancellationSignal remoteCancellationSignal, ILocationListener listener,
-            String packageName, String featureId, String listenerId) {
+    public ICancellationSignal getCurrentLocation(LocationRequest locationRequest,
+            ILocationListener listener, String packageName, String featureId, String listenerId) {
+        ICancellationSignal remoteCancellationSignal = CancellationSignal.createTransport();
+
         // side effect of validating locationRequest and packageName
         Location lastLocation = getLastLocation(locationRequest, packageName, featureId);
         if (lastLocation != null) {
@@ -2076,17 +2096,17 @@ public class LocationManagerService extends ILocationManager.Stub {
             if (locationAgeMs < MAX_CURRENT_LOCATION_AGE_MS) {
                 try {
                     listener.onLocationChanged(lastLocation);
-                    return true;
+                    return remoteCancellationSignal;
                 } catch (RemoteException e) {
                     Log.w(TAG, e);
-                    return false;
+                    return null;
                 }
             }
 
             if (!mAppForegroundHelper.isAppForeground(Binder.getCallingUid())) {
                 if (locationAgeMs < mSettingsHelper.getBackgroundThrottleIntervalMs()) {
                     // not allowed to request new locations, so we can't return anything
-                    return false;
+                    return null;
                 }
             }
         }
@@ -2094,11 +2114,8 @@ public class LocationManagerService extends ILocationManager.Stub {
         requestLocationUpdates(locationRequest, listener, null, packageName, featureId, listenerId);
         CancellationSignal cancellationSignal = CancellationSignal.fromTransport(
                 remoteCancellationSignal);
-        if (cancellationSignal != null) {
-            cancellationSignal.setOnCancelListener(
-                    () -> removeUpdates(listener, null));
-        }
-        return true;
+        cancellationSignal.setOnCancelListener(() -> removeUpdates(listener, null));
+        return remoteCancellationSignal;
     }
 
     @Override

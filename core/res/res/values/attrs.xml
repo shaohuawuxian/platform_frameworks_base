@@ -1259,7 +1259,12 @@
         <!-- Can be combined with <var>text</var> and its variations to
              allow multiple lines of text in the field.  If this flag is not set,
              the text field will be constrained to a single line.  Corresponds to
-             {@link android.text.InputType#TYPE_TEXT_FLAG_MULTI_LINE}. -->
+             {@link android.text.InputType#TYPE_TEXT_FLAG_MULTI_LINE}.
+
+             Note: If this flag is not set and the text field doesn't have max length limit, the
+             framework automatically set maximum length of the characters to 5000 for the
+             performance reasons.
+             -->
         <flag name="textMultiLine" value="0x00020001" />
         <!-- Can be combined with <var>text</var> and its variations to
              indicate that though the regular text view should not be multiple
@@ -3851,6 +3856,9 @@
         <!-- Component name of an activity that allows the user to modify
              the settings for this service. -->
         <attr name="settingsActivity"/>
+        <!-- Whether the device must be screen on before routing data to this service.
+             The default is true.-->
+        <attr name="requireDeviceScreenOn" format="boolean"/>
     </declare-styleable>
 
     <!-- Use <code>offhost-apdu-service</code> as the root tag of the XML resource that
@@ -3869,6 +3877,12 @@
         <attr name="settingsActivity"/>
         <!-- Secure Element which the AIDs should be routed to -->
         <attr name="secureElementName" format="string"/>
+        <!-- Whether the device must be unlocked before routing data to this service.
+             The default is false.-->
+        <attr name="requireDeviceUnlock"/>
+        <!-- Whether the device must be screen on before routing data to this service.
+             The default is false.-->
+        <attr name="requireDeviceScreenOn"/>
     </declare-styleable>
 
     <!-- Specify one or more <code>aid-group</code> elements inside a
@@ -8963,6 +8977,11 @@
              changed at runtime by calling
              {@link android.media.tv.TvInputManager#updateTvInputInfo(android.media.tv.TvInputInfo)}. -->
         <attr name="tunerCount" format="integer" />
+        <!-- Attribute whether the TV input service can pause recording programs.
+             This value can be changed at runtime by calling
+             {@link android.media.tv.TvInputManager#updateTvInputInfo(android.media.tv.TvInputInfo)}
+             . -->
+        <attr name="canPauseRecording" format="boolean" />
     </declare-styleable>
 
     <!-- Attributes that can be used with <code>rating-system-definition</code> tags inside of the

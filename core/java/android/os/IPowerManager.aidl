@@ -50,7 +50,7 @@ interface IPowerManager
     @UnsupportedAppUsage
     void userActivity(long time, int event, int flags);
     void wakeUp(long time, int reason, String details, String opPackageName);
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = 30, trackingBug = 170729553)
     void goToSleep(long time, int reason, int flags);
     @UnsupportedAppUsage(maxTargetSdk = 28)
     void nap(long time);
@@ -94,6 +94,8 @@ interface IPowerManager
     boolean isAmbientDisplaySuppressedForToken(String token);
     // returns whether ambient display is suppressed by any app with any token.
     boolean isAmbientDisplaySuppressed();
+    // returns whether ambient display is suppressed by the given app with the given token.
+    boolean isAmbientDisplaySuppressedForTokenByApp(String token, int appUid);
 
     // Forces the system to suspend even if there are held wakelocks.
     boolean forceSuspend();

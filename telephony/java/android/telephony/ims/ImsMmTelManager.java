@@ -29,6 +29,7 @@ import android.os.Binder;
 import android.os.RemoteException;
 import android.os.ServiceSpecificException;
 import android.telephony.AccessNetworkConstants;
+import android.telephony.BinderCacheManager;
 import android.telephony.CarrierConfigManager;
 import android.telephony.SubscriptionManager;
 import android.telephony.TelephonyFrameworkInitializer;
@@ -213,6 +214,7 @@ public class ImsMmTelManager implements RegistrationManager {
     }
 
     private final int mSubId;
+    private final BinderCacheManager<ITelephony> mBinderCache;
 
     /**
      * Create an instance of {@link ImsMmTelManager} for the subscription id specified.
@@ -242,7 +244,8 @@ public class ImsMmTelManager implements RegistrationManager {
             throw new IllegalArgumentException("Invalid subscription ID");
         }
 
-        return new ImsMmTelManager(subId);
+        return new ImsMmTelManager(subId, new BinderCacheManager<>(
+                ImsMmTelManager::getITelephonyInterface));
     }
 
     /**
@@ -250,8 +253,9 @@ public class ImsMmTelManager implements RegistrationManager {
      * @hide
      */
     @VisibleForTesting
-    public ImsMmTelManager(int subId) {
+    public ImsMmTelManager(int subId, BinderCacheManager<ITelephony> binderCache) {
         mSubId = subId;
+        mBinderCache = binderCache;
     }
 
     /**
@@ -709,15 +713,8 @@ public class ImsMmTelManager implements RegistrationManager {
      * @see android.telephony.CarrierConfigManager#KEY_CARRIER_VT_AVAILABLE_BOOL
      * @see android.telephony.CarrierConfigManager#KEY_CARRIER_IMS_GBA_REQUIRED_BOOL
      * @see #isAvailable(int, int)
-     *
-     * @param imsRegTech The IMS registration technology, can be one of the following:
-     *         {@link ImsRegistrationImplBase#REGISTRATION_TECH_LTE},
-     *         {@link ImsRegistrationImplBase#REGISTRATION_TECH_IWLAN}
-     * @param capability The IMS MmTel capability to query, can be one of the following:
-     *         {@link MmTelFeature.MmTelCapabilities#CAPABILITY_TYPE_VOICE},
-     *         {@link MmTelFeature.MmTelCapabilities#CAPABILITY_TYPE_VIDEO},
-     *         {@link MmTelFeature.MmTelCapabilities#CAPABILITY_TYPE_UT},
-     *         {@link MmTelFeature.MmTelCapabilities#CAPABILITY_TYPE_SMS}
+     * @param imsRegTech The IMS registration technology.
+     * @param capability The IMS MmTel capability to query.
      * @return {@code true} if the MmTel IMS capability is capable for this subscription, false
      *         otherwise.
      * @hide
@@ -744,14 +741,8 @@ public class ImsMmTelManager implements RegistrationManager {
      *
      * @see #isCapable(int, int)
      *
-     * @param imsRegTech The IMS registration technology, can be one of the following:
-     *         {@link ImsRegistrationImplBase#REGISTRATION_TECH_LTE},
-     *         {@link ImsRegistrationImplBase#REGISTRATION_TECH_IWLAN}
-     * @param capability The IMS MmTel capability to query, can be one of the following:
-     *         {@link MmTelFeature.MmTelCapabilities#CAPABILITY_TYPE_VOICE},
-     *         {@link MmTelFeature.MmTelCapabilities#CAPABILITY_TYPE_VIDEO},
-     *         {@link MmTelFeature.MmTelCapabilities#CAPABILITY_TYPE_UT},
-     *         {@link MmTelFeature.MmTelCapabilities#CAPABILITY_TYPE_SMS}
+     * @param imsRegTech The IMS registration technology.
+     * @param capability The IMS MmTel capability to query.
      * @return {@code true} if the MmTel IMS capability is available for this subscription, false
      *         otherwise.
      * @hide
@@ -1367,7 +1358,11 @@ public class ImsMmTelManager implements RegistrationManager {
         }
     }
 
-    private static ITelephony getITelephony() {
+    private ITelephony getITelephony() {
+        return mBinderCache.getBinder();
+    }
+
+    private static ITelephony getITelephonyInterface() {
         ITelephony binder = ITelephony.Stub.asInterface(
                 TelephonyFrameworkInitializer
                         .getTelephonyServiceManager()

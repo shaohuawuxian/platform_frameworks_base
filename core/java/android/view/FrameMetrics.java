@@ -18,6 +18,7 @@ package android.view;
 
 import android.annotation.IntDef;
 import android.compat.annotation.UnsupportedAppUsage;
+import android.os.Build;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
@@ -148,7 +149,7 @@ public final class FrameMetrics {
      * <p>
      * The time value that was used in all the vsync listeners and drawing for
      * the frame (Choreographer frame callbacks, animations,
-     * {@link View#getDrawingTime()}, etc…)
+     * {@link View#getDrawingTime()}, etc.)
      * </p>
      */
     public static final int VSYNC_TIMESTAMP = 11;
@@ -250,7 +251,7 @@ public final class FrameMetrics {
         Index.INTENDED_VSYNC, Index.FRAME_COMPLETED,
     };
 
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     /* package */ final long[] mTimingData;
 
     /**

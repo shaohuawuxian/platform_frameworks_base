@@ -23,8 +23,6 @@ import android.net.ITetheringStatsProvider;
 import android.net.Network;
 import android.net.NetworkStats;
 import android.net.RouteInfo;
-import android.net.UidRange;
-import android.os.INetworkActivityListener;
 
 /**
  * @hide
@@ -68,7 +66,7 @@ interface INetworkManagementService
     /**
      * Clear all IP addresses on the specified interface
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = 30, trackingBug = 170729553)
     void clearInterfaceAddresses(String iface);
 
     /**
@@ -84,26 +82,26 @@ interface INetworkManagementService
     /**
      * Set interface IPv6 privacy extensions
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = 30, trackingBug = 170729553)
     void setInterfaceIpv6PrivacyExtensions(String iface, boolean enable);
 
     /**
      * Disable IPv6 on an interface
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = 30, trackingBug = 170729553)
     void disableIpv6(String iface);
 
     /**
      * Enable IPv6 on an interface
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = 30, trackingBug = 170729553)
     void enableIpv6(String iface);
 
     /**
      * Set IPv6 autoconf address generation mode.
      * This is a no-op if an unsupported mode is requested.
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = 30, trackingBug = 170729553)
     void setIPv6AddrGenMode(String iface, int mode);
 
     /**
@@ -181,11 +179,6 @@ interface INetworkManagementService
      */
     @UnsupportedAppUsage
     String[] listTetheredInterfaces();
-
-    /**
-     * Sets the list of DNS forwarders (in order of priority)
-     */
-    void setDnsForwarders(in Network network, in String[] dns);
 
     /**
      * Returns the list of DNS forwarders (in order of priority)
@@ -282,8 +275,8 @@ interface INetworkManagementService
     /**
      * Control network activity of a UID over interfaces with a quota limit.
      */
-    void setUidMeteredNetworkDenylist(int uid, boolean enable);
-    void setUidMeteredNetworkAllowlist(int uid, boolean enable);
+    void setUidOnMeteredNetworkDenylist(int uid, boolean enable);
+    void setUidOnMeteredNetworkAllowlist(int uid, boolean enable);
     boolean setDataSaverModeEnabled(boolean enable);
 
     void setUidCleartextNetworkPolicy(int uid, int policy);
@@ -291,27 +284,8 @@ interface INetworkManagementService
     /**
      * Return status of bandwidth control module.
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = 30, trackingBug = 170729553)
     boolean isBandwidthControlEnabled();
-
-    /**
-     * Sets idletimer for an interface.
-     *
-     * This either initializes a new idletimer or increases its
-     * reference-counting if an idletimer already exists for given
-     * {@code iface}.
-     *
-     * {@code type} is the type of the interface, such as TYPE_MOBILE.
-     *
-     * Every {@code addIdleTimer} should be paired with a
-     * {@link removeIdleTimer} to cleanup when the network disconnects.
-     */
-    void addIdleTimer(String iface, int timeout, int type);
-
-    /**
-     * Removes idletimer for an interface.
-     */
-    void removeIdleTimer(String iface);
 
     void setFirewallEnabled(boolean enabled);
     boolean isFirewallEnabled();
@@ -319,33 +293,6 @@ interface INetworkManagementService
     void setFirewallUidRule(int chain, int uid, int rule);
     void setFirewallUidRules(int chain, in int[] uids, in int[] rules);
     void setFirewallChainEnabled(int chain, boolean enable);
-
-    /**
-     * Set all packets from users in ranges to go through VPN specified by netId.
-     */
-    void addVpnUidRanges(int netId, in UidRange[] ranges);
-
-    /**
-     * Clears the special VPN rules for users in ranges and VPN specified by netId.
-     */
-    void removeVpnUidRanges(int netId, in UidRange[] ranges);
-
-    /**
-     * Start listening for mobile activity state changes.
-     */
-    void registerNetworkActivityListener(INetworkActivityListener listener);
-
-    /**
-     * Stop listening for mobile activity state changes.
-     */
-    void unregisterNetworkActivityListener(INetworkActivityListener listener);
-
-    /**
-     * Check whether the mobile radio is currently active.
-     */
-    boolean isNetworkActive();
-
-    void addLegacyRouteForNetId(int netId, in RouteInfo routeInfo, int uid);
 
     /**
      * Allow UID to call protect().
@@ -360,8 +307,6 @@ interface INetworkManagementService
     void addInterfaceToLocalNetwork(String iface, in List<RouteInfo> routes);
     void removeInterfaceFromLocalNetwork(String iface);
     int removeRoutesFromLocalNetwork(in List<RouteInfo> routes);
-
-    void setAllowOnlyVpnForUids(boolean enable, in UidRange[] uidRanges);
 
     boolean isNetworkRestricted(int uid);
 }

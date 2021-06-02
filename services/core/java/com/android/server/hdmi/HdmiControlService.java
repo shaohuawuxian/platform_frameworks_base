@@ -66,6 +66,8 @@ import android.os.Looper;
 import android.os.PowerManager;
 import android.os.RemoteCallbackList;
 import android.os.RemoteException;
+import android.os.ResultReceiver;
+import android.os.ShellCallback;
 import android.os.SystemClock;
 import android.os.SystemProperties;
 import android.os.UserHandle;
@@ -553,7 +555,7 @@ public class HdmiControlService extends SystemService {
     private void bootCompleted() {
         // on boot, if device is interactive, set HDMI CEC state as powered on as well
         if (mPowerManager.isInteractive() && isPowerStandbyOrTransient()) {
-            onWakeUp();
+            mPowerStatus = HdmiControlManager.POWER_STATUS_ON;
         }
     }
 
@@ -619,7 +621,14 @@ public class HdmiControlService extends SystemService {
         mWakeUpMessageReceived = false;
 
         if (isTvDeviceEnabled()) {
-            mCecController.setOption(OptionKey.WAKEUP, tv().getAutoWakeup());
+            boolean autoWakeupEnabled =
+                readBooleanSetting(Global.HDMI_CONTROL_AUTO_WAKEUP_ENABLED, true);
+            boolean autoDeviceOffEnabled =
+                readBooleanSetting(Global.HDMI_CONTROL_AUTO_DEVICE_OFF_ENABLED, true);
+
+            mCecController.setOption(OptionKey.WAKEUP, autoWakeupEnabled);
+            tv().setAutoWakeup(autoWakeupEnabled);
+            tv().setAutoDeviceOff(autoDeviceOffEnabled);
         }
         int reason = -1;
         switch (initiatedBy) {
@@ -1280,6 +1289,7 @@ public class HdmiControlService extends SystemService {
     void setAudioStatus(boolean mute, int volume) {
         if (!isTvDeviceEnabled()
                 || !tv().isSystemAudioActivated()
+                || !tv().isArcEstablished() // Don't update TV volume when SAM is on and ARC is off
                 || !isHdmiCecVolumeControlEnabled()) {
             return;
         }
@@ -2288,6 +2298,16 @@ public class HdmiControlService extends SystemService {
                                     audioSystem().mAddress, Constants.ADDR_BROADCAST, true));
                 }
             });
+        }
+
+        @Override
+        public void onShellCommand(@Nullable FileDescriptor in, @Nullable FileDescriptor out,
+                @Nullable FileDescriptor err, String[] args,
+                @Nullable ShellCallback callback, ResultReceiver resultReceiver)
+                throws RemoteException {
+            enforceAccessPermission();
+            new HdmiControlShellCommand(this)
+                    .exec(this, in, out, err, args, callback, resultReceiver);
         }
 
         @Override

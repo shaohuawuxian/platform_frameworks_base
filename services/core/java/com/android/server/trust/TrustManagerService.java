@@ -39,6 +39,7 @@ import android.content.res.TypedArray;
 import android.content.res.XmlResourceParser;
 import android.database.ContentObserver;
 import android.graphics.drawable.Drawable;
+import android.hardware.biometrics.BiometricManager;
 import android.hardware.biometrics.BiometricSourceType;
 import android.net.Uri;
 import android.os.Binder;
@@ -53,7 +54,7 @@ import android.os.SystemClock;
 import android.os.UserHandle;
 import android.os.UserManager;
 import android.provider.Settings;
-import android.security.KeyStore;
+import android.security.Authorization;
 import android.service.trust.TrustAgentService;
 import android.text.TextUtils;
 import android.util.ArrayMap;
@@ -122,6 +123,8 @@ public class TrustManagerService extends SystemService {
     private static final int TRUST_USUALLY_MANAGED_FLUSH_DELAY = 2 * 60 * 1000;
     private static final String TRUST_TIMEOUT_ALARM_TAG = "TrustManagerService.trustTimeoutForUser";
     private static final long TRUST_TIMEOUT_IN_MILLIS = 4 * 60 * 60 * 1000;
+
+    private static final String PRIV_NAMESPACE = "http://schemas.android.com/apk/prv/res/android";
 
     private final ArraySet<AgentInfo> mActiveAgents = new ArraySet<>();
     private final ArrayList<ITrustListener> mTrustListeners = new ArrayList<>();
@@ -693,13 +696,14 @@ public class TrustManagerService extends SystemService {
         }
         if (changed) {
             dispatchDeviceLocked(userId, locked);
-
-            KeyStore.getInstance().onUserLockedStateChanged(userId, locked);
+            Authorization.onLockScreenEvent(locked, userId, null,
+                    getBiometricSids(userId));
             // Also update the user's profiles who have unified challenge, since they
             // share the same unlocked state (see {@link #isDeviceLocked(int)})
             for (int profileHandle : mUserManager.getEnabledProfileIds(userId)) {
                 if (mLockPatternUtils.isManagedProfileWithUnifiedChallenge(profileHandle)) {
-                    KeyStore.getInstance().onUserLockedStateChanged(profileHandle, locked);
+                    Authorization.onLockScreenEvent(locked, profileHandle, null,
+                            getBiometricSids(profileHandle));
                 }
             }
         }
@@ -808,8 +812,8 @@ public class TrustManagerService extends SystemService {
             TypedArray sa = res
                     .obtainAttributes(attrs, com.android.internal.R.styleable.TrustAgent);
             cn = sa.getString(com.android.internal.R.styleable.TrustAgent_settingsActivity);
-            canUnlockProfile = sa.getBoolean(
-                    com.android.internal.R.styleable.TrustAgent_unlockProfile, false);
+            canUnlockProfile = attrs.getAttributeBooleanValue(
+                    PRIV_NAMESPACE, "unlockProfile", false);
             sa.recycle();
         } catch (PackageManager.NameNotFoundException e) {
             caughtException = e;
@@ -1039,6 +1043,14 @@ public class TrustManagerService extends SystemService {
         }
     }
 
+    private long[] getBiometricSids(int userId) {
+        BiometricManager biometricManager = mContext.getSystemService(BiometricManager.class);
+        if (biometricManager == null) {
+            return null;
+        }
+        return biometricManager.getAuthenticatorIds(userId);
+    }
+
     // User lifecycle
 
     @Override
@@ -1250,7 +1262,8 @@ public class TrustManagerService extends SystemService {
                         mDeviceLockedForUser.put(userId, locked);
                     }
 
-                    KeyStore.getInstance().onUserLockedStateChanged(userId, locked);
+                    Authorization.onLockScreenEvent(locked, userId, null,
+                            getBiometricSids(userId));
 
                     if (locked) {
                         try {

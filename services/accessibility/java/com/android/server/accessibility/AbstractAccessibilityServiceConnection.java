@@ -90,6 +90,7 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
+import java.util.NoSuchElementException;
 import java.util.Set;
 
 /**
@@ -146,6 +147,8 @@ abstract class AbstractAccessibilityServiceConnection extends IAccessibilityServ
     private boolean mServiceHandlesDoubleTap;
 
     private boolean mRequestMultiFingerGestures;
+
+    private boolean mRequestTwoFingerPassthrough;
 
     boolean mRequestFilterKeyEvents;
 
@@ -322,8 +325,10 @@ abstract class AbstractAccessibilityServiceConnection extends IAccessibilityServ
                 & AccessibilityServiceInfo.FLAG_SERVICE_HANDLES_DOUBLE_TAP) != 0;
         mRequestMultiFingerGestures = (info.flags
                 & AccessibilityServiceInfo.FLAG_REQUEST_MULTI_FINGER_GESTURES) != 0;
-        mRequestFilterKeyEvents = (info.flags
-                & AccessibilityServiceInfo.FLAG_REQUEST_FILTER_KEY_EVENTS) != 0;
+        mRequestTwoFingerPassthrough =
+                (info.flags & AccessibilityServiceInfo.FLAG_REQUEST_2_FINGER_PASSTHROUGH) != 0;
+        mRequestFilterKeyEvents =
+                (info.flags & AccessibilityServiceInfo.FLAG_REQUEST_FILTER_KEY_EVENTS) != 0;
         mRetrieveInteractiveWindows = (info.flags
                 & AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS) != 0;
         mCaptureFingerprintGestures = (info.flags
@@ -1179,7 +1184,11 @@ abstract class AbstractAccessibilityServiceConnection extends IAccessibilityServ
                 /* ignore */
         }
         if (mService != null) {
-            mService.unlinkToDeath(this, 0);
+            try {
+                mService.unlinkToDeath(this, 0);
+            } catch (NoSuchElementException e) {
+                Slog.e(LOG_TAG, "Failed unregistering death link");
+            }
             mService = null;
         }
 
@@ -1766,6 +1775,10 @@ abstract class AbstractAccessibilityServiceConnection extends IAccessibilityServ
 
     public boolean isMultiFingerGesturesEnabled() {
         return mRequestMultiFingerGestures;
+    }
+
+    public boolean isTwoFingerPassthroughEnabled() {
+        return mRequestTwoFingerPassthrough;
     }
 
     @Override

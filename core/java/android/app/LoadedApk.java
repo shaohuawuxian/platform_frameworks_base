@@ -103,7 +103,6 @@ final class ServiceConnectionLeaked extends AndroidRuntimeException {
 public final class LoadedApk {
     static final String TAG = "LoadedApk";
     static final boolean DEBUG = false;
-    private static final String PROPERTY_NAME_APPEND_NATIVE = "pi.append_native_lib_paths";
 
     @UnsupportedAppUsage
     private final ActivityThread mActivityThread;
@@ -118,7 +117,7 @@ public final class LoadedApk {
     private String[] mOverlayDirs;
     @UnsupportedAppUsage
     private String mDataDir;
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     private String mLibDir;
     @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.P, trackingBug = 115609023)
     private File mDataDirFile;
@@ -287,7 +286,7 @@ public final class LoadedApk {
         return mSecurityViolation;
     }
 
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public CompatibilityInfo getCompatibilityInfo() {
         return mDisplayAdjustments.getCompatibilityInfo();
     }
@@ -802,12 +801,9 @@ public final class LoadedApk {
 
         makePaths(mActivityThread, isBundledApp, mApplicationInfo, zipPaths, libPaths);
 
-        String libraryPermittedPath = mDataDir;
-        if (mActivityThread == null) {
-            // In a zygote context where mActivityThread is null we can't access the app data dir
-            // and including this in libraryPermittedPath would cause SELinux denials.
-            libraryPermittedPath = "";
-        }
+        // Including an inaccessible dir in libraryPermittedPath would cause SELinux denials
+        // when the loader attempts to canonicalise the path. so we don't.
+        String libraryPermittedPath = canAccessDataDir() ? mDataDir : "";
 
         if (isBundledApp) {
             // For bundled apps, add the base directory of the app (e.g.,
@@ -888,7 +884,7 @@ public final class LoadedApk {
         if (DEBUG) Slog.v(ActivityThread.TAG, "Class path: " + zip +
                     ", JNI path: " + librarySearchPath);
 
-        boolean needToSetupJitProfiles = false;
+        boolean registerAppInfoToArt = false;
         if (mDefaultClassLoader == null) {
             // Temporarily disable logging of disk reads on the Looper thread
             // as this is early and necessary.
@@ -906,10 +902,10 @@ public final class LoadedApk {
 
             setThreadPolicy(oldPolicy);
             // Setup the class loader paths for profiling.
-            needToSetupJitProfiles = true;
+            registerAppInfoToArt = true;
         }
 
-        if (!libPaths.isEmpty() && SystemProperties.getBoolean(PROPERTY_NAME_APPEND_NATIVE, true)) {
+        if (!libPaths.isEmpty()) {
             // Temporarily disable logging of disk reads on the Looper thread as this is necessary
             StrictMode.ThreadPolicy oldPolicy = allowThreadDiskReads();
             try {
@@ -923,7 +919,7 @@ public final class LoadedApk {
             final String add = TextUtils.join(File.pathSeparator, addedPaths);
             ApplicationLoaders.getDefault().addPath(mDefaultClassLoader, add);
             // Setup the new code paths for profiling.
-            needToSetupJitProfiles = true;
+            registerAppInfoToArt = true;
         }
 
         // Setup jit profile support.
@@ -937,8 +933,8 @@ public final class LoadedApk {
         // loads code from) so we explicitly disallow it there.
         //
         // It is not ok to call this in a zygote context where mActivityThread is null.
-        if (needToSetupJitProfiles && !ActivityThread.isSystem() && mActivityThread != null) {
-            setupJitProfileSupport();
+        if (registerAppInfoToArt && !ActivityThread.isSystem() && mActivityThread != null) {
+            registerAppInfoToArt();
         }
 
         // Call AppComponentFactory to select/create the main class loader of this app.
@@ -948,6 +944,33 @@ public final class LoadedApk {
         if (mClassLoader == null) {
             mClassLoader = mAppComponentFactory.instantiateClassLoader(mDefaultClassLoader,
                     new ApplicationInfo(mApplicationInfo));
+        }
+    }
+
+    /**
+     * Return whether we can access the package's private data directory in order to be able to
+     * load code from it.
+     */
+    private boolean canAccessDataDir() {
+        // In a zygote context where mActivityThread is null we can't access the app data dir.
+        if (mActivityThread == null) {
+            return false;
+        }
+
+        // A package can access its own data directory (the common case, so short-circuit it).
+        if (Objects.equals(mPackageName, ActivityThread.currentPackageName())) {
+            return true;
+        }
+
+        // Temporarily disable logging of disk reads on the Looper thread as this is necessary -
+        // and the loader will access the directory anyway if we don't check it.
+        StrictMode.ThreadPolicy oldPolicy = allowThreadDiskReads();
+        try {
+            // We are constructing a classloader for a different package. It is likely,
+            // but not certain, that we can't acccess its app data dir - so check.
+            return new File(mDataDir).canExecute();
+        } finally {
+            setThreadPolicy(oldPolicy);
         }
     }
 
@@ -961,12 +984,8 @@ public final class LoadedApk {
         }
     }
 
-    private void setupJitProfileSupport() {
-        if (!SystemProperties.getBoolean("dalvik.vm.usejitprofiles", false)) {
-            return;
-        }
-
-        // If we use profiles, setup the dex reporter to notify package manager
+    private void registerAppInfoToArt() {
+        // Setup the dex reporter to notify package manager
         // of any relevant dex loads. The idle maintenance job will use the information
         // reported to optimize the loaded dex files.
         // Note that we only need one global reporter per app.
@@ -999,9 +1018,19 @@ public final class LoadedApk {
 
         for (int i = codePaths.size() - 1; i >= 0; i--) {
             String splitName = i == 0 ? null : mApplicationInfo.splitNames[i - 1];
-            String profileFile = ArtManager.getCurrentProfilePath(
+            String curProfileFile = ArtManager.getCurrentProfilePath(
                     mPackageName, UserHandle.myUserId(), splitName);
-            VMRuntime.registerAppInfo(profileFile, new String[] {codePaths.get(i)});
+            String refProfileFile = ArtManager.getReferenceProfilePath(
+                    mPackageName, UserHandle.myUserId(), splitName);
+            int codePathType = codePaths.get(i).equals(mApplicationInfo.sourceDir)
+                    ? VMRuntime.CODE_PATH_TYPE_PRIMARY_APK
+                    : VMRuntime.CODE_PATH_TYPE_SPLIT_APK;
+            VMRuntime.registerAppInfo(
+                    mPackageName,
+                    curProfileFile,
+                    refProfileFile,
+                    new String[] {codePaths.get(i)},
+                    codePathType);
         }
 
         // Register the app data directory with the reporter. It will
@@ -1695,7 +1724,7 @@ public final class LoadedApk {
         }
     }
 
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public IServiceConnection lookupServiceDispatcher(ServiceConnection c,
             Context context) {
         synchronized (mServices) {
@@ -1761,7 +1790,7 @@ public final class LoadedApk {
 
     static final class ServiceDispatcher {
         private final ServiceDispatcher.InnerConnection mIServiceConnection;
-        @UnsupportedAppUsage
+        @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
         private final ServiceConnection mConnection;
         @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.P, trackingBug = 115609023)
         private final Context mContext;
@@ -1780,7 +1809,7 @@ public final class LoadedApk {
         }
 
         private static class InnerConnection extends IServiceConnection.Stub {
-            @UnsupportedAppUsage
+            @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
             final WeakReference<LoadedApk.ServiceDispatcher> mDispatcher;
 
             InnerConnection(LoadedApk.ServiceDispatcher sd) {
@@ -1799,7 +1828,7 @@ public final class LoadedApk {
         private final ArrayMap<ComponentName, ServiceDispatcher.ConnectionInfo> mActiveConnections
             = new ArrayMap<ComponentName, ServiceDispatcher.ConnectionInfo>();
 
-        @UnsupportedAppUsage
+        @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
         ServiceDispatcher(ServiceConnection conn,
                 Context context, Handler activityThread, int flags) {
             mIServiceConnection = new InnerConnection(this);
@@ -1864,7 +1893,7 @@ public final class LoadedApk {
             return mConnection;
         }
 
-        @UnsupportedAppUsage
+        @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
         IServiceConnection getIServiceConnection() {
             return mIServiceConnection;
         }

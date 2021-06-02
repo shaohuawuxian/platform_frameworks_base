@@ -46,6 +46,7 @@ import com.android.systemui.dump.DumpManager;
 import com.android.systemui.fragments.FragmentService;
 import com.android.systemui.keyguard.ScreenLifecycle;
 import com.android.systemui.keyguard.WakefulnessLifecycle;
+import com.android.systemui.media.dialog.MediaOutputDialogFactory;
 import com.android.systemui.model.SysUiState;
 import com.android.systemui.plugins.ActivityStarter;
 import com.android.systemui.plugins.DarkIconDispatcher;
@@ -54,6 +55,7 @@ import com.android.systemui.plugins.VolumeDialogController;
 import com.android.systemui.plugins.statusbar.StatusBarStateController;
 import com.android.systemui.power.EnhancedEstimates;
 import com.android.systemui.power.PowerUI;
+import com.android.systemui.privacy.PrivacyItemController;
 import com.android.systemui.recents.OverviewProxyService;
 import com.android.systemui.recents.Recents;
 import com.android.systemui.screenrecord.RecordingController;
@@ -315,6 +317,7 @@ public class Dependency {
     @Inject Lazy<SensorPrivacyManager> mSensorPrivacyManager;
     @Inject Lazy<AutoHideController> mAutoHideController;
     @Inject Lazy<ForegroundServiceNotificationListener> mForegroundServiceNotificationListener;
+    @Inject Lazy<PrivacyItemController> mPrivacyItemController;
     @Inject @Background Lazy<Looper> mBgLooper;
     @Inject @Background Lazy<Handler> mBgHandler;
     @Inject @Main Lazy<Looper> mMainLooper;
@@ -345,6 +348,7 @@ public class Dependency {
     @Inject Lazy<RecordingController> mRecordingController;
     @Inject Lazy<ProtoTracer> mProtoTracer;
     @Inject Lazy<Divider> mDivider;
+    @Inject Lazy<MediaOutputDialogFactory> mMediaOutputDialogFactory;
 
     @Inject
     public Dependency() {
@@ -516,6 +520,7 @@ public class Dependency {
         mProviders.put(ForegroundServiceNotificationListener.class,
                 mForegroundServiceNotificationListener::get);
         mProviders.put(ClockManager.class, mClockManager::get);
+        mProviders.put(PrivacyItemController.class, mPrivacyItemController::get);
         mProviders.put(ActivityManagerWrapper.class, mActivityManagerWrapper::get);
         mProviders.put(DevicePolicyManagerWrapper.class, mDevicePolicyManagerWrapper::get);
         mProviders.put(PackageManagerWrapper.class, mPackageManagerWrapper::get);
@@ -543,6 +548,8 @@ public class Dependency {
 
         mProviders.put(RecordingController.class, mRecordingController::get);
         mProviders.put(Divider.class, mDivider::get);
+
+        mProviders.put(MediaOutputDialogFactory.class, mMediaOutputDialogFactory::get);
 
         sDependency = this;
     }

@@ -116,7 +116,7 @@ public final class CellIdentityNr extends CellIdentity {
     @Override
     public @NonNull CellIdentityNr sanitizeLocationInfo() {
         return new CellIdentityNr(CellInfo.UNAVAILABLE, CellInfo.UNAVAILABLE, mNrArfcn,
-                mBands, mMccStr, mMncStr, CellInfo.UNAVAILABLE, mAlphaLong, mAlphaShort,
+                mBands, mMccStr, mMncStr, CellInfo.UNAVAILABLE_LONG, mAlphaLong, mAlphaShort,
                 mAdditionalPlmns);
     }
 
@@ -217,7 +217,7 @@ public final class CellIdentityNr extends CellIdentity {
      * Get the tracking area code.
      * @return a 24 bit integer or {@link CellInfo#UNAVAILABLE} if unknown.
      */
-    @IntRange(from = 0, to = 16777215)
+    @IntRange(from = 0, to = 65535)
     public int getTac() {
         return mTac;
     }
@@ -231,7 +231,7 @@ public final class CellIdentityNr extends CellIdentity {
     }
 
     /**
-     * @return Mobile Network Code in string fomrat, or {@code null} if unknown.
+     * @return Mobile Network Code in string format, or {@code null} if unknown.
      */
     @Nullable
     public String getMncString() {

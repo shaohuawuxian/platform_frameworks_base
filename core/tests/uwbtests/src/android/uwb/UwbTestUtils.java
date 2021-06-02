@@ -18,24 +18,21 @@ package android.uwb;
 
 import android.os.SystemClock;
 
-import java.util.ArrayList;
-import java.util.List;
+import java.util.concurrent.Executor;
 
 public class UwbTestUtils {
     private UwbTestUtils() {}
 
     public static AngleMeasurement getAngleMeasurement() {
-        return new AngleMeasurement.Builder()
-                .setRadians(getDoubleInRange(-Math.PI, Math.PI))
-                .setErrorRadians(getDoubleInRange(0, Math.PI))
-                .setConfidenceLevel(getDoubleInRange(0, 1))
-                .build();
+        return new AngleMeasurement(
+                getDoubleInRange(-Math.PI, Math.PI),
+                getDoubleInRange(0, Math.PI),
+                getDoubleInRange(0, 1));
     }
 
     public static AngleOfArrivalMeasurement getAngleOfArrivalMeasurement() {
-        return new AngleOfArrivalMeasurement.Builder()
-                .setAltitudeAngleMeasurement(getAngleMeasurement())
-                .setAzimuthAngleMeasurement(getAngleMeasurement())
+        return new AngleOfArrivalMeasurement.Builder(getAngleMeasurement())
+                .setAltitude(getAngleMeasurement())
                 .build();
     }
 
@@ -61,14 +58,6 @@ public class UwbTestUtils {
                 .build();
     }
 
-    public static List<RangingMeasurement> getRangingMeasurements(int num) {
-        List<RangingMeasurement> result = new ArrayList<>();
-        for (int i = 0; i < num; i++) {
-            result.add(getRangingMeasurement());
-        }
-        return result;
-    }
-
     public static RangingReport getRangingReports(int numMeasurements) {
         RangingReport.Builder builder = new RangingReport.Builder();
         for (int i = 0; i < numMeasurements; i++) {
@@ -88,5 +77,14 @@ public class UwbTestUtils {
             addressBytes[i] = (byte) getDoubleInRange(1, 255);
         }
         return UwbAddress.fromBytes(addressBytes);
+    }
+
+    public static Executor getExecutor() {
+        return new Executor() {
+            @Override
+            public void execute(Runnable command) {
+                command.run();
+            }
+        };
     }
 }

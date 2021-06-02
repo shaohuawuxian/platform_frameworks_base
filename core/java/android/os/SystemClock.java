@@ -238,7 +238,7 @@ public final class SystemClock {
      *
      * @hide
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     @CriticalNative
     public static native long currentThreadTimeMicro();
 
@@ -329,8 +329,7 @@ public final class SystemClock {
                 try {
                     time = mMgr.getGnssTimeMillis();
                 } catch (RemoteException e) {
-                    e.rethrowFromSystemServer();
-                    return 0;
+                    throw e.rethrowFromSystemServer();
                 }
                 if (time == null) {
                     throw new DateTimeException("Gnss based time is not available.");

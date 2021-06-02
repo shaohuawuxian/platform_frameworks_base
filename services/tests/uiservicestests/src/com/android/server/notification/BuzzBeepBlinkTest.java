@@ -103,6 +103,7 @@ public class BuzzBeepBlinkTest extends UiServiceTestCase {
     NotificationRecordLoggerFake mNotificationRecordLogger = new NotificationRecordLoggerFake();
     private InstanceIdSequence mNotificationInstanceIdSequence = new InstanceIdSequenceFake(
             1 << 30);
+    private InjectableSystemClock mSystemClock = new FakeSystemClock();
 
     private NotificationManagerService mService;
     private String mPkg = "com.android.server.notification";
@@ -154,7 +155,7 @@ public class BuzzBeepBlinkTest extends UiServiceTestCase {
         assertTrue(accessibilityManager.isEnabled());
 
         mService = spy(new NotificationManagerService(getContext(), mNotificationRecordLogger,
-                mNotificationInstanceIdSequence));
+                mSystemClock, mNotificationInstanceIdSequence));
         mService.setAudioManager(mAudioManager);
         mService.setVibrator(mVibrator);
         mService.setSystemReady(true);
@@ -1185,7 +1186,7 @@ public class BuzzBeepBlinkTest extends UiServiceTestCase {
         NotificationRecord r = getLightsNotification();
         mService.buzzBeepBlinkLocked(r);
         verifyNeverLights();
-        assertFalse(r.isInterruptive());
+        assertTrue(r.isInterruptive());
         assertEquals(-1, r.getLastAudiblyAlertedMs());
     }
 

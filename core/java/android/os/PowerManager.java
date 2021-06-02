@@ -65,7 +65,7 @@ public final class PowerManager {
     /* NOTE: Wake lock levels were previously defined as a bit field, except that only a few
      * combinations were actually supported so the bit field was removed.  This explains
      * why the numbering scheme is so odd.  If adding a new wake lock level, any unused
-     * value (in frameworks/base/core/proto/android/os/enums.proto) can be used.
+     * value (in frameworks/proto_logging/stats/enums/os/enums.proto) can be used.
      */
 
     /**
@@ -1013,7 +1013,7 @@ public final class PowerManager {
      * Gets a float screen brightness setting.
      * @hide
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public float getBrightnessConstraint(int constraint) {
         try {
             return mService.getBrightnessConstraint(constraint);
@@ -2121,6 +2121,27 @@ public final class PowerManager {
     }
 
     /**
+     * Returns true if ambient display is suppressed by the given {@code appUid} with the given
+     * {@code token}.
+     *
+     * <p>This method will return false if {@link #isAmbientDisplayAvailable()} is false.
+     *
+     * @param token The identifier of the ambient display suppression.
+     * @param appUid The uid of the app that suppressed ambient display.
+     * @hide
+     */
+    @RequiresPermission(allOf = {
+            android.Manifest.permission.READ_DREAM_STATE,
+            android.Manifest.permission.READ_DREAM_SUPPRESSION })
+    public boolean isAmbientDisplaySuppressedForTokenByApp(@NonNull String token, int appUid) {
+        try {
+            return mService.isAmbientDisplaySuppressedForTokenByApp(token, appUid);
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /**
      * Returns the reason the phone was last shutdown. Calling app must have the
      * {@link android.Manifest.permission#DEVICE_POWER} permission to request this information.
      * @return Reason for shutdown as an int, {@link #SHUTDOWN_REASON_UNKNOWN} if the file could
@@ -2207,7 +2228,7 @@ public final class PowerManager {
      * This broadcast is only sent to registered receivers.
      * @hide
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     @SdkConstant(SdkConstant.SdkConstantType.BROADCAST_INTENT_ACTION)
     public static final String ACTION_LIGHT_DEVICE_IDLE_MODE_CHANGED
             = "android.os.action.LIGHT_DEVICE_IDLE_MODE_CHANGED";

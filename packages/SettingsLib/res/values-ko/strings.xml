@@ -257,7 +257,6 @@
     <string name="bluetooth_show_devices_without_names" msgid="923584526471885819">"이름이 없는 블루투스 기기 표시"</string>
     <string name="bluetooth_disable_absolute_volume" msgid="1452342324349203434">"절대 볼륨 사용 안함"</string>
     <string name="bluetooth_enable_gabeldorsche" msgid="9131730396242883416">"Gabeldorsche 사용 설정"</string>
-    <string name="enhanced_connectivity" msgid="7201127377781666804">"향상된 연결"</string>
     <string name="bluetooth_select_avrcp_version_string" msgid="1710571610177659127">"블루투스 AVRCP 버전"</string>
     <string name="bluetooth_select_avrcp_version_dialog_title" msgid="7846922290083709633">"블루투스 AVRCP 버전 선택"</string>
     <string name="bluetooth_select_map_version_string" msgid="526308145174175327">"블루투스 MAP 버전"</string>
@@ -447,6 +446,7 @@
     <string name="power_charging" msgid="6727132649743436802">"<xliff:g id="LEVEL">%1$s</xliff:g> - <xliff:g id="STATE">%2$s</xliff:g>"</string>
     <string name="power_remaining_charging_duration_only" msgid="7415639699283965818">"충전 완료까지 <xliff:g id="TIME">%1$s</xliff:g> 남음"</string>
     <string name="power_charging_duration" msgid="5005740040558984057">"<xliff:g id="LEVEL">%1$s</xliff:g> - 충전 완료까지 <xliff:g id="TIME">%2$s</xliff:g> 남음"</string>
+    <string name="power_charging_limited" msgid="1956874810658999681">"<xliff:g id="LEVEL">%1$s</xliff:g> - 배터리 상태 최적화 중"</string>
     <string name="battery_info_status_unknown" msgid="268625384868401114">"알 수 없음"</string>
     <string name="battery_info_status_charging" msgid="4279958015430387405">"충전 중"</string>
     <string name="battery_info_status_charging_fast" msgid="8027559755902954885">"고속 충전 중"</string>

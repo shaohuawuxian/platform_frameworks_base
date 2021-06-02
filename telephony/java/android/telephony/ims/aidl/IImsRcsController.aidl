@@ -17,10 +17,15 @@
 package android.telephony.ims.aidl;
 
 import android.net.Uri;
+import android.telephony.ims.DelegateRequest;
 import android.telephony.ims.aidl.IImsCapabilityCallback;
+import android.telephony.ims.aidl.IImsRegistrationCallback;
 import android.telephony.ims.aidl.IRcsUceControllerCallback;
 import android.telephony.ims.aidl.IRcsUcePublishStateCallback;
-import android.telephony.ims.aidl.IImsRegistrationCallback;
+import android.telephony.ims.aidl.IRcsUcePublishStateCallback;
+import android.telephony.ims.aidl.ISipDelegate;
+import android.telephony.ims.aidl.ISipDelegateMessageCallback;
+import android.telephony.ims.aidl.ISipDelegateConnectionStateCallback;
 
 import com.android.ims.ImsFeatureContainer;
 import com.android.ims.internal.IImsServiceFeatureCallback;
@@ -42,12 +47,12 @@ interface IImsRcsController {
     void registerRcsAvailabilityCallback(int subId, IImsCapabilityCallback c);
     void unregisterRcsAvailabilityCallback(int subId, IImsCapabilityCallback c);
     boolean isCapable(int subId, int capability, int radioTech);
-    boolean isAvailable(int subId, int capability);
+    boolean isAvailable(int subId, int capability, int radioTech);
 
     // ImsUceAdapter specific
     void requestCapabilities(int subId, String callingPackage, String callingFeatureId,
             in List<Uri> contactNumbers, IRcsUceControllerCallback c);
-    void requestNetworkAvailability(int subId, String callingPackage,
+    void requestAvailability(int subId, String callingPackage,
             String callingFeatureId, in Uri contactNumber,
             IRcsUceControllerCallback c);
     int getUcePublishState(int subId);
@@ -58,6 +63,12 @@ interface IImsRcsController {
 
     // SipDelegateManager
     boolean isSipDelegateSupported(int subId);
+    void createSipDelegate(int subId, in DelegateRequest request, String packageName,
+            ISipDelegateConnectionStateCallback delegateState,
+            ISipDelegateMessageCallback delegateMessage);
+    void destroySipDelegate(int subId, ISipDelegate connection, int reason);
+    void triggerNetworkRegistration(int subId, ISipDelegate connection, int sipCode,
+            String sipReason);
 
     // Internal commands that should not be made public
     void registerRcsFeatureCallback(int slotId, in IImsServiceFeatureCallback callback);

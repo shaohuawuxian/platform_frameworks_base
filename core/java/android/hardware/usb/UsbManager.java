@@ -193,7 +193,7 @@ public class UsbManager {
      *
      * {@hide}
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public static final String USB_DATA_UNLOCKED = "unlocked";
 
     /**
@@ -709,7 +709,7 @@ public class UsbManager {
      * {@hide}
      */
     @Deprecated
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public boolean isFunctionEnabled(String function) {
         try {
             return mService.isFunctionEnabled(function);
@@ -954,7 +954,10 @@ public class UsbManager {
 
     /**
      * Returns whether the given functions are valid inputs to UsbManager.
-     * Currently the empty functions or any of MTP, PTP, RNDIS, MIDI are accepted.
+     * Currently the empty functions or any of MTP, PTP, RNDIS, MIDI, NCM are accepted.
+     *
+     * Only one function may be set at a time, except for RNDIS and NCM, which can be set together
+     * because from a user perspective they are the same function (tethering).
      *
      * @return Whether the mask is settable.
      *
@@ -962,7 +965,9 @@ public class UsbManager {
      */
     public static boolean areSettableFunctions(long functions) {
         return functions == FUNCTION_NONE
-                || ((~SETTABLE_FUNCTIONS & functions) == 0 && Long.bitCount(functions) == 1);
+                || ((~SETTABLE_FUNCTIONS & functions) == 0
+                        && ((Long.bitCount(functions) == 1)
+                                || (functions == (FUNCTION_RNDIS | FUNCTION_NCM))));
     }
 
     /**

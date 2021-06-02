@@ -684,7 +684,7 @@
   <java-symbol type="string" name="config_ethernet_iface_regex" />
   <java-symbol type="string" name="not_checked" />
   <java-symbol type="array" name="config_ethernet_interfaces" />
-  <java-symbol type="array" name="config_wakeonlan_supported_interfaces" />
+  <java-symbol type="bool" name="config_vehicleInternalNetworkAlwaysRequested" />
   <java-symbol type="string" name="config_forceVoiceInteractionServicePackage" />
   <java-symbol type="string" name="config_mms_user_agent" />
   <java-symbol type="string" name="config_mms_user_agent_profile_url" />
@@ -1143,6 +1143,17 @@
   <java-symbol type="string" name="mediasize_na_monarch" />
   <java-symbol type="string" name="mediasize_na_quarto" />
   <java-symbol type="string" name="mediasize_na_foolscap" />
+  <java-symbol type="string" name="mediasize_na_ansi_c" />
+  <java-symbol type="string" name="mediasize_na_ansi_d" />
+  <java-symbol type="string" name="mediasize_na_ansi_e" />
+  <java-symbol type="string" name="mediasize_na_ansi_f" />
+  <java-symbol type="string" name="mediasize_na_arch_a" />
+  <java-symbol type="string" name="mediasize_na_arch_b" />
+  <java-symbol type="string" name="mediasize_na_arch_c" />
+  <java-symbol type="string" name="mediasize_na_arch_d" />
+  <java-symbol type="string" name="mediasize_na_arch_e" />
+  <java-symbol type="string" name="mediasize_na_arch_e1" />
+  <java-symbol type="string" name="mediasize_na_super_b" />
   <java-symbol type="string" name="mediasize_chinese_roc_8k" />
   <java-symbol type="string" name="mediasize_chinese_roc_16k" />
   <java-symbol type="string" name="mediasize_chinese_prc_1" />
@@ -1179,6 +1190,7 @@
   <java-symbol type="string" name="mediasize_japanese_kahu" />
   <java-symbol type="string" name="mediasize_japanese_kaku2" />
   <java-symbol type="string" name="mediasize_japanese_you4" />
+  <java-symbol type="string" name="mediasize_japanese_l" />
   <java-symbol type="string" name="network_partial_connectivity" />
   <java-symbol type="string" name="network_partial_connectivity_detailed" />
   <java-symbol type="string" name="reason_service_unavailable" />
@@ -1671,7 +1683,7 @@
   <java-symbol type="bool" name="config_enableCarDockHomeLaunch" />
   <java-symbol type="bool" name="config_enableLockBeforeUnlockScreen" />
   <java-symbol type="bool" name="config_enableLockScreenRotation" />
-  <java-symbol type="bool" name="config_forceShowSystemBars" />
+  <java-symbol type="bool" name="config_remoteInsetsControllerControlsSystemBars" />
   <java-symbol type="bool" name="config_lidControlsScreenLock" />
   <java-symbol type="bool" name="config_lidControlsSleep" />
   <java-symbol type="bool" name="config_lockDayNightMode" />
@@ -1929,6 +1941,7 @@
   <java-symbol type="fraction" name="config_dimBehindFadeDuration" />
   <java-symbol type="dimen" name="default_minimal_size_resizable_task" />
   <java-symbol type="dimen" name="default_minimal_size_pip_resizable_task" />
+  <java-symbol type="dimen" name="overridable_minimal_size_pip_resizable_task" />
   <java-symbol type="dimen" name="task_height_of_minimized_mode" />
   <java-symbol type="fraction" name="config_screenAutoBrightnessDozeScaleFactor" />
   <java-symbol type="bool" name="config_allowPriorityVibrationsInLowPowerMode" />
@@ -1950,11 +1963,9 @@
   <java-symbol type="integer" name="config_lowBatteryCloseWarningBump" />
   <java-symbol type="integer" name="config_lowBatteryWarningLevel" />
   <java-symbol type="integer" name="config_networkPolicyDefaultWarning" />
-  <java-symbol type="integer" name="config_networkTransitionTimeout" />
   <java-symbol type="integer" name="config_networkNotifySwitchType" />
   <java-symbol type="array" name="config_networkNotifySwitches" />
   <java-symbol type="integer" name="config_networkAvoidBadWifi" />
-  <java-symbol type="string" name="config_networkCaptivePortalServerUrl" />
   <java-symbol type="integer" name="config_networkWakeupPacketMark" />
   <java-symbol type="integer" name="config_networkWakeupPacketMask" />
   <java-symbol type="bool" name="config_apfDrop802_3Frames" />
@@ -2161,6 +2172,7 @@
   <java-symbol type="string" name="config_defaultNetworkScorerPackageName" />
   <java-symbol type="string" name="config_persistentDataPackageName" />
   <java-symbol type="string" name="config_deviceConfiguratorPackageName" />
+  <java-symbol type="array" name="config_autoTimeSourcesPriority" />
 
   <java-symbol type="layout" name="resolver_list" />
   <java-symbol type="id" name="resolver_list" />
@@ -2610,6 +2622,7 @@
   <java-symbol type="bool" name="config_defaultWindowFeatureContextMenu" />
   <java-symbol type="bool" name="config_overrideRemoteViewsActivityTransition" />
   <java-symbol type="attr" name="colorProgressBackgroundNormal" />
+  <java-symbol type="bool" name="config_allow_pin_storage_for_unattended_reboot" />
 
   <java-symbol type="layout" name="simple_account_item" />
   <java-symbol type="string" name="prohibit_manual_network_selection_in_gobal_mode" />
@@ -3062,7 +3075,6 @@
   <java-symbol type="bool" name="config_pinnerCameraApp" />
   <java-symbol type="bool" name="config_pinnerHomeApp" />
   <java-symbol type="bool" name="config_pinnerAssistantApp" />
-  <java-symbol type="array" name="config_jitzygoteBootImagePinnerServiceFiles" />
 
   <java-symbol type="string" name="config_doubleTouchGestureEnableFile" />
 
@@ -3848,6 +3860,7 @@
   <java-symbol type="layout" name="chooser_action_button" />
   <java-symbol type="dimen" name="chooser_action_button_icon_size" />
   <java-symbol type="string" name="config_defaultNearbySharingComponent" />
+  <java-symbol type="bool" name="config_disable_all_cb_messages" />
   <java-symbol type="drawable" name="ic_close" />
 
   <java-symbol type="bool" name="config_automotiveHideNavBarForKeyboard" />
@@ -4055,4 +4068,6 @@
   <java-symbol type="array" name="config_notificationMsgPkgsAllowedAsConvos" />
 
   <java-symbol type="array" name="config_keep_warming_services" />
+
+  <java-symbol type="bool" name="config_voice_data_sms_auto_fallback" />
 </resources>

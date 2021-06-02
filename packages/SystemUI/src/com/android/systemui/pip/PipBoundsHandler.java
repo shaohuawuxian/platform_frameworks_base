@@ -80,6 +80,7 @@ public class PipBoundsHandler {
     private int mImeHeight;
     private boolean mIsShelfShowing;
     private int mShelfHeight;
+    private boolean mDefaultLandscape;
 
     private final DisplayController.OnDisplaysChangedListener mDisplaysChangedListener =
             new DisplayController.OnDisplaysChangedListener() {
@@ -87,6 +88,7 @@ public class PipBoundsHandler {
         public void onDisplayAdded(int displayId) {
             if (displayId == mContext.getDisplayId()) {
                 mDisplayLayout.set(mDisplayController.getDisplayLayout(displayId));
+                mDefaultLandscape = (mDisplayInfo.logicalWidth > mDisplayInfo.logicalHeight);
             }
         }
     };
@@ -177,7 +179,7 @@ public class PipBoundsHandler {
         }
         if (isValidPictureInPictureAspectRatio(mAspectRatio)) {
             transformBoundsToAspectRatio(normalBounds, mAspectRatio,
-                    false /* useCurrentMinEdgeSize */);
+                    false /* useCurrentMinEdgeSize */, false /* useCurrentSize */);
         }
         displayInfo.copyFrom(mDisplayInfo);
     }
@@ -278,7 +280,9 @@ public class PipBoundsHandler {
             destinationBounds = new Rect(bounds);
         }
         if (isValidPictureInPictureAspectRatio(aspectRatio)) {
-            transformBoundsToAspectRatio(destinationBounds, aspectRatio, useCurrentMinEdgeSize);
+            boolean useCurrentSize = bounds == null && mReentrySize != null;
+            transformBoundsToAspectRatio(destinationBounds, aspectRatio, useCurrentMinEdgeSize,
+                    useCurrentSize);
         }
         mAspectRatio = aspectRatio;
         return destinationBounds;
@@ -360,9 +364,17 @@ public class PipBoundsHandler {
     private void updateDisplayInfoIfNeeded() {
         final boolean updateNeeded;
         if ((mDisplayInfo.rotation == ROTATION_0) || (mDisplayInfo.rotation == ROTATION_180)) {
-            updateNeeded = (mDisplayInfo.logicalWidth > mDisplayInfo.logicalHeight);
+            if (!mDefaultLandscape) {
+                updateNeeded = (mDisplayInfo.logicalWidth > mDisplayInfo.logicalHeight);
+            } else {
+                updateNeeded = (mDisplayInfo.logicalWidth < mDisplayInfo.logicalHeight);
+            }
         } else {
-            updateNeeded = (mDisplayInfo.logicalWidth < mDisplayInfo.logicalHeight);
+            if (!mDefaultLandscape) {
+                updateNeeded = (mDisplayInfo.logicalWidth < mDisplayInfo.logicalHeight);
+            } else {
+                updateNeeded = (mDisplayInfo.logicalWidth > mDisplayInfo.logicalHeight);
+            }
         }
         if (updateNeeded) {
             final int newLogicalHeight = mDisplayInfo.logicalWidth;
@@ -384,7 +396,8 @@ public class PipBoundsHandler {
      * @param stackBounds
      */
     public void transformBoundsToAspectRatio(Rect stackBounds) {
-        transformBoundsToAspectRatio(stackBounds, mAspectRatio, true);
+        transformBoundsToAspectRatio(stackBounds, mAspectRatio, true /* useCurrentMinEdgeSize */,
+                true /* useCurrentSize */);
     }
 
     /**
@@ -392,18 +405,16 @@ public class PipBoundsHandler {
      * specified aspect ratio.
      */
     private void transformBoundsToAspectRatio(Rect stackBounds, float aspectRatio,
-            boolean useCurrentMinEdgeSize) {
+            boolean useCurrentMinEdgeSize, boolean useCurrentSize) {
         // Save the snap fraction and adjust the size based on the new aspect ratio.
         final float snapFraction = mSnapAlgorithm.getSnapFraction(stackBounds,
                 getMovementBounds(stackBounds));
-        final int minEdgeSize;
+        final int minEdgeSize = useCurrentMinEdgeSize ? mCurrentMinSize : mDefaultMinSize;
         final Size size;
-        if (useCurrentMinEdgeSize) {
-            minEdgeSize = mCurrentMinSize;
+        if (useCurrentMinEdgeSize || useCurrentSize) {
             size = mSnapAlgorithm.getSizeForAspectRatio(
                     new Size(stackBounds.width(), stackBounds.height()), aspectRatio, minEdgeSize);
         } else {
-            minEdgeSize = mDefaultMinSize;
             size = mSnapAlgorithm.getSizeForAspectRatio(aspectRatio, minEdgeSize,
                     mDisplayInfo.logicalWidth, mDisplayInfo.logicalHeight);
         }

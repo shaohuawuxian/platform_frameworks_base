@@ -29,6 +29,7 @@ import android.annotation.SystemApi;
 import android.compat.annotation.UnsupportedAppUsage;
 import android.content.res.Resources;
 import android.os.Binder;
+import android.os.Build;
 import android.text.TextUtils;
 
 import com.android.internal.telephony.GsmAlphabet;
@@ -133,7 +134,7 @@ public class SmsMessage {
      *
      * @hide
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     private int mSubId = 0;
 
     /** set Subscription information
@@ -299,9 +300,12 @@ public class SmsMessage {
      * @param data Message data.
      * @param isCdma Indicates weather the type of the SMS is CDMA.
      * @return An SmsMessage representing the message.
+     *
+     * @hide
      */
+    @SystemApi
     @Nullable
-    public static SmsMessage createSmsSubmitPdu(@NonNull byte[] data, boolean isCdma) {
+    public static SmsMessage createFromNativeSmsSubmitPdu(@NonNull byte[] data, boolean isCdma) {
         SmsMessageBase wrappedMessage;
 
         if (isCdma) {
@@ -314,23 +318,6 @@ public class SmsMessage {
         }
 
         return wrappedMessage != null ? new SmsMessage(wrappedMessage) : null;
-    }
-
-    /**
-     * Create an SmsMessage from a native SMS-Submit PDU, specified by Bluetooth Message Access
-     * Profile Specification v1.4.2 5.8.
-     * This is used by Bluetooth MAP profile to decode message when sending non UTF-8 SMS messages.
-     *
-     * @param data Message data.
-     * @param isCdma Indicates weather the type of the SMS is CDMA.
-     * @return An SmsMessage representing the message.
-     *
-     * @hide
-     */
-    @SystemApi
-    @Nullable
-    public static SmsMessage createFromNativeSmsSubmitPdu(@NonNull byte[] data, boolean isCdma) {
-        return null;
     }
 
     /**
@@ -1054,7 +1041,7 @@ public class SmsMessage {
      *
      * @return true if Cdma format should be used for MO SMS, false otherwise.
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     private static boolean useCdmaFormatForMoSms(int subId) {
         SmsManager smsManager = SmsManager.getSmsManagerForSubscriptionId(subId);
         if (!smsManager.isImsSmsSupported()) {

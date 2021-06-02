@@ -26,12 +26,19 @@ import android.annotation.SystemService;
 import android.compat.annotation.UnsupportedAppUsage;
 import android.content.ComponentName;
 import android.content.Context;
+import android.os.Build;
 import android.os.PersistableBundle;
 import android.os.RemoteException;
 import android.service.carrier.CarrierService;
 import android.telecom.TelecomManager;
+import android.telephony.gba.TlsParams;
+import android.telephony.gba.UaSecurityProtocolIdentifier;
 import android.telephony.ims.ImsReasonInfo;
+import android.telephony.ims.ImsRegistrationAttributes;
 import android.telephony.ims.ImsSsData;
+import android.telephony.ims.RcsUceAdapter;
+import android.telephony.ims.feature.MmTelFeature;
+import android.telephony.ims.feature.RcsFeature;
 
 import com.android.internal.telephony.ICarrierConfigLoader;
 import com.android.telephony.Rlog;
@@ -77,6 +84,42 @@ public class CarrierConfigManager {
      * Reference: 3GPP TS 27.007 Section 7.4 Facility lock +CLCK
      */
     public static final int SERVICE_CLASS_VOICE = ImsSsData.SERVICE_CLASS_VOICE;
+
+    /**
+     * Only send USSD over IMS while CS is out of service, otherwise send USSD over CS.
+     * {@link #KEY_CARRIER_USSD_METHOD_INT}
+     */
+    public static final int USSD_OVER_CS_PREFERRED   = 0;
+
+    /**
+     * Send USSD over IMS or CS while IMS is out of service or silent redial over CS if needed.
+     * {@link #KEY_CARRIER_USSD_METHOD_INT}
+     */
+    public static final int USSD_OVER_IMS_PREFERRED  = 1;
+
+    /**
+     * Only send USSD over CS.
+     * {@link #KEY_CARRIER_USSD_METHOD_INT}
+     */
+    public static final int USSD_OVER_CS_ONLY        = 2;
+
+    /**
+     * Only send USSD over IMS and disallow silent redial over CS.
+     * {@link #KEY_CARRIER_USSD_METHOD_INT}
+     */
+    public static final int USSD_OVER_IMS_ONLY       = 3;
+
+    /**
+     * Indicates CARRIER_NR_AVAILABILITY_NSA determine that the carrier enable the non-standalone
+     * (NSA) mode of 5G NR.
+     */
+    public static final int CARRIER_NR_AVAILABILITY_NSA = 1;
+
+    /**
+     * Indicates CARRIER_NR_AVAILABILITY_SA determine that the carrier enable the standalone (SA)
+     * mode of 5G NR.
+     */
+    public static final int CARRIER_NR_AVAILABILITY_SA = 2;
 
     private final Context mContext;
 
@@ -581,6 +624,20 @@ public class CarrierConfigManager {
      * If true: then depends on carrier provisioning, availability, etc.
      */
     public static final String KEY_CARRIER_VT_AVAILABLE_BOOL = "carrier_vt_available_bool";
+
+    /**
+     * Specify the method of selection for UE sending USSD requests. The default value is
+     * {@link #USSD_OVER_CS_PREFERRED}.
+     * <p> Available options:
+     * <ul>
+     *   <li>0: {@link #USSD_OVER_CS_PREFERRED} </li>
+     *   <li>1: {@link #USSD_OVER_IMS_PREFERRED} </li>
+     *   <li>2: {@link #USSD_OVER_CS_ONLY} </li>
+     *   <li>3: {@link #USSD_OVER_IMS_ONLY} </li>
+     * </ul>
+     */
+    public static final String KEY_CARRIER_USSD_METHOD_INT =
+            "carrier_ussd_method_int";
 
     /**
      * Flag specifying whether to show an alert dialog for 5G disable when the user disables VoLTE.
@@ -1702,6 +1759,15 @@ public class CarrierConfigManager {
             "hide_lte_plus_data_icon_bool";
 
     /**
+     * The combined channel bandwidth threshold (non-inclusive) in KHz required to display the
+     * LTE+ data icon. It is 20000 by default, meaning the LTE+ icon will be shown if the device is
+     * using carrier aggregation and the combined channel bandwidth is strictly greater than 20 MHz.
+     * @hide
+     */
+    public static final String KEY_LTE_PLUS_THRESHOLD_BANDWIDTH_KHZ_INT =
+            "lte_plus_threshold_bandwidth_khz_int";
+
+    /**
      * The string is used to filter redundant string from PLMN Network Name that's supplied by
      * specific carrier.
      *
@@ -1726,10 +1792,20 @@ public class CarrierConfigManager {
             "show_precise_failed_cause_bool";
 
     /**
-     * Boolean to decide whether NR is enabled.
-     * @hide
+     * A list of carrier nr availability is used to determine whether the carrier enable the
+     * non-standalone (NSA) mode of 5G NR, standalone (SA) mode of 5G NR
+     *
+     * <p> The value of list is
+     * {@link #CARRIER_NR_AVAILABILITY_NSA}, or {@link #CARRIER_NR_AVAILABILITY_SA}.
+     *
+     * <p> For example, if both NSA and SA are used, the list value is {
+     * {@link #CARRIER_NR_AVAILABILITY_NSA},{@link #CARRIER_NR_AVAILABILITY_SA}}.
+     * If the carrier doesn't support 5G NR, the value is the empty array.
+     * If the key is invalid or not configured, the default value {
+     * {@link #CARRIER_NR_AVAILABILITY_NSA},{@link #CARRIER_NR_AVAILABILITY_SA}} will apply.
      */
-    public static final String KEY_NR_ENABLED_BOOL = "nr_enabled_bool";
+    public static final String KEY_CARRIER_NR_AVAILABILITIES_INT_ARRAY =
+            "carrier_nr_availabilities_int_array";
 
     /**
      * Boolean to decide whether LTE is enabled.
@@ -1833,9 +1909,8 @@ public class CarrierConfigManager {
      *     "APN_1, ERROR_CODE_1 : CARRIER_ACTION_IDX_1, CARRIER_ACTION_IDX_2...",
      *     "APN_1, ERROR_CODE_2 : CARRIER_ACTION_IDX_1 "
      * }
-     * Where {@code APN_1} is a string defined in
-     * com.android.internal.telephony.PhoneConstants
-     * Example: "default"
+     * Where {@code APN_1} is an integer defined in {@link android.telephony.data.ApnSetting}
+     * (e.g. {@link android.telephony.data.ApnSetting#TYPE_DEFAULT}
      *
      * {@code ERROR_CODE_1} is an integer defined in android.telephony.DataFailCause
      * Example:
@@ -1982,15 +2057,29 @@ public class CarrierConfigManager {
             "allow_hold_call_during_emergency_bool";
 
     /**
-     * Flag indicating whether the carrier supports RCS presence indication for
-     * User Capability Exchange (UCE).  When presence is supported, the device should use the
+     * Flag indicating whether or not the carrier supports the periodic exchange of phone numbers
+     * in the user's address book with the carrier's presence server in order to retrieve the RCS
+     * capabilities for each contact used in the RCS User Capability Exchange (UCE) procedure. See
+     * RCC.71, section 3 for more information.
+     * <p>
+     * The flag {@link Ims#KEY_ENABLE_PRESENCE_PUBLISH_BOOL} must also be enabled if this flag is
+     * enabled, as sending a periodic SIP PUBLISH with this device's RCS capabilities is a
+     * requirement for capability exchange to begin.
+     * <p>
+     * When presence is supported, the device should use the
      * {@link android.provider.ContactsContract.Data#CARRIER_PRESENCE} bit mask and set the
      * {@link android.provider.ContactsContract.Data#CARRIER_PRESENCE_VT_CAPABLE} bit to indicate
      * whether each contact supports video calling.  The UI is made aware that presence is enabled
      * via {@link android.telecom.PhoneAccount#CAPABILITY_VIDEO_CALLING_RELIES_ON_PRESENCE}
      * and can choose to hide or show the video calling icon based on whether a contact supports
      * video.
+     *
+     * @deprecated No longer used in framework code, however it may still be used by applications
+     * that have not updated their code. This config should still be set to {@code true} if
+     * {@link Ims#KEY_RCS_BULK_CAPABILITY_EXCHANGE_BOOL} is set to {@code true} and
+     * {@link Ims#KEY_ENABLE_PRESENCE_CAPABILITY_EXCHANGE_BOOL} is set to {@code true}.
      */
+    @Deprecated
     public static final String KEY_USE_RCS_PRESENCE_BOOL = "use_rcs_presence_bool";
 
     /**
@@ -2676,7 +2765,7 @@ public class CarrierConfigManager {
      * Key identifying if voice call barring notification is required to be shown to the user.
      * @hide
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public static final String KEY_DISABLE_VOICE_BARRING_NOTIFICATION_BOOL =
             "disable_voice_barring_notification_bool";
 
@@ -2710,6 +2799,30 @@ public class CarrierConfigManager {
      * @hide
      */
     public static final String IMSI_KEY_DOWNLOAD_URL_STRING = "imsi_key_download_url_string";
+
+    /**
+     * String representation of a carrier's public key used for IMSI encryption for ePDG. If this
+     * is provided, the device will use it as a fallback when no key exists on device, but the key
+     * download will still initiate.
+     * Example string:
+     *         "-----BEGIN CERTIFICATE-----\nabcde12345abcde12345abcde12345abcde1234
+     * 5abcde12345abcde12345\nabcde12345abcde12345abcde12345abcde12345a\n-----END CERTIFICATE-----"
+     * @hide
+     */
+    public static final String IMSI_CARRIER_PUBLIC_KEY_EPDG_STRING =
+            "imsi_carrier_public_key_epdg_string";
+
+    /**
+     * String representation of a carrier's public key used for IMSI encryption for WLAN. If this
+     * is provided, the device will use it as a fallback when no key exists on device, but the key
+     * download will still initiate.
+     * Example string:
+     *         "-----BEGIN CERTIFICATE-----\nabcde12345abcde12345abcde12345abcde1234
+     * 5abcde12345abcde12345\nabcde12345abcde12345abcde12345abcde12345a\n-----END CERTIFICATE-----"
+     * @hide
+     */
+    public static final String IMSI_CARRIER_PUBLIC_KEY_WLAN_STRING =
+            "imsi_carrier_public_key_wlan_string";
 
     /**
      * Identifies if the key is available for WLAN or EPDG or both. The value is a bitmask.
@@ -2765,6 +2878,18 @@ public class CarrierConfigManager {
      * Indicates if the carrier supports RTT during a video call.
      */
     public static final String KEY_RTT_SUPPORTED_FOR_VT_BOOL = "rtt_supported_for_vt_bool";
+
+    /**
+     * Indicates if the carrier supports upgrading a call that was previously an RTT call to VT.
+     */
+    public static final String KEY_VT_UPGRADE_SUPPORTED_FOR_DOWNGRADED_RTT_CALL_BOOL =
+            "vt_upgrade_supported_for_downgraded_rtt_call";
+
+    /**
+     * Indicates if the carrier supports upgrading a call that was previously a VT call to RTT.
+     */
+    public static final String KEY_RTT_UPGRADE_SUPPORTED_FOR_DOWNGRADED_VT_CALL_BOOL =
+            "rtt_upgrade_supported_for_downgraded_vt_call";
 
     /**
      * Indicates if the carrier supports upgrading a voice call to an RTT call during the call.
@@ -3096,6 +3221,14 @@ public class CarrierConfigManager {
      * @hide
      */
     public static final String KEY_USE_CALLER_ID_USSD_BOOL = "use_caller_id_ussd_bool";
+
+    /**
+     * Call waiting uses USSD command without SS command.
+     * When {@code true}, the call waiting query/set by ussd command.
+     * When {@code false}, doesn't use USSD to query/set call waiting.
+     * @hide
+     */
+    public static final String KEY_USE_CALL_WAITING_USSD_BOOL = "use_call_waiting_ussd_bool";
 
     /**
      * Specifies the service class for call waiting service.
@@ -3492,6 +3625,71 @@ public class CarrierConfigManager {
     public static final String ENABLE_EAP_METHOD_PREFIX_BOOL = "enable_eap_method_prefix_bool";
 
     /**
+     * Indicates that GBA_ME should be used for GBA authentication, as defined in 3GPP TS 33.220.
+     * @hide
+     */
+    @SystemApi
+    public static final int GBA_ME = 1;
+
+    /**
+     * Indicates that GBA_U should be used for GBA authentication, as defined in 3GPP TS 33.220.
+     * @hide
+     */
+    @SystemApi
+    public static final int GBA_U = 2;
+
+    /**
+     * Indicates that GBA_Digest should be used for GBA authentication, as defined
+     * in 3GPP TS 33.220.
+     * @hide
+     */
+    @SystemApi
+    public static final int GBA_DIGEST = 3;
+
+    /**
+     * An integer representing the GBA mode to use for requesting credentials
+     * via {@link TelephonyManager#bootstrapAuthenticationRequest}.
+     *
+     * One of {@link #GBA_ME}, {@link #GBA_U}, or {@link #GBA_DIGEST}.
+     * @hide
+     */
+    @SystemApi
+    public static final String KEY_GBA_MODE_INT = "gba_mode_int";
+
+    /**
+     * An integer representing the organization code to be used when building the
+     * {@link UaSecurityProtocolIdentifier} used when requesting GBA authentication.
+     *
+     * See the {@code ORG_} constants in {@link UaSecurityProtocolIdentifier}.
+     * @hide
+     */
+    @SystemApi
+    public static final String KEY_GBA_UA_SECURITY_ORGANIZATION_INT =
+            "gba_ua_security_organization_int";
+
+    /**
+     * An integer representing the security protocol to be used when building the
+     * {@link UaSecurityProtocolIdentifier} used when requesting GBA authentication.
+     *
+     * See the {@code UA_SECURITY_PROTOCOL_} constants in {@link UaSecurityProtocolIdentifier}.
+     * @hide
+     */
+    @SystemApi
+    public static final String KEY_GBA_UA_SECURITY_PROTOCOL_INT =
+            "gba_ua_security_protocol_int";
+
+    /**
+     * An integer representing the cipher suite to be used when building the
+     * {@link UaSecurityProtocolIdentifier} used when requesting GBA authentication.
+     *
+     * See the {@code TLS_} constants in {@link android.telephony.gba.TlsParams}.
+     * @hide
+     */
+    @SystemApi
+    public static final String KEY_GBA_UA_TLS_CIPHER_SUITE_INT =
+            "gba_ua_tls_cipher_suite_int";
+
+    /**
      * GPS configs. See the GNSS HAL documentation for more details.
      */
     public static final class Gps {
@@ -3799,12 +3997,175 @@ public class CarrierConfigManager {
         public static final String KEY_IMS_SINGLE_REGISTRATION_REQUIRED_BOOL =
                 KEY_PREFIX + "ims_single_registration_required_bool";
 
+        /**
+         * A boolean flag specifying whether or not this carrier supports the device notifying the
+         * network of its RCS capabilities using the SIP PUBLISH procedure defined for User
+         * Capability Exchange (UCE). See RCC.71, section 3 for more information.
+         * <p>
+         * If this key's value is set to false, the procedure for RCS contact capability exchange
+         * via SIP SUBSCRIBE/NOTIFY will also be disabled internally, and
+         * {@link Ims#KEY_ENABLE_PRESENCE_PUBLISH_BOOL} must also be set to false to ensure
+         * apps do not improperly think that capability exchange via SIP PUBLISH is enabled.
+         * <p> The default value for this key is {@code false}.
+         */
+        public static final String KEY_ENABLE_PRESENCE_PUBLISH_BOOL =
+                KEY_PREFIX + "enable_presence_publish_bool";
+
+        /**
+         * Each string in this array contains a mapping between the service-id and version portion
+         * of the service-description element and the associated IMS feature tag(s) that are
+         * associated with each element (see RCC.07 Table 7).
+         * <p>
+         * Each string contains 3 parts, which define the mapping between service-description and
+         * feature tag(s) that must be present in the IMS REGISTER for the RCS service to be
+         * published as part of the RCS PUBLISH procedure:
+         * [service-id]|[version]|[desc]|[feature_tag];[feature_tag];...
+         * <ul>
+         *   <li>[service-id]: the service-id element associated with the RCS capability.</li>
+         *   <li>[version]: The version element associated with that service-id</li>
+         *   <li>[desc]: The optional desecription element associated with that service-id</li>
+         *   <li>[feature_tag];[feature_tag]: The list of all feature tags associated with this
+         *       capability that MUST ALL be present in the IMS registration for this this
+         *       capability to be published to the network.</li>
+         * </ul>
+         * <p>
+         * Features managed by the framework will be considered capable when the ImsService reports
+         * that those services are capable via the
+         * {@link MmTelFeature#notifyCapabilitiesStatusChanged(MmTelFeature.MmTelCapabilities)} or
+         * {@link RcsFeature#notifyCapabilitiesStatusChanged(RcsFeature.RcsImsCapabilities)} APIs.
+         * For RCS services not managed by the framework, the capability of these services are
+         * determined by looking at the feature tags associated with the IMS registration using the
+         * {@link ImsRegistrationAttributes} API and mapping them to the service-description map.
+         * <p>
+         * The framework contains a default value of this key, which is based off of RCC.07
+         * specification. Capabilities based of carrier extensions may be added to this list on a
+         * carrier-by-carrier basis as required in order to support additional services in the
+         * PUBLISH. If this list contains a service-id and version that overlaps with the default,
+         * it will override the framework default.
+         * @hide
+         */
+        public static final String KEY_PUBLISH_SERVICE_DESC_FEATURE_TAG_MAP_OVERRIDE_STRING_ARRAY =
+                KEY_PREFIX + "publish_service_desc_feature_tag_map_override_string_array";
+
+        /**
+         * Flag indicating whether or not this carrier supports the exchange of phone numbers with
+         * the carrier's RCS presence server in order to retrieve the RCS capabilities of requested
+         * contacts used in the RCS User Capability Exchange (UCE) procedure. See RCC.71, section 3
+         * for more information.
+         * <p>
+         * When presence is supported, the device uses the SIP SUBSCRIBE/NOTIFY procedure internally
+         * to retrieve the requested RCS capabilities. See
+         * {@link android.telephony.ims.RcsUceAdapter} for more information on how RCS capabilities
+         * can be retrieved from the carrier's network.
+         */
+        public static final String KEY_ENABLE_PRESENCE_CAPABILITY_EXCHANGE_BOOL =
+                KEY_PREFIX + "enable_presence_capability_exchange_bool";
+
+
+        /**
+         * Flag indicating whether or not the carrier expects the RCS UCE service to periodically
+         * refresh the RCS capabilities cache of the user's contacts as well as request the
+         * capabilities of call contacts when the SIM card is first inserted or when a new contact
+         * is added, removed, or modified. This corresponds to the RCC.07 A.19
+         * "DISABLE INITIAL ADDRESS BOOK SCAN" parameter.
+         * <p>
+         * If this flag is disabled, the capabilities cache will not be refreshed internally at all
+         * and will only be updated if the cached capabilities are stale when an application
+         * requests them.
+         *
+         * @see RcsUceAdapter#isUceSettingEnabled() more information about this feature and how
+         * it is enabled by the user.
+         */
+        public static final String KEY_RCS_BULK_CAPABILITY_EXCHANGE_BOOL =
+                KEY_PREFIX + "rcs_bulk_capability_exchange_bool";
+
+        /**
+         * Flag indicating whether or not the carrier supports capability exchange with a list of
+         * contacts. When {@code true}, the device will batch together multiple requests and
+         * construct a RLMI document in the SIP SUBSCRIBE request (see RFC 4662). If {@code false},
+         * the request will be split up into one SIP SUBSCRIBE request per contact.
+         */
+        public static final String KEY_ENABLE_PRESENCE_GROUP_SUBSCRIBE_BOOL =
+                KEY_PREFIX + "enable_presence_group_subscribe_bool";
+
+        /**
+         * An integer key associated with the period of time in seconds the non-rcs capability
+         * information of each contact is cached on the device.
+         * <p>
+         * The rcs capability cache expiration sec is managed by
+         * {@code android.telephony.ims.ProvisioningManager} but non-rcs capability is managed by
+         * {@link CarrierConfigManager} since non-rcs capability will be provided via ACS or carrier
+         * config.
+         * <p>
+         * The default value is 2592000 secs (30 days), see RCC.07 Annex A.1.9.
+         */
+        public static final String KEY_NON_RCS_CAPABILITIES_CACHE_EXPIRATION_SEC_INT =
+                KEY_PREFIX + "non_rcs_capabilities_cache_expiration_sec_int";
+
+        /**
+         * Specifies the RCS feature tag allowed for the carrier.
+         *
+         * <p>The values refer to RCC.07 2.4.4.
+         */
+        public static final String KEY_RCS_FEATURE_TAG_ALLOWED_STRING_ARRAY =
+                KEY_PREFIX + "rcs_feature_tag_allowed_string_array";
+
+        /**
+         * Flag indicating whether or not carrier forbids device send the RCS request when the
+         * device receive the network response with the SIP code 489 BAD EVENT.
+         * <p>
+         * The default value for this key is {@code false}.
+         * @hide
+         */
+        public static final String KEY_RCS_REQUEST_FORBIDDEN_BY_SIP_489_BOOL =
+                KEY_PREFIX + "rcs_request_forbidden_by_sip_489_bool";
+
+        /**
+         * Indicates the interval that SUBSCRIBE requests from applications will be retried at when
+         * the carrier network has responded to a previous request with a forbidden error.
+         * <p>
+         * The default value for this key is 20 minutes.
+         * @hide
+         */
+        public static final String KEY_RCS_REQUEST_RETRY_INTERVAL_MILLIS_LONG =
+                KEY_PREFIX + "rcs_request_retry_interval_millis_long";
+
         private Ims() {}
 
         private static PersistableBundle getDefaults() {
             PersistableBundle defaults = new PersistableBundle();
             defaults.putInt(KEY_WIFI_OFF_DEFERRING_TIME_MILLIS_INT, 4000);
             defaults.putBoolean(KEY_IMS_SINGLE_REGISTRATION_REQUIRED_BOOL, false);
+            defaults.putBoolean(KEY_ENABLE_PRESENCE_PUBLISH_BOOL, false);
+            defaults.putStringArray(KEY_PUBLISH_SERVICE_DESC_FEATURE_TAG_MAP_OVERRIDE_STRING_ARRAY,
+                    new String[] {});
+            defaults.putBoolean(KEY_ENABLE_PRESENCE_CAPABILITY_EXCHANGE_BOOL, false);
+            defaults.putBoolean(KEY_RCS_BULK_CAPABILITY_EXCHANGE_BOOL, false);
+            defaults.putBoolean(KEY_ENABLE_PRESENCE_GROUP_SUBSCRIBE_BOOL, true);
+            defaults.putInt(KEY_NON_RCS_CAPABILITIES_CACHE_EXPIRATION_SEC_INT, 30 * 24 * 60 * 60);
+            defaults.putBoolean(KEY_RCS_REQUEST_FORBIDDEN_BY_SIP_489_BOOL, false);
+            defaults.putLong(KEY_RCS_REQUEST_RETRY_INTERVAL_MILLIS_LONG, 20 * 60 * 1000);
+            defaults.putStringArray(KEY_RCS_FEATURE_TAG_ALLOWED_STRING_ARRAY, new String[]{
+                    "+g.3gpp.icsi-ref=\"urn%3Aurn-7%3A3gpp-service.ims.icsi.oma.cpm.msg\"",
+                    "+g.3gpp.icsi-ref=\"urn%3Aurn-7%3A3gpp-service.ims.icsi.oma.cpm.largemsg\"",
+                    "+g.3gpp.icsi-ref=\"urn%3Aurn-7%3A3gpp-service.ims.icsi.oma.cpm.deferred\"",
+                    "+g.gsma.rcs.cpm.pager-large",
+                    "+g.3gpp.icsi-ref=\"urn%3Aurn-7%3A3gpp-service.ims.icsi.oma.cpm.session\"",
+                    "+g.3gpp.icsi-ref=\"urn%3Aurn-7%3A3gpp-service.ims.icsi.oma.cpm.session\"",
+                    "+g.3gpp.iari-ref=\"urn%3Aurn-7%3A3gpp-application.ims.iari.rcs.fthttp\"",
+                    "+g.3gpp.iari-ref=\"urn%3Aurn-7%3A3gpp-application.ims.iari.rcs.ftsms\"",
+                    "+g.3gpp.iari-ref=\"urn%3Aurn-7%3A3gpp-service.ims.icsi.gsma.callcomposer\"",
+                    "+g.gsma.callcomposer",
+                    "+g.3gpp.icsi-ref=\"urn%3Aurn-7%3A3gpp-service.ims.icsi.gsma.callunanswered\"",
+                    "+g.3gpp.icsi-ref=\"urn%3Aurn-7%3A3gpp-service.ims.icsi.gsma.sharedmap\"",
+                    "+g.3gpp.icsi-ref=\"urn%3Aurn-7%3A3gpp-service.ims.icsi.gsma.sharedsketch\"",
+                    "+g.3gpp.iari-ref=\"urn%3Aurn-7%3A3gpp-application.ims.iari.rcs.geopush\"",
+                    "+g.3gpp.iari-ref=\"urn%3Aurn-7%3A3gpp-application.ims.iari.rcs.geosms\"",
+                    "+g.3gpp.iari-ref=\"urn%3Aurn-7%3A3gpp-application.ims.iari.rcs.chatbot\"",
+                    "+g.3gpp.iari-ref=\"urn%3Aurn-7%3A3gpp-application.ims.iari.rcs.chatbot.sa\"",
+                    "+g.gsma.rcs.botversion=\"#=1,#=2\"",
+                    "+g.gsma.rcs.cpimext"});
+
             return defaults;
         }
     }
@@ -3842,8 +4203,9 @@ public class CarrierConfigManager {
             "mmi_two_digit_number_pattern_string_array";
 
     /**
-     * Holds the list of carrier certificate hashes.
-     * Note that each carrier has its own certificates.
+     * Holds the list of carrier certificate hashes, followed by optional package names.
+     * Format: "sha1/256" or "sha1/256:package1,package2,package3..."
+     * Note that each carrier has its own hashes.
      */
     public static final String KEY_CARRIER_CERTIFICATE_STRING_ARRAY =
             "carrier_certificate_string_array";
@@ -3938,6 +4300,17 @@ public class CarrierConfigManager {
             "default_preferred_apn_name_string";
 
     /**
+     * Indicates if the carrier supports call composer.
+     */
+    public static final String KEY_SUPPORTS_CALL_COMPOSER_BOOL = "supports_call_composer_bool";
+
+    /**
+     * Indicates the carrier server url that serves the call composer picture.
+     */
+    public static final String KEY_CALL_COMPOSER_PICTURE_SERVER_URL_STRING =
+            "call_composer_picture_server_url_string";
+
+    /**
      * For Android 11, provide a temporary solution for OEMs to use the lower of the two MTU values
      * for IPv4 and IPv6 if both are sent.
      * TODO: remove in later release
@@ -3946,6 +4319,87 @@ public class CarrierConfigManager {
      */
     public static final String KEY_USE_LOWER_MTU_VALUE_IF_BOTH_RECEIVED =
             "use_lower_mtu_value_if_both_received";
+
+    /**
+     * Determines the default RTT mode.
+     *
+     * Upon first boot, when the user has not yet set a value for their preferred RTT mode,
+     * the value of this config will be sent to the IMS stack. Valid values are the same as for
+     * {@link Settings.Secure#RTT_CALLING_MODE}.
+     *
+     * @hide
+     */
+    public static final String KEY_DEFAULT_RTT_MODE_INT =
+            "default_rtt_mode_int";
+
+    /**
+     * Indicates whether RTT is supported while roaming.
+     */
+    public static final String KEY_RTT_SUPPORTED_WHILE_ROAMING_BOOL =
+            "rtt_supported_while_roaming_bool";
+
+    /**
+     * Indicates if auto-configuration server is used for the RCS config
+     * Reference: GSMA RCC.14
+     */
+    public static final String KEY_USE_ACS_FOR_RCS_BOOL = "use_acs_for_rcs_bool";
+
+    /**
+     * Indicates temporarily unmetered mobile data is supported by the carrier.
+     * @hide
+     */
+    public static final String KEY_NETWORK_TEMP_NOT_METERED_SUPPORTED_BOOL =
+            "network_temp_not_metered_supported_bool";
+
+    /**
+     * Indicates the allowed APN types that can be used for LTE initial attach. The order of APN
+     * types in the configuration is the order of APN types that will be used for initial attach.
+     * Empty list indicates that no APN types are allowed for initial attach.
+     *
+     * @hide
+     */
+    public static final String KEY_ALLOWED_INITIAL_ATTACH_APN_TYPES_STRING_ARRAY =
+            "allowed_initial_attach_apn_types_string_array";
+
+    /**
+     * Boolean indicating whether the SIM PIN can be stored and verified
+     * seamlessly after an unattended reboot.
+     *
+     * The device configuration value {@code config_allow_pin_storage_for_unattended_reboot}
+     * ultimately controls whether this carrier configuration option is used.  Where
+     * {@code config_allow_pin_storage_for_unattended_reboot} is false, the value of the
+     * {@link #KEY_STORE_SIM_PIN_FOR_UNATTENDED_REBOOT_BOOL} carrier configuration option is
+     * ignored.
+     *
+     * @hide
+     */
+    public static final String KEY_STORE_SIM_PIN_FOR_UNATTENDED_REBOOT_BOOL =
+            "store_sim_pin_for_unattended_reboot_bool";
+
+     /**
+     * Determine whether "Enable 2G" toggle can be shown.
+     *
+     * Used to trade privacy/security against potentially reduced carrier coverage for some
+     * carriers.
+     */
+    public static final String KEY_HIDE_ENABLE_2G = "hide_enable_2g_bool";
+
+    /**
+     * Determine whether or not to display no data notification when data setup is permanently
+     * failed.
+     *
+     * @hide
+     */
+    public static final String KEY_DISPLAY_NO_DATA_NOTIFICATION_ON_PERMANENT_FAILURE_BOOL =
+            "display_no_data_notification_on_permanent_failure_bool";
+
+    /**
+     * Determine whether unthrottle data retry when tracking area code (TAC/LAC) from cell changes
+     *
+     * @hide
+     */
+    public static final String KEY_UNTHROTTLE_DATA_RETRY_WHEN_TAC_CHANGES_BOOL =
+            "unthrottle_data_retry_when_tac_changes_bool";
 
     /** The default value for every variable. */
     private final static PersistableBundle sDefaults;
@@ -3968,6 +4422,7 @@ public class CarrierConfigManager {
         sDefaults.putBoolean(KEY_CARRIER_SETTINGS_ENABLE_BOOL, false);
         sDefaults.putBoolean(KEY_CARRIER_VOLTE_AVAILABLE_BOOL, false);
         sDefaults.putBoolean(KEY_CARRIER_VT_AVAILABLE_BOOL, false);
+        sDefaults.putInt(KEY_CARRIER_USSD_METHOD_INT, USSD_OVER_CS_PREFERRED);
         sDefaults.putBoolean(KEY_VOLTE_5G_LIMITED_ALERT_DIALOG_BOOL, false);
         sDefaults.putBoolean(KEY_NOTIFY_HANDOVER_VIDEO_FROM_WIFI_TO_LTE_BOOL, false);
         sDefaults.putBoolean(KEY_ALLOW_MERGING_RTT_CALLS_BOOL, false);
@@ -4297,6 +4752,8 @@ public class CarrierConfigManager {
         sDefaults.putBoolean(KEY_DISABLE_VOICE_BARRING_NOTIFICATION_BOOL, false);
         sDefaults.putInt(IMSI_KEY_AVAILABILITY_INT, 0);
         sDefaults.putString(IMSI_KEY_DOWNLOAD_URL_STRING, null);
+        sDefaults.putString(IMSI_CARRIER_PUBLIC_KEY_EPDG_STRING, null);
+        sDefaults.putString(IMSI_CARRIER_PUBLIC_KEY_WLAN_STRING, null);
         sDefaults.putBoolean(KEY_CONVERT_CDMA_CALLER_ID_MMI_CODES_WHILE_ROAMING_ON_3GPP_BOOL,
                 false);
         sDefaults.putStringArray(KEY_NON_ROAMING_OPERATOR_STRING_ARRAY, null);
@@ -4305,6 +4762,9 @@ public class CarrierConfigManager {
         sDefaults.putBoolean(KEY_RTT_SUPPORTED_BOOL, false);
         sDefaults.putBoolean(KEY_TTY_SUPPORTED_BOOL, true);
         sDefaults.putBoolean(KEY_HIDE_TTY_HCO_VCO_WITH_RTT_BOOL, false);
+        sDefaults.putBoolean(KEY_RTT_SUPPORTED_WHILE_ROAMING_BOOL, false);
+        sDefaults.putBoolean(KEY_RTT_UPGRADE_SUPPORTED_FOR_DOWNGRADED_VT_CALL_BOOL, true);
+        sDefaults.putBoolean(KEY_VT_UPGRADE_SUPPORTED_FOR_DOWNGRADED_RTT_CALL_BOOL, true);
         sDefaults.putBoolean(KEY_DISABLE_CHARGE_INDICATION_BOOL, false);
         sDefaults.putBoolean(KEY_SUPPORT_NO_REPLY_TIMER_FOR_CFNRY_BOOL, true);
         sDefaults.putStringArray(KEY_FEATURE_ACCESS_CODES_STRING_ARRAY, null);
@@ -4317,7 +4777,9 @@ public class CarrierConfigManager {
         sDefaults.putString(KEY_OPERATOR_NAME_FILTER_PATTERN_STRING, "");
         sDefaults.putString(KEY_SHOW_CARRIER_DATA_ICON_PATTERN_STRING, "");
         sDefaults.putBoolean(KEY_HIDE_LTE_PLUS_DATA_ICON_BOOL, true);
-        sDefaults.putBoolean(KEY_NR_ENABLED_BOOL, true);
+        sDefaults.putInt(KEY_LTE_PLUS_THRESHOLD_BANDWIDTH_KHZ_INT, 20000);
+        sDefaults.putIntArray(KEY_CARRIER_NR_AVAILABILITIES_INT_ARRAY,
+                new int[]{CARRIER_NR_AVAILABILITY_NSA, CARRIER_NR_AVAILABILITY_SA});
         sDefaults.putBoolean(KEY_LTE_ENABLED_BOOL, true);
         sDefaults.putBoolean(KEY_SUPPORT_TDSCDMA_BOOL, false);
         sDefaults.putStringArray(KEY_SUPPORT_TDSCDMA_ROAMING_NETWORKS_STRING_ARRAY, null);
@@ -4399,6 +4861,7 @@ public class CarrierConfigManager {
         sDefaults.putBoolean(KEY_SUPPORT_EMERGENCY_DIALER_SHORTCUT_BOOL, true);
         sDefaults.putBoolean(KEY_USE_CALL_FORWARDING_USSD_BOOL, false);
         sDefaults.putBoolean(KEY_USE_CALLER_ID_USSD_BOOL, false);
+        sDefaults.putBoolean(KEY_USE_CALL_WAITING_USSD_BOOL, false);
         sDefaults.putInt(KEY_CALL_WAITING_SERVICE_CLASS_INT, 1 /* SERVICE_CLASS_VOICE */);
         sDefaults.putString(KEY_5G_ICON_CONFIGURATION_STRING,
                 "connected_mmwave:5G,connected:5G,not_restricted_rrc_idle:5G,"
@@ -4476,18 +4939,36 @@ public class CarrierConfigManager {
         // Default wifi configurations.
         sDefaults.putAll(Wifi.getDefaults());
         sDefaults.putBoolean(ENABLE_EAP_METHOD_PREFIX_BOOL, false);
+        sDefaults.putInt(KEY_GBA_MODE_INT, GBA_ME);
+        sDefaults.putInt(KEY_GBA_UA_SECURITY_ORGANIZATION_INT,
+                UaSecurityProtocolIdentifier.ORG_3GPP);
+        sDefaults.putInt(KEY_GBA_UA_SECURITY_PROTOCOL_INT,
+                UaSecurityProtocolIdentifier.UA_SECURITY_PROTOCOL_3GPP_TLS_DEFAULT);
+        sDefaults.putInt(KEY_GBA_UA_TLS_CIPHER_SUITE_INT, TlsParams.TLS_NULL_WITH_NULL_NULL);
+
         sDefaults.putBoolean(KEY_SHOW_FORWARDED_NUMBER_BOOL, false);
         sDefaults.putLong(KEY_DATA_SWITCH_VALIDATION_MIN_GAP_LONG, TimeUnit.DAYS.toMillis(1));
         sDefaults.putStringArray(KEY_MISSED_INCOMING_CALL_SMS_ORIGINATOR_STRING_ARRAY,
                 new String[0]);
         sDefaults.putStringArray(KEY_APN_PRIORITY_STRING_ARRAY, new String[] {
-                "default:0", "mms:2", "supl:2", "dun:2", "hipri:3", "fota:2",
+                "default:0", "enterprise:1", "mms:2", "supl:2", "dun:2", "hipri:3", "fota:2",
                 "ims:2", "cbs:2", "ia:2", "emergency:2", "mcx:3", "xcap:3"
         });
         sDefaults.putStringArray(KEY_MISSED_INCOMING_CALL_SMS_PATTERN_STRING_ARRAY, new String[0]);
         sDefaults.putBoolean(KEY_DISABLE_DUN_APN_WHILE_ROAMING_WITH_PRESET_APN_BOOL, false);
         sDefaults.putString(KEY_DEFAULT_PREFERRED_APN_NAME_STRING, "");
+        sDefaults.putBoolean(KEY_SUPPORTS_CALL_COMPOSER_BOOL, false);
+        sDefaults.putString(KEY_CALL_COMPOSER_PICTURE_SERVER_URL_STRING, "");
         sDefaults.putBoolean(KEY_USE_LOWER_MTU_VALUE_IF_BOTH_RECEIVED, false);
+        sDefaults.putBoolean(KEY_USE_ACS_FOR_RCS_BOOL, false);
+        sDefaults.putBoolean(KEY_NETWORK_TEMP_NOT_METERED_SUPPORTED_BOOL, false);
+        sDefaults.putInt(KEY_DEFAULT_RTT_MODE_INT, 0);
+        sDefaults.putStringArray(KEY_ALLOWED_INITIAL_ATTACH_APN_TYPES_STRING_ARRAY,
+                new String[]{"ia", "default", "mms", "dun"});
+        sDefaults.putBoolean(KEY_STORE_SIM_PIN_FOR_UNATTENDED_REBOOT_BOOL, true);
+        sDefaults.putBoolean(KEY_HIDE_ENABLE_2G, false);
+        sDefaults.putBoolean(KEY_DISPLAY_NO_DATA_NOTIFICATION_ON_PERMANENT_FAILURE_BOOL, false);
+        sDefaults.putBoolean(KEY_UNTHROTTLE_DATA_RETRY_WHEN_TAC_CHANGES_BOOL, false);
     }
 
     /**
@@ -4742,7 +5223,7 @@ public class CarrierConfigManager {
      */
     @NonNull
     @SystemApi
-    @SuppressLint("Doclava125")
+    @SuppressLint("RequiresPermission")
     public static PersistableBundle getDefaultConfig() {
         return new PersistableBundle(sDefaults);
     }

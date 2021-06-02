@@ -1,3 +1,12 @@
+package {
+    // See: http://go/android-license-faq
+    // A large-scale-change added 'default_applicable_licenses' to import
+    // all of the 'license_kinds' from "frameworks_base_license"
+    // to get the below license kinds:
+    //   SPDX-license-identifier-Apache-2.0
+    default_applicable_licenses: ["frameworks_base_license"],
+}
+
 filegroup {
     name: "services.net-sources",
     srcs: ["java/**/*.java"],
@@ -13,7 +22,7 @@ java_library_static {
         ":services.net-sources",
     ],
     static_libs: [
-        "netd_aidl_interfaces-platform-java",
+        "netd-client",
         "netlink-client",
         "networkstack-client",
         "net-utils-services-common",
@@ -22,13 +31,14 @@ java_library_static {
 
 // Version of services.net for usage by the wifi mainline module.
 // Note: This is compiled against module_current.
-// TODO(b/145825329): This should be moved to networkstack-client,
+// TODO(b/172457099): This should be moved to networkstack-client,
 // with dependencies moved to frameworks/libs/net right.
 java_library {
     name: "services.net-module-wifi",
     srcs: [
         ":framework-services-net-module-wifi-shared-srcs",
         ":net-module-utils-srcs",
+        ":net-utils-services-common-srcs",
         "java/android/net/ip/IpClientCallbacks.java",
         "java/android/net/ip/IpClientManager.java",
         "java/android/net/ip/IpClientUtil.java",
@@ -36,12 +46,13 @@ java_library {
         "java/android/net/util/NetworkConstants.java",
         "java/android/net/IpMemoryStore.java",
         "java/android/net/NetworkMonitorManager.java",
-        "java/android/net/TcpKeepalivePacketData.java",
     ],
     sdk_version: "module_current",
+    min_sdk_version: "30",
     libs: [
         "unsupportedappusage",
         "framework-wifi-util-lib",
+        "framework-connectivity"
     ],
     static_libs: [
         // All the classes in netd_aidl_interface must be jarjar so they do not conflict with the
@@ -49,7 +60,6 @@ java_library {
         "netd_aidl_interface-V3-java",
         "netlink-client",
         "networkstack-client",
-        "net-utils-services-common",
     ],
     apex_available: [
         "com.android.wifi",
@@ -57,6 +67,8 @@ java_library {
     visibility: [
         "//frameworks/opt/net/wifi/service",
         "//frameworks/opt/net/wifi/tests/wifitests",
+        "//packages/modules/Wifi/service",
+        "//packages/modules/Wifi/service/tests/wifitests",
     ],
 }
 

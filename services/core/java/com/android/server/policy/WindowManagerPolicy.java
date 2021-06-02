@@ -141,6 +141,10 @@ public interface WindowManagerPolicy extends WindowManagerPolicyConstants {
     @IntDef({NAV_BAR_LEFT, NAV_BAR_RIGHT, NAV_BAR_BOTTOM})
     @interface NavigationBarPosition {}
 
+    @Retention(SOURCE)
+    @IntDef({ALT_BAR_UNKNOWN, ALT_BAR_LEFT, ALT_BAR_RIGHT, ALT_BAR_BOTTOM, ALT_BAR_TOP})
+    @interface AltBarPosition {}
+
     /**
      * Pass this event to the user / app.  To be returned from
      * {@link #interceptKeyBeforeQueueing}.
@@ -929,9 +933,9 @@ public interface WindowManagerPolicy extends WindowManagerPolicyConstants {
      * @return The starting surface.
      *
      */
-    public StartingSurface addSplashScreen(IBinder appToken, String packageName, int theme,
-            CompatibilityInfo compatInfo, CharSequence nonLocalizedLabel, int labelRes, int icon,
-            int logo, int windowFlags, Configuration overrideConfig, int displayId);
+    public StartingSurface addSplashScreen(IBinder appToken, int userId, String packageName,
+            int theme, CompatibilityInfo compatInfo, CharSequence nonLocalizedLabel, int labelRes,
+            int icon, int logo, int windowFlags, Configuration overrideConfig, int displayId);
 
     /**
      * Set or clear a window which can behave as the keyguard.

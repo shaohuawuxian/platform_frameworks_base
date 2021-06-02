@@ -20,6 +20,8 @@ import static android.app.WindowConfiguration.WINDOWING_MODE_FREEFORM;
 import static android.app.WindowConfiguration.WINDOWING_MODE_MULTI_WINDOW;
 import static android.app.WindowConfiguration.WINDOWING_MODE_PINNED;
 import static android.app.WindowConfiguration.WINDOWING_MODE_SPLIT_SCREEN_PRIMARY;
+import static android.view.InsetsState.ITYPE_CLIMATE_BAR;
+import static android.view.InsetsState.ITYPE_EXTRA_NAVIGATION_BAR;
 import static android.view.InsetsState.ITYPE_IME;
 import static android.view.InsetsState.ITYPE_NAVIGATION_BAR;
 import static android.view.InsetsState.ITYPE_STATUS_BAR;
@@ -27,6 +29,9 @@ import static android.view.ViewRootImpl.NEW_INSETS_MODE_FULL;
 import static android.view.WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM;
 import static android.view.WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE;
 import static android.view.WindowManager.LayoutParams.TYPE_APPLICATION;
+
+import static com.android.dx.mockito.inline.extended.ExtendedMockito.doReturn;
+import static com.android.dx.mockito.inline.extended.ExtendedMockito.spyOn;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -292,12 +297,17 @@ public class InsetsStateControllerTest extends WindowTestsBase {
     public void testBarControllingWinChanged() {
         final WindowState navBar = createWindow(null, TYPE_APPLICATION, "navBar");
         final WindowState statusBar = createWindow(null, TYPE_APPLICATION, "statusBar");
+        final WindowState climateBar = createWindow(null, TYPE_APPLICATION, "climateBar");
+        final WindowState extraNavBar = createWindow(null, TYPE_APPLICATION, "extraNavBar");
         final WindowState app = createWindow(null, TYPE_APPLICATION, "app");
         getController().getSourceProvider(ITYPE_STATUS_BAR).setWindow(statusBar, null, null);
         getController().getSourceProvider(ITYPE_NAVIGATION_BAR).setWindow(navBar, null, null);
+        getController().getSourceProvider(ITYPE_CLIMATE_BAR).setWindow(climateBar, null, null);
+        getController().getSourceProvider(ITYPE_EXTRA_NAVIGATION_BAR).setWindow(extraNavBar, null,
+                null);
         getController().onBarControlTargetChanged(app, null, app, null);
         InsetsSourceControl[] controls = getController().getControlsForDispatch(app);
-        assertEquals(2, controls.length);
+        assertEquals(4, controls.length);
     }
 
     @Test
@@ -320,6 +330,26 @@ public class InsetsStateControllerTest extends WindowTestsBase {
         assertNotNull(getController().getControlsForDispatch(app));
         statusBar.cancelAnimation();
         assertNull(getController().getControlsForDispatch(app));
+    }
+
+    @Test
+    public void testTransientVisibilityOfFixedRotationState() {
+        final WindowState statusBar = createWindow(null, TYPE_APPLICATION, "statusBar");
+        final WindowState app = createWindow(null, TYPE_APPLICATION, "app");
+        final InsetsSourceProvider provider = getController().getSourceProvider(ITYPE_STATUS_BAR);
+        provider.setWindow(statusBar, null, null);
+
+        final InsetsState rotatedState = new InsetsState(app.getInsetsState(),
+                true /* copySources */);
+        spyOn(app.mToken);
+        doReturn(rotatedState).when(app.mToken).getFixedRotationTransformInsetsState();
+        assertTrue(rotatedState.getSource(ITYPE_STATUS_BAR).isVisible());
+
+        provider.getSource().setVisible(false);
+        mDisplayContent.getInsetsPolicy().showTransient(new int[] { ITYPE_STATUS_BAR });
+
+        assertTrue(mDisplayContent.getInsetsPolicy().isTransient(ITYPE_STATUS_BAR));
+        assertFalse(app.getInsetsState().getSource(ITYPE_STATUS_BAR).isVisible());
     }
 
     private InsetsStateController getController() {

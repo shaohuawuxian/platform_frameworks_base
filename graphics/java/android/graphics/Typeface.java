@@ -327,7 +327,7 @@ public class Typeface {
      * 1) Create Typeface from ttf file.
      * <pre>
      * <code>
-     * Typeface.Builder buidler = new Typeface.Builder("your_font_file.ttf");
+     * Typeface.Builder builder = new Typeface.Builder("your_font_file.ttf");
      * Typeface typeface = builder.build();
      * </code>
      * </pre>
@@ -335,7 +335,7 @@ public class Typeface {
      * 2) Create Typeface from ttc file in assets directory.
      * <pre>
      * <code>
-     * Typeface.Builder buidler = new Typeface.Builder(getAssets(), "your_font_file.ttc");
+     * Typeface.Builder builder = new Typeface.Builder(getAssets(), "your_font_file.ttc");
      * builder.setTtcIndex(2);  // Set index of font collection.
      * Typeface typeface = builder.build();
      * </code>
@@ -344,7 +344,7 @@ public class Typeface {
      * 3) Create Typeface with variation settings.
      * <pre>
      * <code>
-     * Typeface.Builder buidler = new Typeface.Builder("your_font_file.ttf");
+     * Typeface.Builder builder = new Typeface.Builder("your_font_file.ttf");
      * builder.setFontVariationSettings("'wght' 700, 'slnt' 20, 'ital' 1");
      * builder.setWeight(700);  // Tell the system that this is a bold font.
      * builder.setItalic(true);  // Tell the system that this is an italic style font.
@@ -1196,13 +1196,11 @@ public class Typeface {
 
     /** @hide */
     public boolean isSupportedAxes(int axis) {
-        if (mSupportedAxes == null) {
-            synchronized (this) {
+        synchronized (this) {
+            if (mSupportedAxes == null) {
+                mSupportedAxes = nativeGetSupportedAxes(native_instance);
                 if (mSupportedAxes == null) {
-                    mSupportedAxes = nativeGetSupportedAxes(native_instance);
-                    if (mSupportedAxes == null) {
-                        mSupportedAxes = EMPTY_AXES;
-                    }
+                    mSupportedAxes = EMPTY_AXES;
                 }
             }
         }
@@ -1217,7 +1215,7 @@ public class Typeface {
             long native_instance, List<FontVariationAxis> axes);
     @UnsupportedAppUsage
     private static native long nativeCreateWeightAlias(long native_instance, int weight);
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     private static native long nativeCreateFromArray(long[] familyArray, int weight, int italic);
     private static native int[] nativeGetSupportedAxes(long native_instance);
 

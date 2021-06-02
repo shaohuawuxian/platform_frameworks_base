@@ -109,6 +109,20 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 public abstract class Connection extends Conferenceable {
 
+    /**@hide*/
+    @Retention(RetentionPolicy.SOURCE)
+    @IntDef(prefix = "STATE_", value = {
+            STATE_INITIALIZING,
+            STATE_NEW,
+            STATE_RINGING,
+            STATE_DIALING,
+            STATE_ACTIVE,
+            STATE_HOLDING,
+            STATE_DISCONNECTED,
+            STATE_PULLING_CALL
+    })
+    public @interface ConnectionState {}
+
     /**
      * The connection is initializing. This is generally the first state for a {@code Connection}
      * returned by a {@link ConnectionService}.
@@ -767,6 +781,19 @@ public abstract class Connection extends Conferenceable {
             "android.telecom.extra.AUDIO_CODEC";
 
     /**
+     * Float connection extra key used to store the audio codec bitrate in kbps for the current
+     * {@link Connection}.
+     */
+    public static final String EXTRA_AUDIO_CODEC_BITRATE_KBPS =
+            "android.telecom.extra.AUDIO_CODEC_BITRATE_KBPS";
+
+    /**
+     * Float connection extra key used to store the audio codec bandwidth in khz for the current
+     * {@link Connection}.
+     */
+    public static final String EXTRA_AUDIO_CODEC_BANDWIDTH_KHZ =
+            "android.telecom.extra.AUDIO_CODEC_BANDWIDTH_KHZ";
+    /**
      * Connection event used to inform Telecom that it should play the on hold tone.  This is used
      * to play a tone when the peer puts the current call on hold.  Sent to Telecom via
      * {@link #sendConnectionEvent(String, Bundle)}.
@@ -898,6 +925,46 @@ public abstract class Connection extends Conferenceable {
      */
     public static final String EVENT_RTT_AUDIO_INDICATION_CHANGED =
             "android.telecom.event.RTT_AUDIO_INDICATION_CHANGED";
+
+    /**
+     * Connection event used to signal between the telephony {@link ConnectionService} and Telecom
+     * when device to device messages are sent/received.
+     * <p>
+     * Device to device messages originating from the network are sent by telephony using
+     * {@link Connection#sendConnectionEvent(String, Bundle)} and are routed up to any active
+     * {@link CallDiagnosticService} implementation which is active.
+     * <p>
+     * Likewise, if a {@link CallDiagnosticService} sends a message using
+     * {@link DiagnosticCall#sendDeviceToDeviceMessage(int, int)}, it will be routed to telephony
+     * via {@link Connection#onCallEvent(String, Bundle)}.  The telephony stack will relay the
+     * message to the other device.
+     * @hide
+     */
+    @SystemApi
+    public static final String EVENT_DEVICE_TO_DEVICE_MESSAGE =
+            "android.telecom.event.DEVICE_TO_DEVICE_MESSAGE";
+
+    /**
+     * Sent along with {@link #EVENT_DEVICE_TO_DEVICE_MESSAGE} to indicate the device to device
+     * message type.
+     *
+     * See {@link DiagnosticCall} for more information.
+     * @hide
+     */
+    @SystemApi
+    public static final String EXTRA_DEVICE_TO_DEVICE_MESSAGE_TYPE =
+            "android.telecom.extra.DEVICE_TO_DEVICE_MESSAGE_TYPE";
+
+    /**
+     * Sent along with {@link #EVENT_DEVICE_TO_DEVICE_MESSAGE} to indicate the device to device
+     * message value.
+     * <p>
+     * See {@link DiagnosticCall} for more information.
+     * @hide
+     */
+    @SystemApi
+    public static final String EXTRA_DEVICE_TO_DEVICE_MESSAGE_VALUE =
+            "android.telecom.extra.DEVICE_TO_DEVICE_MESSAGE_VALUE";
 
     // Flag controlling whether PII is emitted into the logs
     private static final boolean PII_DEBUG = Log.isLoggable(android.util.Log.DEBUG);
@@ -1084,6 +1151,10 @@ public abstract class Connection extends Conferenceable {
 
         if ((properties & PROPERTY_IS_ADHOC_CONFERENCE) == PROPERTY_IS_ADHOC_CONFERENCE) {
             builder.append(isLong ? " PROPERTY_IS_ADHOC_CONFERENCE" : " adhoc_conf");
+        }
+
+        if ((properties & PROPERTY_IS_DOWNGRADED_CONFERENCE) == PROPERTY_IS_DOWNGRADED_CONFERENCE) {
+            builder.append(isLong ? " PROPERTY_IS_DOWNGRADED_CONFERENCE" : " dngrd_conf");
         }
 
         builder.append("]");
@@ -2976,6 +3047,26 @@ public abstract class Connection extends Conferenceable {
      * @param state The new connection audio state.
      */
     public void onCallAudioStateChanged(CallAudioState state) {}
+
+    /**
+     * Inform this Connection when it will or will not be tracked by an {@link InCallService} which
+     * can provide an InCall UI.
+     * This is primarily intended for use by Connections reported by self-managed
+     * {@link ConnectionService} which typically maintain their own UI.
+     *
+     * @param isUsingAlternativeUi Indicates whether an InCallService that can provide InCall UI is
+     *                             currently tracking the self-managed call.
+     */
+    public void onUsingAlternativeUi(boolean isUsingAlternativeUi) {}
+
+    /**
+     * Inform this Conenection when it will or will not be tracked by an non-UI
+     * {@link InCallService}.
+     *
+     * @param isTracked Indicates whether an non-UI InCallService is currently tracking the
+     *                 self-managed call.
+     */
+    public void onTrackedByNonUiService(boolean isTracked) {}
 
     /**
      * Notifies this Connection of an internal state change. This method is called after the

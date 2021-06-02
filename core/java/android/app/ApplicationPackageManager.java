@@ -451,6 +451,19 @@ public class ApplicationPackageManager extends PackageManager {
     }
 
     @Override
+    public int getTargetSdkVersion(@NonNull String packageName) throws NameNotFoundException {
+        try {
+            int version = mPM.getTargetSdkVersion(packageName);
+            if (version != -1) {
+                return version;
+            }
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+        throw new PackageManager.NameNotFoundException(packageName);
+    }
+
+    @Override
     public ActivityInfo getActivityInfo(ComponentName className, int flags)
             throws NameNotFoundException {
         final int userId = getUserId();
@@ -1158,7 +1171,7 @@ public class ApplicationPackageManager extends PackageManager {
         }
     }
 
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     @Override
     public boolean setInstantAppCookie(@NonNull byte[] cookie) {
         try {
@@ -2276,7 +2289,7 @@ public class ApplicationPackageManager extends PackageManager {
     }
 
     @Override
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public @Nullable VolumeInfo getPackageCurrentVolume(ApplicationInfo app) {
         final StorageManager storage = mContext.getSystemService(StorageManager.class);
         return getPackageCurrentVolume(app, storage);

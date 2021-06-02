@@ -97,6 +97,8 @@ class BluetoothManagerService extends IBluetoothManager.Stub {
 
     private static final String BLUETOOTH_ADMIN_PERM = android.Manifest.permission.BLUETOOTH_ADMIN;
     private static final String BLUETOOTH_PERM = android.Manifest.permission.BLUETOOTH;
+    private static final String BLUETOOTH_PRIVILEGED =
+            android.Manifest.permission.BLUETOOTH_PRIVILEGED;
 
     private static final String SECURE_SETTINGS_BLUETOOTH_ADDR_VALID = "bluetooth_addr_valid";
     private static final String SECURE_SETTINGS_BLUETOOTH_ADDRESS = "bluetooth_address";
@@ -296,6 +298,9 @@ class BluetoothManagerService extends IBluetoothManager.Stub {
     }
 
     public boolean onFactoryReset() {
+        mContext.enforceCallingOrSelfPermission(BLUETOOTH_PRIVILEGED,
+                "Need BLUETOOTH_PRIVILEGED permission");
+
         // Wait for stable state if bluetooth is temporary state.
         int state = getState();
         if (state == BluetoothAdapter.STATE_BLE_TURNING_ON
@@ -448,6 +453,7 @@ class BluetoothManagerService extends IBluetoothManager.Stub {
                 if (mHandler.hasMessages(MESSAGE_INIT_FLAGS_CHANGED)
                         && state == BluetoothProfile.STATE_DISCONNECTED
                         && !mBluetoothModeChangeHelper.isA2dpOrHearingAidConnected()) {
+                    Slog.i(TAG, "Device disconnected, reactivating pending flag changes");
                     onInitFlagsChanged();
                 }
             }
@@ -803,6 +809,35 @@ class BluetoothManagerService extends IBluetoothManager.Stub {
         }
 
         return enabledProfiles;
+    }
+
+    private boolean isDeviceProvisioned() {
+        return Settings.Global.getInt(mContentResolver, Settings.Global.DEVICE_PROVISIONED,
+                0) != 0;
+    }
+
+    // Monitor change of BLE scan only mode settings.
+    private void registerForProvisioningStateChange() {
+        ContentObserver contentObserver = new ContentObserver(null) {
+            @Override
+            public void onChange(boolean selfChange) {
+                if (!isDeviceProvisioned()) {
+                    if (DBG) {
+                        Slog.d(TAG, "DEVICE_PROVISIONED setting changed, but device is not "
+                                + "provisioned");
+                    }
+                    return;
+                }
+                if (mHandler.hasMessages(MESSAGE_INIT_FLAGS_CHANGED)) {
+                    Slog.i(TAG, "Device provisioned, reactivating pending flag changes");
+                    onInitFlagsChanged();
+                }
+            }
+        };
+
+        mContentResolver.registerContentObserver(
+                Settings.Global.getUriFor(Settings.Global.DEVICE_PROVISIONED), false,
+                contentObserver);
     }
 
     // Monitor change of BLE scan only mode settings.
@@ -1260,7 +1295,7 @@ class BluetoothManagerService extends IBluetoothManager.Stub {
     @Override
     public boolean bindBluetoothProfileService(int bluetoothProfile,
             IBluetoothProfileServiceConnection proxy) {
-        if (!mEnable) {
+        if (mState != BluetoothAdapter.STATE_ON) {
             if (DBG) {
                 Slog.d(TAG, "Trying to bind to profile: " + bluetoothProfile
                         + ", while Bluetooth was disabled");
@@ -1370,7 +1405,8 @@ class BluetoothManagerService extends IBluetoothManager.Stub {
         if (mBluetoothAirplaneModeListener != null) {
             mBluetoothAirplaneModeListener.start(mBluetoothModeChangeHelper);
         }
-        mBluetoothDeviceConfigListener = new BluetoothDeviceConfigListener(this);
+        registerForProvisioningStateChange();
+        mBluetoothDeviceConfigListener = new BluetoothDeviceConfigListener(this, DBG);
     }
 
     /**
@@ -1426,7 +1462,7 @@ class BluetoothManagerService extends IBluetoothManager.Stub {
                 mBluetoothLock.readLock().unlock();
             }
 
-            if (!mEnable || state != BluetoothAdapter.STATE_ON) {
+            if (state != BluetoothAdapter.STATE_ON) {
                 if (DBG) {
                     Slog.d(TAG, "Unable to bindService while Bluetooth is disabled");
                 }
@@ -2214,12 +2250,25 @@ class BluetoothManagerService extends IBluetoothManager.Stub {
                     }
                     mHandler.removeMessages(MESSAGE_INIT_FLAGS_CHANGED);
                     if (mBluetoothModeChangeHelper.isA2dpOrHearingAidConnected()) {
+                        Slog.i(TAG, "Delaying MESSAGE_INIT_FLAGS_CHANGED by "
+                                + DELAY_FOR_RETRY_INIT_FLAG_CHECK_MS
+                                + " ms due to existing connections");
+                        mHandler.sendEmptyMessageDelayed(
+                                MESSAGE_INIT_FLAGS_CHANGED,
+                                DELAY_FOR_RETRY_INIT_FLAG_CHECK_MS);
+                        break;
+                    }
+                    if (!isDeviceProvisioned()) {
+                        Slog.i(TAG, "Delaying MESSAGE_INIT_FLAGS_CHANGED by "
+                                + DELAY_FOR_RETRY_INIT_FLAG_CHECK_MS
+                                +  "ms because device is not provisioned");
                         mHandler.sendEmptyMessageDelayed(
                                 MESSAGE_INIT_FLAGS_CHANGED,
                                 DELAY_FOR_RETRY_INIT_FLAG_CHECK_MS);
                         break;
                     }
                     if (mBluetooth != null && isEnabled()) {
+                        Slog.i(TAG, "Restarting Bluetooth due to init flag change");
                         restartForReason(
                                 BluetoothProtoEnums.ENABLE_DISABLE_REASON_INIT_FLAGS_CHANGED);
                     }

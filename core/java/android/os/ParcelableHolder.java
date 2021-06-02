@@ -63,6 +63,8 @@ import android.util.MathUtils;
  * op.y = ...;
  * ap.extension.setParcelable(op);}</pre>
  *
+ * <p class="note">ParcelableHolder is <strong>not</strong> thread-safe.</p>
+ *
  * @hide
  */
 @SystemApi
@@ -120,31 +122,40 @@ public final class ParcelableHolder implements Parcelable {
 
     /**
      * Write a parcelable into ParcelableHolder, the previous parcelable will be removed.
-     * @return {@code false} if the parcelable's stability is more unstable ParcelableHolder.
+     * (@link #setParcelable} and (@link #getParcelable} are not thread-safe.
+     * @throws BadParcelableException if the parcelable's stability is more unstable
+     *         ParcelableHolder.
      */
-    public boolean setParcelable(@Nullable Parcelable p) {
-        // a ParcelableHolder can only hold things at its stability or higher
+    public void setParcelable(@Nullable Parcelable p) {
+        // A ParcelableHolder can only hold things at its stability or higher.
         if (p != null && this.getStability() > p.getStability()) {
-            return false;
+            throw new BadParcelableException(
+                "A ParcelableHolder can only hold things at its stability or higher. "
+                + "The ParcelableHolder's stability is " + this.getStability()
+                + ", but the parcelable's stability is " + p.getStability());
         }
         mParcelable = p;
         if (mParcel != null) {
             mParcel.recycle();
             mParcel = null;
         }
-        return true;
     }
 
     /**
+     * Read a parcelable from ParcelableHolder.
+     * (@link #setParcelable} and (@link #getParcelable} are not thread-safe.
      * @return the parcelable that was written by {@link #setParcelable} or {@link #readFromParcel},
-     *         or {@code null} if the parcelable has not been written, or T is different from
-     *         the type written by (@link #setParcelable}.
+     *         or {@code null} if the parcelable has not been written.
+     * @throws BadParcelableException if T is different from the type written by
+     *         (@link #setParcelable}.
      */
     @Nullable
     public <T extends Parcelable> T getParcelable(@NonNull Class<T> clazz) {
         if (mParcel == null) {
-            if (!clazz.isInstance(mParcelable)) {
-                return null;
+            if (mParcelable != null && !clazz.isInstance(mParcelable)) {
+                throw new BadParcelableException(
+                    "The ParcelableHolder has " + mParcelable.getClass().getName()
+                    + ", but the requested type is " + clazz.getName());
             }
             return (T) mParcelable;
         }
@@ -152,8 +163,10 @@ public final class ParcelableHolder implements Parcelable {
         mParcel.setDataPosition(0);
 
         T parcelable = mParcel.readParcelable(clazz.getClassLoader());
-        if (!clazz.isInstance(parcelable)) {
-            return null;
+        if (parcelable != null && !clazz.isInstance(parcelable)) {
+            throw new BadParcelableException(
+                    "The ParcelableHolder has " + parcelable.getClass().getName()
+                    + ", but the requested type is " + clazz.getName());
         }
         mParcelable = parcelable;
 
@@ -170,16 +183,21 @@ public final class ParcelableHolder implements Parcelable {
 
         mParcelable = null;
 
+        int dataSize = parcel.readInt();
+        if (dataSize < 0) {
+            throw new IllegalArgumentException("dataSize from parcel is negative");
+        } else if (dataSize == 0) {
+            if (mParcel != null) {
+                mParcel.recycle();
+                mParcel = null;
+            }
+            return;
+        }
         if (mParcel == null) {
             mParcel = Parcel.obtain();
         }
         mParcel.setDataPosition(0);
         mParcel.setDataSize(0);
-
-        int dataSize = parcel.readInt();
-        if (dataSize < 0) {
-            throw new IllegalArgumentException("dataSize from parcel is negative");
-        }
         int dataStartPos = parcel.dataPosition();
 
         mParcel.appendFrom(parcel, dataStartPos, dataSize);
@@ -193,6 +211,11 @@ public final class ParcelableHolder implements Parcelable {
         if (mParcel != null) {
             parcel.writeInt(mParcel.dataSize());
             parcel.appendFrom(mParcel, 0, mParcel.dataSize());
+            return;
+        }
+
+        if (mParcelable == null) {
+            parcel.writeInt(0);
             return;
         }
 

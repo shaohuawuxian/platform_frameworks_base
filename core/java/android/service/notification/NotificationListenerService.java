@@ -310,7 +310,7 @@ public abstract class NotificationListenerService extends Service {
     private Handler mHandler;
 
     /** @hide */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     protected NotificationListenerWrapper mWrapper = null;
     private boolean isConnected = false;
 
@@ -1896,6 +1896,17 @@ public abstract class NotificationListenerService extends Service {
             mIsConversation = isConversation;
             mShortcutInfo = shortcutInfo;
             mIsBubble = isBubble;
+        }
+
+        /**
+         * @hide
+         */
+        public @NonNull Ranking withAudiblyAlertedInfo(@Nullable Ranking previous) {
+            if (previous != null && previous.mLastAudiblyAlertedMs > 0
+                    && this.mLastAudiblyAlertedMs <= 0) {
+                this.mLastAudiblyAlertedMs = previous.mLastAudiblyAlertedMs;
+            }
+            return this;
         }
 
         /**

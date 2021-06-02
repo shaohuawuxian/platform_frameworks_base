@@ -21,7 +21,6 @@ import android.content.Context;
 import android.os.RemoteException;
 import android.os.UserHandle;
 import android.security.GateKeeper;
-import android.security.keystore.AndroidKeyStoreSecretKey;
 import android.security.keystore.KeyPermanentlyInvalidatedException;
 import android.security.keystore.KeyProperties;
 import android.security.keystore.KeyProtection;
@@ -85,8 +84,6 @@ public class PlatformKeyManager {
     private final Context mContext;
     private final KeyStoreProxy mKeyStore;
     private final RecoverableKeyStoreDb mDatabase;
-
-    private static final String ANDROID_KEY_STORE_PROVIDER = "AndroidKeyStore";
 
     /**
      * A new instance operating on behalf of {@code userId}, storing its prefs in the location
@@ -239,7 +236,7 @@ public class PlatformKeyManager {
         if (!isKeyLoaded(userId, generationId)) {
             throw new UnrecoverableKeyException("KeyStore doesn't contain key " + alias);
         }
-        AndroidKeyStoreSecretKey key = (AndroidKeyStoreSecretKey) mKeyStore.getKey(
+        SecretKey key = (SecretKey) mKeyStore.getKey(
                 alias, /*password=*/ null);
         return new PlatformEncryptionKey(generationId, key);
     }
@@ -291,7 +288,7 @@ public class PlatformKeyManager {
         if (!isKeyLoaded(userId, generationId)) {
             throw new UnrecoverableKeyException("KeyStore doesn't contain key " + alias);
         }
-        AndroidKeyStoreSecretKey key = (AndroidKeyStoreSecretKey) mKeyStore.getKey(
+        SecretKey key = (SecretKey) mKeyStore.getKey(
                 alias, /*password=*/ null);
         return new PlatformDecryptionKey(generationId, key);
     }
@@ -486,7 +483,7 @@ public class PlatformKeyManager {
      * @throws KeyStoreException if there was a problem getting or initializing the key store.
      */
     private static KeyStore getAndLoadAndroidKeyStore() throws KeyStoreException {
-        KeyStore keyStore = KeyStore.getInstance(ANDROID_KEY_STORE_PROVIDER);
+        KeyStore keyStore = KeyStore.getInstance(KeyStoreProxyImpl.ANDROID_KEY_STORE_PROVIDER);
         try {
             keyStore.load(/*param=*/ null);
         } catch (CertificateException | IOException | NoSuchAlgorithmException e) {

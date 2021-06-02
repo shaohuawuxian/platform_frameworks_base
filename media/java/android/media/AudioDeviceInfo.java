@@ -23,6 +23,7 @@ import android.util.SparseIntArray;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
+import java.util.Arrays;
 import java.util.Objects;
 import java.util.TreeSet;
 
@@ -350,6 +351,14 @@ public final class AudioDeviceInfo {
     }
 
     /**
+     * @hide
+     * @return the internal device tyoe
+     */
+    public int getInternalType() {
+        return mPort.type();
+    }
+
+    /**
      * @return The internal device ID.
      */
     public int getId() {
@@ -459,9 +468,32 @@ public final class AudioDeviceInfo {
      * @see AudioFormat
      *
      * Note: an empty array indicates that the device supports arbitrary encodings.
+     * For forward compatibility, applications should ignore entries it does not recognize.
      */
     public @NonNull int[] getEncodings() {
-        return AudioFormat.filterPublicFormats(mPort.formats());
+        final int[] encodings = AudioFormat.filterPublicFormats(mPort.formats());
+        boolean hasFloat = false;
+        boolean hasExtendedIntegerPrecision = false;
+
+        for (int encoding : encodings) {
+            if (AudioFormat.isEncodingLinearPcm(encoding)) {
+                if (encoding == AudioFormat.ENCODING_PCM_FLOAT) {
+                    hasFloat = true;
+                } else if (AudioFormat.getBytesPerSample(encoding) > 2) {
+                    hasExtendedIntegerPrecision = true;
+                }
+            }
+        }
+        if (hasExtendedIntegerPrecision && !hasFloat) {
+            // R and earlier compatibility - add ENCODING_PCM_FLOAT to the end
+            // (replacing the zero pad). This ensures pre-S apps that look
+            // for ENCODING_PCM_FLOAT continue to see that encoding if the device supports
+            // extended precision integers.
+            int[] encodingsPlusFloat = Arrays.copyOf(encodings, encodings.length + 1);
+            encodingsPlusFloat[encodings.length] = AudioFormat.ENCODING_PCM_FLOAT;
+            return encodingsPlusFloat;
+        }
+        return encodings;
     }
 
     /**
@@ -512,9 +544,20 @@ public final class AudioDeviceInfo {
         return INT_TO_EXT_DEVICE_MAPPING.get(intDevice, TYPE_UNKNOWN);
     }
 
+    /** @hide */
+    public static int convertDeviceTypeToInternalInputDevice(int deviceType) {
+        return EXT_TO_INT_INPUT_DEVICE_MAPPING.get(deviceType, AudioSystem.DEVICE_NONE);
+    }
+
     private static final SparseIntArray INT_TO_EXT_DEVICE_MAPPING;
 
     private static final SparseIntArray EXT_TO_INT_DEVICE_MAPPING;
+
+    /**
+     * EXT_TO_INT_INPUT_DEVICE_MAPPING aims at mapping external device type to internal input device
+     * type.
+     */
+    private static final SparseIntArray EXT_TO_INT_INPUT_DEVICE_MAPPING;
 
     static {
         INT_TO_EXT_DEVICE_MAPPING = new SparseIntArray();
@@ -600,6 +643,32 @@ public final class AudioDeviceInfo {
         EXT_TO_INT_DEVICE_MAPPING.put(TYPE_REMOTE_SUBMIX, AudioSystem.DEVICE_OUT_REMOTE_SUBMIX);
         EXT_TO_INT_DEVICE_MAPPING.put(TYPE_BLE_HEADSET, AudioSystem.DEVICE_OUT_BLE_HEADSET);
         EXT_TO_INT_DEVICE_MAPPING.put(TYPE_BLE_SPEAKER, AudioSystem.DEVICE_OUT_BLE_SPEAKER);
+
+        // privileges mapping to input device
+        EXT_TO_INT_INPUT_DEVICE_MAPPING = new SparseIntArray();
+        EXT_TO_INT_INPUT_DEVICE_MAPPING.put(TYPE_BUILTIN_MIC, AudioSystem.DEVICE_IN_BUILTIN_MIC);
+        EXT_TO_INT_INPUT_DEVICE_MAPPING.put(
+                TYPE_BLUETOOTH_SCO, AudioSystem.DEVICE_IN_BLUETOOTH_SCO_HEADSET);
+        EXT_TO_INT_INPUT_DEVICE_MAPPING.put(
+                TYPE_WIRED_HEADSET, AudioSystem.DEVICE_IN_WIRED_HEADSET);
+        EXT_TO_INT_INPUT_DEVICE_MAPPING.put(TYPE_HDMI, AudioSystem.DEVICE_IN_HDMI);
+        EXT_TO_INT_INPUT_DEVICE_MAPPING.put(TYPE_TELEPHONY, AudioSystem.DEVICE_IN_TELEPHONY_RX);
+        EXT_TO_INT_INPUT_DEVICE_MAPPING.put(TYPE_DOCK, AudioSystem.DEVICE_IN_ANLG_DOCK_HEADSET);
+        EXT_TO_INT_INPUT_DEVICE_MAPPING.put(
+                TYPE_USB_ACCESSORY, AudioSystem.DEVICE_IN_USB_ACCESSORY);
+        EXT_TO_INT_INPUT_DEVICE_MAPPING.put(TYPE_USB_DEVICE, AudioSystem.DEVICE_IN_USB_DEVICE);
+        EXT_TO_INT_INPUT_DEVICE_MAPPING.put(TYPE_USB_HEADSET, AudioSystem.DEVICE_IN_USB_HEADSET);
+        EXT_TO_INT_INPUT_DEVICE_MAPPING.put(TYPE_FM_TUNER, AudioSystem.DEVICE_IN_FM_TUNER);
+        EXT_TO_INT_INPUT_DEVICE_MAPPING.put(TYPE_TV_TUNER, AudioSystem.DEVICE_IN_TV_TUNER);
+        EXT_TO_INT_INPUT_DEVICE_MAPPING.put(TYPE_LINE_ANALOG, AudioSystem.DEVICE_IN_LINE);
+        EXT_TO_INT_INPUT_DEVICE_MAPPING.put(TYPE_LINE_DIGITAL, AudioSystem.DEVICE_IN_SPDIF);
+        EXT_TO_INT_INPUT_DEVICE_MAPPING.put(
+                TYPE_BLUETOOTH_A2DP, AudioSystem.DEVICE_IN_BLUETOOTH_A2DP);
+        EXT_TO_INT_INPUT_DEVICE_MAPPING.put(TYPE_IP, AudioSystem.DEVICE_IN_IP);
+        EXT_TO_INT_INPUT_DEVICE_MAPPING.put(TYPE_BUS, AudioSystem.DEVICE_IN_BUS);
+        EXT_TO_INT_INPUT_DEVICE_MAPPING.put(
+                TYPE_REMOTE_SUBMIX, AudioSystem.DEVICE_IN_REMOTE_SUBMIX);
+        EXT_TO_INT_INPUT_DEVICE_MAPPING.put(TYPE_BLE_HEADSET, AudioSystem.DEVICE_IN_BLE_HEADSET);
     }
 }
 

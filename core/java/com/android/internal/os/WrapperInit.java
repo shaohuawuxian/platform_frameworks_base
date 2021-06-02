@@ -21,8 +21,8 @@ import android.os.Trace;
 import android.system.ErrnoException;
 import android.system.Os;
 import android.system.OsConstants;
-import android.system.StructCapUserData;
-import android.system.StructCapUserHeader;
+import android.system.StructUserCapData;
+import android.system.StructUserCapHeader;
 import android.util.Slog;
 import android.util.TimingsTraceLog;
 
@@ -69,15 +69,16 @@ public class WrapperInit {
         // Tell the Zygote what our actual PID is (since it only knows about the
         // wrapper that it directly forked).
         if (fdNum != 0) {
+            FileDescriptor fd = new FileDescriptor();
             try {
-                FileDescriptor fd = new FileDescriptor();
                 fd.setInt$(fdNum);
                 DataOutputStream os = new DataOutputStream(new FileOutputStream(fd));
                 os.writeInt(Process.myPid());
                 os.close();
-                IoUtils.closeQuietly(fd);
             } catch (IOException ex) {
                 Slog.d(TAG, "Could not write pid of wrapped process to Zygote pipe.", ex);
+            } finally {
+                IoUtils.closeQuietly(fd);
             }
         }
 
@@ -186,9 +187,9 @@ public class WrapperInit {
      *       capabilities, which may make it crash, but not exceed its allowances.
      */
     private static void preserveCapabilities() {
-        StructCapUserHeader header = new StructCapUserHeader(
+        StructUserCapHeader header = new StructUserCapHeader(
                 OsConstants._LINUX_CAPABILITY_VERSION_3, 0);
-        StructCapUserData[] data;
+        StructUserCapData[] data;
         try {
             data = Os.capget(header);
         } catch (ErrnoException e) {
@@ -198,9 +199,9 @@ public class WrapperInit {
 
         if (data[0].permitted != data[0].inheritable ||
                 data[1].permitted != data[1].inheritable) {
-            data[0] = new StructCapUserData(data[0].effective, data[0].permitted,
+            data[0] = new StructUserCapData(data[0].effective, data[0].permitted,
                     data[0].permitted);
-            data[1] = new StructCapUserData(data[1].effective, data[1].permitted,
+            data[1] = new StructUserCapData(data[1].effective, data[1].permitted,
                     data[1].permitted);
             try {
                 Os.capset(header, data);

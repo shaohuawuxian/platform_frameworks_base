@@ -108,10 +108,8 @@
     <string name="screenrecord_resume_label" msgid="4972223043729555575">"ପୁଣି ଚାଲୁ କରନ୍ତୁ"</string>
     <string name="screenrecord_cancel_label" msgid="7850926573274483294">"ବାତିଲ୍‌ କରନ୍ତୁ"</string>
     <string name="screenrecord_share_label" msgid="5025590804030086930">"ସେୟାର୍‍ କରନ୍ତୁ"</string>
-    <string name="screenrecord_delete_label" msgid="1376347010553987058">"ଡିଲିଟ୍ କରନ୍ତୁ"</string>
     <string name="screenrecord_cancel_success" msgid="1775448688137393901">"ସ୍କ୍ରିନ୍‍ ରେକର୍ଡିଂ ବାତିଲ୍‌ କରିଦିଆଯାଇଛି"</string>
     <string name="screenrecord_save_message" msgid="490522052388998226">"ସ୍କ୍ରିନ୍‍ ରେକର୍ଡିଂ ସେଭ୍‍ ହୋଇଛି, ଦେଖିବାକୁ ଟାପ୍‍ କରନ୍ତୁ"</string>
-    <string name="screenrecord_delete_description" msgid="1604522770162810570">"ସ୍କ୍ରିନ୍‍ ରେକର୍ଡିଂ ଡିଲିଟ୍‍ କରିଦିଆଯାଇଛି"</string>
     <string name="screenrecord_delete_error" msgid="2870506119743013588">"ସ୍କ୍ରିନ୍‍ ରେକର୍ଡିଂ ଡିଲିଟ୍‍ କରିବାରେ ତ୍ରୁଟି"</string>
     <string name="screenrecord_permission_error" msgid="7856841237023137686">"ଅନୁମତି ପାଇବାରେ ଅସଫଳ ହେଲା।"</string>
     <string name="screenrecord_start_error" msgid="2200660692479682368">"ସ୍କ୍ରିନ୍ ରେକର୍ଡିଂ ଆରମ୍ଭ କରିବାରେ ତ୍ରୁଟି"</string>
@@ -372,7 +370,7 @@
     <string name="quick_settings_settings_label" msgid="2214639529565474534">"ସେଟିଂସ୍"</string>
     <string name="quick_settings_time_label" msgid="3352680970557509303">"ସମୟ"</string>
     <string name="quick_settings_user_label" msgid="1253515509432672496">"ମୁଁ"</string>
-    <string name="quick_settings_user_title" msgid="8673045967216204537">"ୟୁଜର୍‌"</string>
+    <string name="quick_settings_user_title" msgid="8673045967216204537">"ଉପଯୋଗକର୍ତ୍ତା‌"</string>
     <string name="quick_settings_user_new_user" msgid="3347905871336069666">"ନୂଆ ଉପଯୋଗକର୍ତ୍ତା"</string>
     <string name="quick_settings_wifi_label" msgid="2879507532983487244">"ୱାଇ-ଫାଇ"</string>
     <string name="quick_settings_wifi_not_connected" msgid="4071097522427039160">"ସଂଯୁକ୍ତ ହୋଇନାହିଁ"</string>
@@ -420,7 +418,7 @@
     <string name="quick_settings_night_secondary_label_until_sunrise" msgid="4063448287758262485">"ସୂର୍ଯ୍ୟୋଦୟ ପର୍ଯ୍ୟନ୍ତ"</string>
     <string name="quick_settings_night_secondary_label_on_at" msgid="3584738542293528235">"<xliff:g id="TIME">%s</xliff:g>ରେ ଅନ୍ ହେବ"</string>
     <string name="quick_settings_secondary_label_until" msgid="1883981263191927372">"<xliff:g id="TIME">%s</xliff:g> ପର୍ଯ୍ୟନ୍ତ"</string>
-    <string name="quick_settings_ui_mode_night_label" msgid="1398928270610780470">"ଗାଢ଼ ଥିମ୍"</string>
+    <string name="quick_settings_ui_mode_night_label" msgid="1398928270610780470">"ଗାଢ଼ା ଥିମ୍"</string>
     <string name="quick_settings_dark_mode_secondary_label_battery_saver" msgid="4990712734503013251">"ବ୍ୟାଟେରୀ ସେଭର୍"</string>
     <string name="quick_settings_dark_mode_secondary_label_on_at_sunset" msgid="6017379738102015710">"ସନ୍ଧ୍ୟାରେ ଚାଲୁ ହେବ"</string>
     <string name="quick_settings_dark_mode_secondary_label_until_sunrise" msgid="4404885070316716472">"ସକାଳ ପର୍ଯ୍ୟନ୍ତ"</string>
@@ -477,20 +475,20 @@
     <string name="user_add_user" msgid="4336657383006913022">"ଉପଯୋଗକର୍ତ୍ତାଙ୍କୁ ଯୋଗ କରନ୍ତୁ"</string>
     <string name="user_new_user_name" msgid="2019166282704195789">"ନୂଆ ଉପଯୋଗକର୍ତ୍ତା"</string>
     <string name="guest_exit_guest_dialog_title" msgid="5015697561580641422">"ଅତିଥିଙ୍କୁ କାଢ଼ିଦେବେ?"</string>
-    <string name="guest_exit_guest_dialog_message" msgid="8183450985628495709">"ଏହି ଅବଧିର ସମସ୍ତ ଆପ୍‌ ଓ ଡାଟା ଡିଲିଟ୍‌ ହୋଇଯିବ।"</string>
+    <string name="guest_exit_guest_dialog_message" msgid="8183450985628495709">"ଏହି ସେସନର ସମସ୍ତ ଆପ୍‌ ଓ ଡାଟା ଡିଲିଟ୍‌ ହୋଇଯିବ।"</string>
     <string name="guest_exit_guest_dialog_remove" msgid="7505817591242703757">"କାଢ଼ିଦିଅନ୍ତୁ"</string>
     <string name="guest_wipe_session_title" msgid="7147965814683990944">"ପୁଣି ସ୍ୱାଗତ, ଅତିଥି!"</string>
-    <string name="guest_wipe_session_message" msgid="3393823610257065457">"ଆପଣ ନିଜର ଅବଧି ଜାରି ରଖିବାକୁ ଚାହାନ୍ତି କି?"</string>
+    <string name="guest_wipe_session_message" msgid="3393823610257065457">"ଆପଣ ନିଜର ସେସନ୍ ଜାରି ରଖିବାକୁ ଚାହାଁନ୍ତି କି?"</string>
     <string name="guest_wipe_session_wipe" msgid="8056836584445473309">"ଆରମ୍ଭ କରନ୍ତୁ"</string>
     <string name="guest_wipe_session_dontwipe" msgid="3211052048269304205">"ହଁ, ଜାରି ରଖନ୍ତୁ"</string>
     <string name="guest_notification_title" msgid="4434456703930764167">"ଅତିଥି ୟୁଜର୍‍"</string>
     <string name="guest_notification_text" msgid="4202692942089571351">"ଆପ୍‍ ଓ ଡାଟା ଡିଲିଟ୍‍ କରିବା ପାଇଁ, ଅତିଥି ୟୁଜରଙ୍କୁ ବାହାର କରନ୍ତୁ"</string>
-    <string name="guest_notification_remove_action" msgid="4153019027696868099">"ଅତିଥିଙ୍କୁ ବାହାର କରନ୍ତୁ"</string>
+    <string name="guest_notification_remove_action" msgid="4153019027696868099">"ଅତିଥିଙ୍କୁ କାଢ଼ି ଦିଅନ୍ତୁ"</string>
     <string name="user_logout_notification_title" msgid="3644848998053832589">"ୟୁଜରଙ୍କୁ ଲଗଆଉଟ୍‍ କରନ୍ତୁ"</string>
     <string name="user_logout_notification_text" msgid="7441286737342997991">"ବର୍ତ୍ତମାନର ୟୁଜରଙ୍କୁ ଲଗଆଉଟ୍‍ କରନ୍ତୁ"</string>
     <string name="user_logout_notification_action" msgid="7974458760719361881">"ୟୁଜରଙ୍କୁ ଲଗଆଉଟ୍‍ କରନ୍ତୁ"</string>
     <string name="user_add_user_title" msgid="4172327541504825032">"ନୂତନ ଉପଯୋଗକର୍ତ୍ତା ଯୋଗ କରିବେ?"</string>
-    <string name="user_add_user_message_short" msgid="2599370307878014791">"ଜଣେ ନୂଆ ୟୁଜର୍‍ଙ୍କୁ ଯୋଡ଼ିବାବେଳେ, ସେହି ବ୍ୟକ୍ତିଙ୍କୁ ସ୍ଥାନ ସେଟ୍‍ କରିବାକୁ ପଡ଼ିବ। \n \n ଅନ୍ୟ ସମସ୍ତ ୟୁଜର୍‍ଙ୍କ ପାଇଁ ଯେକୌଣସି ୟୁଜର୍‍ ଆପ୍‌ଗୁଡ଼ିକୁ ଅପଡେଟ୍‌ କରିପାରିବେ।"</string>
+    <string name="user_add_user_message_short" msgid="2599370307878014791">"ଆପଣ ଜଣେ ନୂଆ ଉପଯୋଗକର୍ତ୍ତାଙ୍କୁ ଯୋଗ କଲେ,ତାଙ୍କୁ ସ୍ପେସ୍ ସେଟ୍ ଅପ୍ କରିବାକୁ ପଡ଼ିବ। \n \n ଅନ୍ୟ ସମସ୍ତ ଉପଯୋଗକର୍ତ୍ତାଙ୍କ ପାଇଁ ଯେ କୌଣସି ଉପଯୋଗକର୍ତ୍ତା ଆପଗୁଡ଼ିକୁ ଅପଡେଟ୍‌ କରିପାରିବେ।"</string>
     <string name="user_limit_reached_title" msgid="2429229448830346057">"ଉପଯୋଗକର୍ତ୍ତା ସୀମାରେ ପହଞ୍ଚିଛି"</string>
     <plurals name="user_limit_reached_message" formatted="false" msgid="2573535787802908398">
       <item quantity="other">କେବଳ <xliff:g id="COUNT">%d</xliff:g> ଉପଯୋଗକର୍ତ୍ତା ହିଁ ତିଆରି କରିହେବ।</item>
@@ -498,12 +496,12 @@
     </plurals>
     <string name="user_remove_user_title" msgid="9124124694835811874">"ୟୁଜରଙ୍କୁ ବାହାର କରିବେ?"</string>
     <string name="user_remove_user_message" msgid="6702834122128031833">"ଏହି ୟୁଜରଙ୍କ ସମସ୍ତ ଆପ୍‍ ଓ ଡାଟା ଡିଲିଟ୍‍ ହେବ।"</string>
-    <string name="user_remove_user_remove" msgid="8387386066949061256">"ବାହାର କରନ୍ତୁ"</string>
+    <string name="user_remove_user_remove" msgid="8387386066949061256">"କାଢ଼ି ଦିଅନ୍ତୁ"</string>
     <string name="battery_saver_notification_title" msgid="8419266546034372562">"ବ୍ୟାଟେରୀ ସେଭର୍‌ ଚାଲୁ‌ ଅଛି"</string>
     <string name="battery_saver_notification_text" msgid="2617841636449016951">"କାର୍ଯ୍ୟ ସମ୍ପାଦନ ଓ ବ୍ୟାକ୍‌ଗ୍ରାଉଣ୍ଡ ଡାଟା କମ୍ କରନ୍ତୁ"</string>
     <string name="battery_saver_notification_action_text" msgid="6022091913807026887">"ବ୍ୟାଟେରୀ ସେଭର୍‌ ଅଫ୍‍ କରନ୍ତୁ"</string>
     <string name="media_projection_dialog_text" msgid="1755705274910034772">"<xliff:g id="APP_SEEKING_PERMISSION">%s</xliff:g>ରେ ସମସ୍ତ ସୂଚନାକୁ ଆକ୍ସେସ୍ ରହିବ ଯାହା ଆପଣଙ୍କର ସ୍କ୍ରିନ୍‌ରେ ଦେଖାଯିବ ବା ରେକର୍ଡିଂ ବା କାଷ୍ଟିଂ ବେଳେ ଆପଣଙ୍କର ଡିଭାଇସ୍ ଠାରୁ ଚାଲିବ। ପାସ୍‌ୱାର୍ଡ, ପେମେଣ୍ଟ ବିବରଣୀ, ଫଟୋ, ମେସେଜ୍ ଏବଂ ଆପଣ ଚଲାଉଥିବା ଅଡିଓ ପରି ସୂଚନା ଅନ୍ତର୍ଭୁକ୍ତ ଅଛି।"</string>
-    <string name="media_projection_dialog_service_text" msgid="958000992162214611">"ରେକର୍ଡିଂ ବା କାଷ୍ଟିଂ ବେଳେ ଆପଣଙ୍କର ଡିଭାଇସରେ ଦେଖାଯାଉଥିବା ବା ଆପଣଙ୍କ ଡିଭାଇସରୁ ପ୍ଲେ କରାଯାଉଥିବା ସବୁ ସୂଚନାକୁ ଏହି ପ୍ରକାର୍ଯ୍ୟ ପ୍ରଦାନ କରୁଥିବା ସେବାର ଆକସେସ୍ ରହିବ। ପାସ୍‌ୱାର୍ଡ, ପେମେଣ୍ଟ ବିବରଣୀ, ଫଟୋ, ମେସେଜ୍ ଏବଂ ଆପଣ ଚଲାଉଥିବା ଅଡିଓ ପରି ସୂଚନା ଏଥିରେ ଅନ୍ତର୍ଭୁକ୍ତ ଅଛି।"</string>
+    <string name="media_projection_dialog_service_text" msgid="958000992162214611">"ରେକର୍ଡିଂ ବା କାଷ୍ଟିଂ ବେଳେ ଆପଣଙ୍କର ଡିଭାଇସରେ ଦେଖାଯାଉଥିବା ବା ଆପଣଙ୍କ ଡିଭାଇସରୁ ପ୍ଲେ କରାଯାଉଥିବା ସବୁ ସୂଚନାକୁ ଏହି ଫଙ୍କସନ୍ ପ୍ରଦାନ କରୁଥିବା ସେବାର ଆକ୍ସେସ୍ ରହିବ। ପାସ୍‌ୱାର୍ଡ, ପେମେଣ୍ଟ ବିବରଣୀ, ଫଟୋ, ମେସେଜ୍ ଏବଂ ଆପଣ ଚଲାଉଥିବା ଅଡିଓ ପରି ସୂଚନା ଏଥିରେ ଅନ୍ତର୍ଭୁକ୍ତ ଅଛି।"</string>
     <string name="media_projection_dialog_service_title" msgid="2888507074107884040">"ରେକର୍ଡିଂ ବା କାଷ୍ଟିଂ ଆରମ୍ଭ କରିବେ?"</string>
     <string name="media_projection_dialog_title" msgid="3316063622495360646">"<xliff:g id="APP_SEEKING_PERMISSION">%s</xliff:g> ସହ ରେକର୍ଡିଂ ବା କାଷ୍ଟିଂ ଆରମ୍ଭ କରିବେ?"</string>
     <string name="media_projection_remember_text" msgid="6896767327140422951">"ପୁଣି ଦେଖାନ୍ତୁ ନାହିଁ"</string>
@@ -540,7 +538,7 @@
     <string name="monitoring_title_profile_owned" msgid="6301118649405449568">"ପ୍ରୋଫାଇଲ୍ ନୀରିକ୍ଷଣ"</string>
     <string name="monitoring_title" msgid="4063890083735924568">"ନେଟ୍‌ୱର୍କ ନୀରିକ୍ଷଣ"</string>
     <string name="monitoring_subtitle_vpn" msgid="800485258004629079">"VPN"</string>
-    <string name="monitoring_subtitle_network_logging" msgid="2444199331891219596">"ନେଟୱର୍କ ଲଗିଙ୍ଗ"</string>
+    <string name="monitoring_subtitle_network_logging" msgid="2444199331891219596">"ନେଟୱାର୍କ ଲଗିଂ"</string>
     <string name="monitoring_subtitle_ca_certificate" msgid="8588092029755175800">"CA ସର୍ଟିଫିକେଟ୍‌"</string>
     <string name="disable_vpn" msgid="482685974985502922">"VPN ଅକ୍ଷମ କରନ୍ତୁ"</string>
     <string name="disconnect_vpn" msgid="26286850045344557">"VPN ବିଛିନ୍ନ କରନ୍ତୁ"</string>
@@ -614,7 +612,7 @@
     <string name="stream_system" msgid="7663148785370565134">"ସିଷ୍ଟମ୍‌"</string>
     <string name="stream_ring" msgid="7550670036738697526">"ରିଙ୍ଗ"</string>
     <string name="stream_music" msgid="2188224742361847580">"ମିଡିଆ"</string>
-    <string name="stream_alarm" msgid="16058075093011694">"ଆଲାର୍ମ"</string>
+    <string name="stream_alarm" msgid="16058075093011694">"ଆଲାରାମ୍"</string>
     <string name="stream_notification" msgid="7930294049046243939">"ବିଜ୍ଞପ୍ତି"</string>
     <string name="stream_bluetooth_sco" msgid="6234562365528664331">"ବ୍ଲୁଟୁଥ୍‍‌"</string>
     <string name="stream_dtmf" msgid="7322536356554673067">"ଡୁଆଲ୍‍ ମଲ୍ଟି ଟୋନ୍‍ ଫ୍ରିକ୍ୱେନ୍ସୀ"</string>
@@ -884,12 +882,13 @@
     <string name="accessibility_action_divider_top_50" msgid="6275211443706497621">"ଉପର ଆଡ଼କୁ 50% କରନ୍ତୁ"</string>
     <string name="accessibility_action_divider_top_30" msgid="5780597635887574916">"ଉପର ଆଡ଼କୁ 30% କରନ୍ତୁ"</string>
     <string name="accessibility_action_divider_bottom_full" msgid="7352434720610115395">"ତଳ ଅଂଶର ପୂର୍ଣ୍ଣ ସ୍କ୍ରୀନ୍‍"</string>
-    <string name="accessibility_qs_edit_tile_label" msgid="9079791448815232967">"ଅବସ୍ଥାନ <xliff:g id="POSITION">%1$d</xliff:g>, <xliff:g id="TILE_NAME">%2$s</xliff:g>। ଏଡିଟ୍ କରିବାକୁ ଡବଲ୍‍-ଟାପ୍‍ କରନ୍ତୁ।"</string>
-    <string name="accessibility_qs_edit_add_tile_label" msgid="8292218072049068613">"<xliff:g id="TILE_NAME">%1$s</xliff:g>। ଯୋଡ଼ିବା ପାଇଁ ଡବଲ୍‍-ଟାପ୍‍ କରନ୍ତୁ।"</string>
-    <string name="accessibility_qs_edit_move_tile" msgid="6027997446473163426">"<xliff:g id="TILE_NAME">%1$s</xliff:g> ନିଅନ୍ତୁ"</string>
-    <string name="accessibility_qs_edit_remove_tile" msgid="3406781901949899624">"<xliff:g id="TILE_NAME">%1$s</xliff:g> ବାହାର କରିଦିଅନ୍ତୁ"</string>
-    <string name="accessibility_qs_edit_tile_add" msgid="6289879620154587233">"<xliff:g id="POSITION">%2$d</xliff:g> ଅବସ୍ଥାନକୁ <xliff:g id="TILE_NAME">%1$s</xliff:g> ଯୋଡନ୍ତୁ"</string>
-    <string name="accessibility_qs_edit_tile_move" msgid="4841770637244326837">"<xliff:g id="POSITION">%2$d</xliff:g> ଅବସ୍ଥାନକୁ <xliff:g id="TILE_NAME">%1$s</xliff:g> ଘୁଞ୍ଚାନ୍ତୁ"</string>
+    <string name="accessibility_qs_edit_remove_tile_action" msgid="775511891457193480">"ଟାଇଲ୍ କାଢ଼ି ଦିଅନ୍ତୁ"</string>
+    <string name="accessibility_qs_edit_tile_add_action" msgid="5051211910345301833">"ଶେଷରେ ଟାଇଲ୍ ଯୋଗ କରନ୍ତୁ"</string>
+    <string name="accessibility_qs_edit_tile_start_move" msgid="2009373939914517817">"ଟାଇଲ୍ ମୁଭ୍ କରନ୍ତୁ"</string>
+    <string name="accessibility_qs_edit_tile_start_add" msgid="7560798153975555772">"ଟାଇଲ୍ ଯୋଗ କରନ୍ତୁ"</string>
+    <string name="accessibility_qs_edit_tile_move_to_position" msgid="5198161544045930556">"<xliff:g id="POSITION">%1$d</xliff:g>କୁ ମୁଭ୍ କରନ୍ତୁ"</string>
+    <string name="accessibility_qs_edit_tile_add_to_position" msgid="9029163095148274690">"<xliff:g id="POSITION">%1$d</xliff:g> ଅବସ୍ଥିତିରେ ଯୋଗ କରନ୍ତୁ"</string>
+    <string name="accessibility_qs_edit_position" msgid="4509277359815711830">"ଅବସ୍ଥିତି <xliff:g id="POSITION">%1$d</xliff:g>"</string>
     <string name="accessibility_desc_quick_settings_edit" msgid="741658939453595297">"ଦ୍ରୁତ ସେଟିଙ୍ଗ ଏଡିଟର୍।"</string>
     <string name="accessibility_desc_notification_icon" msgid="7331265967584178674">"<xliff:g id="ID_1">%1$s</xliff:g> ବିଜ୍ଞପ୍ତି: <xliff:g id="ID_2">%2$s</xliff:g>"</string>
     <string name="dock_forced_resizable" msgid="4689301323912928801">"ସ୍ପ୍ଲିଟ୍‍-ସ୍କ୍ରୀନରେ ଆପ୍‍ କାମ କରିନପାରେ।"</string>
@@ -922,11 +921,13 @@
     <string name="pip_skip_to_prev" msgid="3742589641443049237">"ପୂର୍ବବର୍ତ୍ତୀକୁ ଛାଡ଼ନ୍ତୁ"</string>
     <string name="accessibility_action_pip_resize" msgid="8237306972921160456">"ରିସାଇଜ୍ କରନ୍ତୁ"</string>
     <string name="thermal_shutdown_title" msgid="2702966892682930264">"ଗରମ ହେତୁ ଫୋନ୍‍ ଅଫ୍‍ କରିଦିଆଗଲା"</string>
-    <string name="thermal_shutdown_message" msgid="7432744214105003895">"ଆପଣଙ୍କ ଫୋନ୍‍ ବର୍ତ୍ତମାନ ସାମାନ୍ୟ ଅବସ୍ଥାରେ ଚାଲୁଛି"</string>
+    <string name="thermal_shutdown_message" msgid="6142269839066172984">"ଆପଣଙ୍କ ଫୋନ୍ ବର୍ତ୍ତମାନ ସାମାନ୍ୟ ରୂପେ ଚାଲୁଛି।\nଅଧିକ ସୂଚନା ପାଇଁ ଟାପ୍ କରନ୍ତୁ"</string>
     <string name="thermal_shutdown_dialog_message" msgid="6745684238183492031">"ଆପଣଙ୍କ ଫୋନ୍‍ ବହୁତ ଗରମ ଥିଲା, ତେଣୁ ଏହାକୁ ଥଣ୍ଡା କରାଯିବାକୁ ଅଫ୍‍ କରିଦିଆଗଲା। ଆପଣଙ୍କ ଫୋନ୍‍ ବର୍ତ୍ତମାନ ସାମାନ୍ୟ ଅବସ୍ଥାରେ ଚାଲୁଛି।\n\nଆପଣଙ୍କ ଫୋନ୍‍ ଅଧିକ ଗରମ ହୋଇଯାଇପାରେ ଯଦି ଆପଣ:\n	• ରିସୋର୍ସ-ଇଣ୍ଟେନସିଭ୍‍ ଆପ୍‍ (ଯେପରିକି ଗେମିଙ୍ଗ, ଭିଡିଓ, କିମ୍ବା ନେଭିଗେସନ୍‍ ଆପ୍‍) ବ୍ୟବହାର କରନ୍ତି\n	• ବଡ ଫାଇଲ୍‍ ଡାଉନଲୋଡ୍ କିମ୍ବା ଅପଲୋଡ୍‍ କରନ୍ତି\n	• ଅଧିକ ତାପମାତ୍ରାରେ ଆପଣଙ୍କ ଫୋନ୍‍ ବ୍ୟବହାର କରନ୍ତି"</string>
+    <string name="thermal_shutdown_dialog_help_text" msgid="6413474593462902901">"ଯତ୍ନ ନେବା ପାଇଁ ଷ୍ଟେପଗୁଡ଼ିକ ଦେଖନ୍ତୁ"</string>
     <string name="high_temp_title" msgid="2218333576838496100">"ଫୋନ୍‍ ଗରମ ହୋଇଯାଉଛି"</string>
-    <string name="high_temp_notif_message" msgid="163928048626045592">"ଫୋନ୍‍ ଥଣ୍ଡା ହେବା ସମୟରେ କିଛି ଫିଚର୍ ସୀମିତ ଭାବେ କାମ କରିଥାଏ"</string>
+    <string name="high_temp_notif_message" msgid="1277346543068257549">"ଫୋନ୍ ଥଣ୍ଡା ହେବା ସମୟରେ କିଛି ଫିଚର୍ ଠିକ ଭାବେ କାମ କରିନଥାଏ।\nଅଧିକ ସୂଚନା ପାଇଁ ଟାପ୍ କରନ୍ତୁ"</string>
     <string name="high_temp_dialog_message" msgid="3793606072661253968">"ଆପଣଙ୍କ ଫୋନ୍‍ ସ୍ୱଚାଳିତ ଭାବେ ଥଣ୍ଡା ହେବାକୁ ଚେଷ୍ଟା କରିବ। ଆପଣ ତଥାପି ନିଜ ଫୋନ୍‍ ବ୍ୟବହାର କରିପାରିବେ, କିନ୍ତୁ ଏହା ଧୀରେ ଚାଲିପାରେ।\n\nଆପଣଙ୍କ ଫୋନ୍‍ ଥଣ୍ଡା ହୋଇଯିବାପରେ, ଏହା ସାମାନ୍ୟ ଭାବେ ଚାଲିବ।"</string>
+    <string name="high_temp_dialog_help_text" msgid="7380171287943345858">"ଯତ୍ନ ନେବା ପାଇଁ ଷ୍ଟେପଗୁଡ଼ିକ ଦେଖନ୍ତୁ"</string>
     <string name="high_temp_alarm_title" msgid="2359958549570161495">"ଚାର୍ଜର୍‍ ଅନ୍‍ପ୍ଲଗ୍‌ କରନ୍ତୁ"</string>
     <string name="high_temp_alarm_notify_message" msgid="7186272817783835089">"ଏହି ଡିଭାଇସ୍ ଚାର୍ଜ କରିବାରେ ଗୋଟିଏ ସମସ୍ୟା ଅଛି। ଯେହେତୁ କେବଳ ଗରମ ହୋଇଯାଇପାରେ, ତେଣୁ ପାୱାର୍ ଆଡପ୍ଟର୍ ଅନ୍‌ପ୍ଲଗ୍‌ କରନ୍ତୁ ଏବଂ ଯତ୍ନ ନିଅନ୍ତୁ।"</string>
     <string name="high_temp_alarm_help_care_steps" msgid="5017002218341329566">"ସେବା ସମ୍ବନ୍ଧିତ ଷ୍ଟେପ୍‌ଗୁଡ଼ିକ ଦେଖନ୍ତୁ"</string>
@@ -950,7 +951,7 @@
     <string name="notification_channel_general" msgid="4384774889645929705">"ସାଧାରଣ ମେସେଜ୍"</string>
     <string name="notification_channel_storage" msgid="2720725707628094977">"ଷ୍ଟୋରେଜ୍‌"</string>
     <string name="notification_channel_hints" msgid="7703783206000346876">"ହିଣ୍ଟ"</string>
-    <string name="instant_apps" msgid="8337185853050247304">"ଇନଷ୍ଟାଣ୍ଟ ଆପ୍‌"</string>
+    <string name="instant_apps" msgid="8337185853050247304">"Instant Apps"</string>
     <string name="instant_apps_title" msgid="8942706782103036910">"<xliff:g id="APP">%1$s</xliff:g> ଚାଲୁଛି"</string>
     <string name="instant_apps_message" msgid="6112428971833011754">"ଇନ୍‍ଷ୍ଟଲ୍‍ ନହୋଇ ଆପ୍‍ ଖୋଲିଛି।"</string>
     <string name="instant_apps_message_with_help" msgid="1816952263531203932">"ଇନ୍‍ଷ୍ଟଲ୍‍ ନହୋଇ ଆପ୍‍ ଖୋଲିଛି। ଅଧିକ ଜାଣିବା ପାଇଁ ଟାପ୍‍ କରନ୍ତୁ।"</string>
@@ -988,6 +989,13 @@
     <string name="open_saver_setting_action" msgid="2111461909782935190">"ସେଟିଂସ୍"</string>
     <string name="auto_saver_okay_action" msgid="7815925750741935386">"ବୁଝିଗଲି"</string>
     <string name="heap_dump_tile_name" msgid="2464189856478823046">"SysUI ହିପ୍ ଡମ୍ପ୍ କରନ୍ତୁ"</string>
+    <string name="ongoing_privacy_chip_content_single_app" msgid="2969750601815230385">"<xliff:g id="APP">%1$s</xliff:g> ଆପଣଙ୍କ <xliff:g id="TYPES_LIST">%2$s</xliff:g> ବ୍ୟବହାର କରୁଛନ୍ତି।"</string>
+    <string name="ongoing_privacy_chip_content_multiple_apps" msgid="8341216022442383954">"ଆପ୍ଲିକେସନ୍‍ଗୁଡିକ ଆପଣଙ୍କ <xliff:g id="TYPES_LIST">%s</xliff:g> ବ୍ୟବହାର କରୁଛନ୍ତି।"</string>
+    <string name="ongoing_privacy_dialog_separator" msgid="1866222499727706187">", "</string>
+    <string name="ongoing_privacy_dialog_last_separator" msgid="5615876114268009767">" ଏବଂ "</string>
+    <string name="privacy_type_camera" msgid="7974051382167078332">"କ୍ୟାମେରା"</string>
+    <string name="privacy_type_location" msgid="7991481648444066703">"ଲୋକେସନ୍‍"</string>
+    <string name="privacy_type_microphone" msgid="9136763906797732428">"ମାଇକ୍ରୋଫୋନ୍"</string>
     <string name="sensor_privacy_mode" msgid="4462866919026513692">"ସେନ୍ସର୍‍ଗୁଡ଼ିକ ବନ୍ଦ ଅଛି"</string>
     <string name="device_services" msgid="1549944177856658705">"ଡିଭାଇସ୍‍ ସେବାଗୁଡିକ"</string>
     <string name="music_controls_no_title" msgid="4166497066552290938">"କୌଣସି ଶୀର୍ଷକ ନାହିଁ"</string>
@@ -1066,7 +1074,8 @@
     <string name="controls_seeding_in_progress" msgid="3033855341410264148">"ସୁପାରିଶଗୁଡ଼ିକ ଲୋଡ୍ କରାଯାଉଛି"</string>
     <string name="controls_media_title" msgid="1746947284862928133">"ମିଡିଆ"</string>
     <string name="controls_media_close_session" msgid="3957093425905475065">"ବର୍ତ୍ତମାନର ସେସନ୍ ଲୁଚାନ୍ତୁ।"</string>
-    <string name="controls_media_dismiss_button" msgid="4485675693008031646">"ଲୁଚାନ୍ତୁ"</string>
+    <string name="controls_media_active_session" msgid="1984383994625845642">"ବର୍ତ୍ତମାନର ସେସନକୁ ଲୁଚାଯାଇପାରିବ ନାହିଁ।"</string>
+    <string name="controls_media_dismiss_button" msgid="9081375542265132213">"ଖାରଜ କରନ୍ତୁ"</string>
     <string name="controls_media_resume" msgid="1933520684481586053">"ପୁଣି ଆରମ୍ଭ କରନ୍ତୁ"</string>
     <string name="controls_media_settings_button" msgid="5815790345117172504">"ସେଟିଂସ୍"</string>
     <string name="controls_error_timeout" msgid="794197289772728958">"ନିଷ୍କ୍ରିୟ ଅଛି, ଆପ ଯାଞ୍ଚ କରନ୍ତୁ"</string>
@@ -1080,5 +1089,12 @@
     <string name="controls_in_progress" msgid="4421080500238215939">"ପ୍ରଗତିରେ ଅଛି"</string>
     <string name="controls_added_tooltip" msgid="4842812921719153085">"ନୂଆ ନିୟନ୍ତ୍ରଣଗୁଡ଼ିକୁ ଦେଖିବା ପାଇଁ ପାୱାର ବଟନକୁ ଧରି ରଖନ୍ତୁ"</string>
     <string name="controls_menu_add" msgid="4447246119229920050">"ନିୟନ୍ତ୍ରଣଗୁଡ଼ିକ ଯୋଗ କରନ୍ତୁ"</string>
-    <string name="controls_menu_edit" msgid="890623986951347062">"ନିୟନ୍ତ୍ରଣଗୁଡ଼ିକ ସମ୍ପାଦନ କରନ୍ତୁ"</string>
+    <string name="controls_menu_edit" msgid="890623986951347062">"ନିୟନ୍ତ୍ରଣଗୁଡ଼ିକୁ ଏଡିଟ୍ କରନ୍ତୁ"</string>
+    <string name="media_output_dialog_add_output" msgid="5642703238877329518">"ଆଉଟପୁଟ୍ ଯୋଗ କରନ୍ତୁ"</string>
+    <string name="media_output_dialog_group" msgid="5571251347877452212">"ଗୋଷ୍ଠୀ"</string>
+    <string name="media_output_dialog_single_device" msgid="3102758980643351058">"1ଟି ଡିଭାଇସ୍ ଚୟନ କରାଯାଇଛି"</string>
+    <string name="media_output_dialog_multiple_devices" msgid="1093771040315422350">"<xliff:g id="COUNT">%1$d</xliff:g>ଟି ଡିଭାଇସ୍ ଚୟନ କରାଯାଇଛି"</string>
+    <string name="media_output_dialog_disconnected" msgid="1834473104836986046">"<xliff:g id="DEVICE_NAME">%1$s</xliff:g> (ବିଚ୍ଛିନ୍ନ କରାଯାଇଛି)"</string>
+    <string name="media_output_dialog_connect_failed" msgid="3225190634236259010">"ସଂଯୋଗ କରାଯାଇପାରିଲା ନାହିଁ। ପୁଣି ଚେଷ୍ଟା କରନ୍ତୁ।"</string>
+    <string name="media_output_dialog_pairing_new" msgid="9099497976087485862">"ନୂଆ ଡିଭାଇସକୁ ପେୟାର୍ କରନ୍ତୁ"</string>
 </resources>

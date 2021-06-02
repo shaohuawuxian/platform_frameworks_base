@@ -35,6 +35,9 @@ import android.telephony.CarrierRestrictionRules;
 import android.telephony.CellIdentity;
 import android.telephony.CellInfo;
 import android.telephony.ClientRequestStats;
+import android.telephony.ThermalMitigationRequest;
+import android.telephony.gba.UaSecurityProtocolIdentifier;
+import android.telephony.IBootstrapAuthenticationCallback;
 import android.telephony.IccOpenLogicalChannelResponse;
 import android.telephony.ICellInfoCallback;
 import android.telephony.ModemActivityInfo;
@@ -45,9 +48,12 @@ import android.telephony.RadioAccessFamily;
 import android.telephony.RadioAccessSpecifier;
 import android.telephony.ServiceState;
 import android.telephony.SignalStrength;
+import android.telephony.SignalStrengthUpdateRequest;
 import android.telephony.TelephonyHistogram;
 import android.telephony.VisualVoicemailSmsFilterSettings;
 import android.telephony.emergency.EmergencyNumber;
+import android.telephony.ims.RcsClientConfiguration;
+import android.telephony.ims.RcsContactUceCapability;
 import android.telephony.ims.aidl.IImsCapabilityCallback;
 import android.telephony.ims.aidl.IImsConfig;
 import android.telephony.ims.aidl.IImsConfigCallback;
@@ -55,6 +61,7 @@ import android.telephony.ims.aidl.IImsMmTelFeature;
 import android.telephony.ims.aidl.IImsRcsFeature;
 import android.telephony.ims.aidl.IImsRegistration;
 import android.telephony.ims.aidl.IImsRegistrationCallback;
+import android.telephony.ims.aidl.IRcsConfigCallback;
 import com.android.ims.internal.IImsServiceFeatureCallback;
 import com.android.internal.telephony.CellNetworkScanResult;
 import com.android.internal.telephony.IBooleanConsumer;
@@ -96,7 +103,7 @@ interface ITelephony {
     void call(String callingPackage, String number);
 
     /** @deprecated Use {@link #isRadioOnWithFeature(String, String) instead */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = 30, trackingBug = 170729553)
     boolean isRadioOn(String callingPackage);
 
     /**
@@ -110,7 +117,7 @@ interface ITelephony {
     /**
      * @deprecated Use {@link #isRadioOnForSubscriberWithFeature(int, String, String) instead
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = 30, trackingBug = 170729553)
     boolean isRadioOnForSubscriber(int subId, String callingPackage);
 
     /**
@@ -122,6 +129,15 @@ interface ITelephony {
      */
     boolean isRadioOnForSubscriberWithFeature(int subId, String callingPackage, String callingFeatureId);
 
+    /**
+     * Set the user-set status for enriched calling with call composer.
+     */
+    void setCallComposerStatus(int subId, int status);
+
+    /**
+     * Get the user-set status for enriched calling with call composer.
+     */
+    int getCallComposerStatus(int subId);
 
     /**
      * Supply a pin to unlock the SIM for particular subId.
@@ -190,7 +206,7 @@ interface ITelephony {
      * @param subId user preferred subId.
      * @return true if MMI command is executed.
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = 30, trackingBug = 170729553)
     boolean handlePinMmiForSubscriber(int subId, String dialString);
 
     /**
@@ -614,7 +630,7 @@ interface ITelephony {
      *            successful iccOpenLogicalChannel.
      * @return true if the channel was closed successfully.
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(trackingBug = 171933273)
     boolean iccCloseLogicalChannel(int subId, int channel);
 
     /**
@@ -656,7 +672,7 @@ interface ITelephony {
      * @return The APDU response from the ICC card with the status appended at
      *            the end.
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(trackingBug = 171933273)
     String iccTransmitApduLogicalChannel(int subId, int channel, int cla, int instruction,
             int p1, int p2, int p3, String data);
 
@@ -781,24 +797,15 @@ interface ITelephony {
      * @return {@code true} on success; {@code false} on any failure.
      */
     boolean rebootModem(int slotIndex);
-    /*
-     * Get the calculated preferred network type.
-     * Used for device configuration by some CDMA operators.
-     * @param callingPackage The package making the call.
-     * @param callingFeatureId The feature in the package.
-     *
-     * @return the calculated preferred network type, defined in RILConstants.java.
-     */
-    int getCalculatedPreferredNetworkType(String callingPackage, String callingFeatureId);
 
     /*
-     * Get the preferred network type.
+     * Get the allowed network type.
      * Used for device configuration by some CDMA operators.
      *
      * @param subId the id of the subscription to query.
-     * @return the preferred network type, defined in RILConstants.java.
+     * @return the allowed network type bitmask, defined in RILConstants.java.
      */
-    int getPreferredNetworkType(int subId);
+    int getAllowedNetworkTypesBitmask(int subId);
 
     /**
      * Check whether DUN APN is required for tethering with subId.
@@ -853,6 +860,11 @@ interface ITelephony {
     */
     boolean setBoundImsServiceOverride(int slotIndex, boolean isCarrierService,
             in int[] featureTypes, in String packageName);
+
+    /**
+     *  @return true if the ImsService cleared any carrier ImsService overrides, false otherwise.
+     */
+    boolean clearCarrierImsServiceOverride(int slotIndex);
 
     /**
     * @return the package name of the carrier/device ImsService associated with this slot.
@@ -919,23 +931,6 @@ interface ITelephony {
             int subId, in OperatorInfo operatorInfo, boolean persisSelection);
 
     /**
-     * Get the allowed network types that store in the telephony provider.
-     *
-     * @param subId the id of the subscription.
-     * @return allowedNetworkTypes the allowed network types.
-     */
-    long getAllowedNetworkTypes(int subId);
-
-    /**
-     * Set the allowed network types.
-     *
-     * @param subId the id of the subscription.
-     * @param allowedNetworkTypes the allowed network types.
-     * @return true on success; false on any failure.
-     */
-    boolean setAllowedNetworkTypes(int subId, long allowedNetworkTypes);
-
-    /**
      * Get the allowed network types for certain reason.
      *
      * @param subId the id of the subscription.
@@ -943,16 +938,6 @@ interface ITelephony {
      * @return allowedNetworkTypes the allowed network types.
      */
     long getAllowedNetworkTypesForReason(int subId, int reason);
-
-    /**
-     * Get the effective allowed network types on the device. This API will
-     * return an intersection of allowed network types for all reasons,
-     * including the configuration done through setAllowedNetworkTypes
-     *
-     * @param subId the id of the subscription.
-     * @return allowedNetworkTypes the allowed network types.
-     */
-     long getEffectiveAllowedNetworkTypes(int subId);
 
     /**
      * Set the allowed network types and provide the reason triggering the allowed network change.
@@ -963,16 +948,6 @@ interface ITelephony {
      * @return true on success; false on any failure.
      */
     boolean setAllowedNetworkTypesForReason(int subId, int reason, long allowedNetworkTypes);
-
-    /**
-     * Set the preferred network type.
-     * Used for device configuration by some CDMA operators.
-     *
-     * @param subId the id of the subscription to update.
-     * @param networkType the preferred network type, defined in RILConstants.java.
-     * @return true on success; false on any failure.
-     */
-    boolean setPreferredNetworkType(int subId, int networkType);
 
     /**
      * Get the user enabled state of Mobile Data.
@@ -1222,15 +1197,6 @@ interface ITelephony {
      * Shutdown Mobile Radios
      */
     void shutdownMobileRadios();
-
-    /**
-     * Set phone radio type and access technology.
-     *
-     * @param rafs an RadioAccessFamily array to indicate all phone's
-     *        new radio access family. The length of RadioAccessFamily
-     *        must equ]]al to phone count.
-     */
-    void setRadioCapability(in RadioAccessFamily[] rafs);
 
     /**
      * Get phone radio type and access technology.
@@ -1667,8 +1633,17 @@ interface ITelephony {
      * @param slotIndex SIM slot id
      * @param state  State of SIM (power down, power up, pass through)
      * @hide
-     * */
+     */
     void setSimPowerStateForSlot(int slotIndex, int state);
+
+    /**
+     * Set SIM card power state.
+     * @param slotIndex SIM slot id
+     * @param state  State of SIM (power down, power up, pass through)
+     * @param callback callback to receive result info
+     * @hide
+     */
+    void setSimPowerStateForSlotWithCallback(int slotIndex, int state, IIntegerConsumer callback);
 
     /**
      * Returns a list of Forbidden PLMNs from the specified SIM App
@@ -1796,6 +1771,14 @@ interface ITelephony {
      * @return {@code true} if successed.
      */
     boolean setCdmaRoamingMode(int subId, int mode);
+
+    /**
+     * Gets the subscription mode for the CDMA phone with the subscription id {@code subId}.
+     *
+     * @param the subscription id.
+     * @return the subscription mode for CDMA phone.
+     */
+    int getCdmaSubscriptionMode(int subId);
 
     /**
      * Sets the subscription mode for CDMA phone with the subscription {@code subId} to the given
@@ -2145,6 +2128,8 @@ interface ITelephony {
     oneway void setSystemSelectionChannels(in List<RadioAccessSpecifier> specifiers,
             int subId, IBooleanConsumer resultCallback);
 
+    List<RadioAccessSpecifier> getSystemSelectionChannels(int subId);
+
     boolean isMvnoMatched(int subId, int mvnoType, String mvnoMatchData);
 
     /**
@@ -2216,4 +2201,238 @@ interface ITelephony {
      * does not exist on the SIM card.
      */
     List<String> getEquivalentHomePlmns(int subId, String callingPackage, String callingFeatureId);
+
+    /**
+     * Enable/Disable E-UTRA-NR Dual Connectivity
+     * @return operation result. See TelephonyManager.EnableNrDualConnectivityResult for
+     * details
+     * @param subId the id of the subscription
+     * @param enable enable/disable dual connectivity
+     */
+    int setNrDualConnectivityState(int subId, int nrDualConnectivityState);
+
+    /**
+     * Is E-UTRA-NR Dual Connectivity enabled
+     * @param subId the id of the subscription
+     * @return true if dual connectivity is enabled else false
+     */
+    boolean isNrDualConnectivityEnabled(int subId);
+
+    /**
+     * Checks whether the device supports the given capability on the radio interface.
+     *
+     * @param capability the name of the capability
+     * @return the availability of the capability
+     */
+    boolean isRadioInterfaceCapabilitySupported(String capability);
+
+    /**
+     * Thermal mitigation request to control functionalities at modem.
+     *
+     * @param subId the id of the subscription
+     * @param thermalMitigationRequest holds the parameters necessary for the request.
+     * @param callingPackage the package name of the calling package.
+     * @throws InvalidThermalMitigationRequestException if the parametes are invalid.
+     */
+    int sendThermalMitigationRequest(int subId,
+            in ThermalMitigationRequest thermalMitigationRequest,
+            String callingPackage);
+
+    /**
+     * Get the Generic Bootstrapping Architecture authentication keys
+     */
+    void bootstrapAuthenticationRequest(int subId, int appType, in Uri nafUrl,
+            in UaSecurityProtocolIdentifier securityProtocol,
+            boolean forceBootStrapping, IBootstrapAuthenticationCallback callback);
+
+    /**
+     * Set the GbaService Package Name that Telephony will bind to.
+     */
+    boolean setBoundGbaServiceOverride(int subId, String packageName);
+
+    /**
+     * Return the package name of the currently bound GbaService.
+     */
+    String getBoundGbaService(int subId);
+
+    /**
+     * Set the release time for telephony to unbind GbaService.
+     */
+    boolean setGbaReleaseTimeOverride(int subId, int interval);
+
+    /**
+     * Return the release time for telephony to unbind GbaService.
+     */
+    int getGbaReleaseTime(int subId);
+
+    /**
+     * Provide the client configuration parameters of the RCS application.
+     */
+    void setRcsClientConfiguration(int subId, in RcsClientConfiguration rcc);
+
+    /**
+     * return value to indicate whether the device and the carrier can support RCS VoLTE
+     * single registration.
+     */
+    boolean isRcsVolteSingleRegistrationCapable(int subId);
+
+    /**
+     * Register RCS provisioning callback.
+     */
+    void registerRcsProvisioningCallback(int subId, IRcsConfigCallback callback);
+
+    /**
+     * Unregister RCS provisioning callback.
+     */
+    void unregisterRcsProvisioningCallback(int subId, IRcsConfigCallback callback);
+
+    /**
+     * trigger RCS reconfiguration.
+     */
+    void triggerRcsReconfiguration(int subId);
+
+    /**
+     * Enables or disables the test mode for RCS VoLTE single registration.
+     */
+    void setRcsSingleRegistrationTestModeEnabled(boolean enabled);
+
+    /**
+     * Gets the test mode for RCS VoLTE single registration.
+     */
+    boolean getRcsSingleRegistrationTestModeEnabled();
+
+    /**
+     * Overrides the config of RCS VoLTE single registration enabled for the device.
+     */
+    void setDeviceSingleRegistrationEnabledOverride(String enabled);
+
+    /**
+     * Gets the config of RCS VoLTE single registration enabled for the device.
+     */
+    boolean getDeviceSingleRegistrationEnabled();
+
+    /**
+     * Overrides the config of RCS VoLTE single registration enabled for the carrier/subscription.
+     */
+    boolean setCarrierSingleRegistrationEnabledOverride(int subId, String enabled);
+
+    /**
+     * Sends a device to device message; only for use through shell.
+     */
+    void sendDeviceToDeviceMessage(int message, int value);
+
+    /**
+     * Gets the config of RCS VoLTE single registration enabled for the carrier/subscription.
+     */
+    boolean getCarrierSingleRegistrationEnabled(int subId);
+
+    /**
+     * Overrides the ims feature validation result
+     */
+    boolean setImsFeatureValidationOverride(int subId, String enabled);
+
+    /**
+     * Gets the ims feature validation override value
+     */
+    boolean getImsFeatureValidationOverride(int subId);
+
+    /**
+     *  Return the mobile provisioning url that is used to launch a browser to allow users to manage
+     *  their mobile plan.
+     */
+    String getMobileProvisioningUrl();
+
+    /*
+     * Remove the EAB contacts from the EAB database.
+     */
+    int removeContactFromEab(int subId, String contacts);
+
+    /**
+     * Get the EAB contact from the EAB database.
+     */
+    String getContactFromEab(String contact);
+
+    /*
+     * Check whether the device supports RCS User Capability Exchange or not.
+     */
+    boolean getDeviceUceEnabled();
+
+    /*
+     * Set the device supports RCS User Capability Exchange.
+     */
+     void setDeviceUceEnabled(boolean isEnabled);
+
+    /**
+     * Add feature tags to the IMS registration being tracked by UCE and potentially
+     * generate a new PUBLISH to the network.
+     * Note: This is designed for a SHELL command only.
+     */
+    RcsContactUceCapability addUceRegistrationOverrideShell(int subId, in List<String> featureTags);
+
+    /**
+     * Remove feature tags from the IMS registration being tracked by UCE and potentially
+     * generate a new PUBLISH to the network.
+     * Note: This is designed for a SHELL command only.
+     */
+    RcsContactUceCapability removeUceRegistrationOverrideShell(int subId,
+            in List<String> featureTags);
+
+    /**
+     * Clear overridden feature tags in the IMS registration being tracked by UCE and potentially
+     * generate a new PUBLISH to the network.
+     * Note: This is designed for a SHELL command only.
+     */
+    RcsContactUceCapability clearUceRegistrationOverrideShell(int subId);
+
+    /**
+     * Get the latest RcsContactUceCapability structure that is used in SIP PUBLISH procedures.
+     * Note: This is designed for a SHELL command only.
+     */
+    RcsContactUceCapability getLatestRcsContactUceCapabilityShell(int subId);
+
+    /**
+     * Returns the last PIDF XML sent to the network during the last PUBLISH or "none" if the
+     * device does not have an active PUBLISH.
+     * Note: This is designed for a SHELL command only.
+     */
+    String getLastUcePidfXmlShell(int subId);
+
+    /**
+      * Remove UCE requests cannot be sent to the network status.
+      * Note: This is designed for a SHELL command only.
+      */
+    boolean removeUceRequestDisallowedStatus(int subId);
+
+    /**
+     * Set the timeout for contact capabilities request.
+     * Note: This is designed for a SHELL command only.
+     */
+    boolean setCapabilitiesRequestTimeout(int subId, long timeoutAfterMs);
+
+    /**
+     * Set a SignalStrengthUpdateRequest to receive notification when Signal Strength breach the
+     * specified thresholds.
+     */
+    void setSignalStrengthUpdateRequest(int subId, in SignalStrengthUpdateRequest request,
+            String callingPackage);
+
+    /**
+     * Clear a SignalStrengthUpdateRequest from system.
+     */
+    void clearSignalStrengthUpdateRequest(int subId, in SignalStrengthUpdateRequest request,
+            String callingPackage);
+
+    /**
+     * Prepare TelephonyManager for an unattended reboot. The reboot is
+     * required to be done shortly after the API is invoked.
+     *
+     * Requires system privileges.
+     *
+     * @return {@link #PREPARE_UNATTENDED_REBOOT_SUCCESS} in case of success.
+     * {@link #PREPARE_UNATTENDED_REBOOT_PIN_REQUIRED} if the device contains
+     * at least one SIM card for which the user needs to manually enter the PIN
+     * code after the reboot. {@link #PREPARE_UNATTENDED_REBOOT_ERROR} in case
+     * of error.
+     */
+    int prepareForUnattendedReboot();
 }

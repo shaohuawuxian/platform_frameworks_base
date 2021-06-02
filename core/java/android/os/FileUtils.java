@@ -181,7 +181,7 @@ public final class FileUtils {
      * @return 0 on success, otherwise errno.
      * @hide
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public static int setPermissions(FileDescriptor fd, int mode, int uid, int gid) {
         try {
             Os.fchmod(fd, mode);
@@ -664,7 +664,7 @@ public final class FileUtils {
     }
 
     /** {@hide} */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public static void stringToFile(File file, String string) throws IOException {
         stringToFile(file.getAbsolutePath(), string);
     }
@@ -713,7 +713,7 @@ public final class FileUtils {
      *             to its potential for collision.
      * @hide
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     @Deprecated
     public static long checksumCrc32(File file) throws FileNotFoundException, IOException {
         CRC32 checkSummer = new CRC32();
@@ -800,7 +800,7 @@ public final class FileUtils {
      * @return if any files were deleted.
      * @hide
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public static boolean deleteOlderFiles(File dir, int minCount, long minAgeMs) {
         if (minCount < 0 || minAgeMs < 0) {
             throw new IllegalArgumentException("Constraints must be positive or 0");
@@ -909,7 +909,7 @@ public final class FileUtils {
     }
 
     /** {@hide} */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public static boolean deleteContents(File dir) {
         File[] files = dir.listFiles();
         boolean success = true;
@@ -1235,9 +1235,9 @@ public final class FileUtils {
     }
 
     /**
-     * Creates a directory with name {@code name} under an existing directory {@code baseDir}.
-     * Returns a {@code File} object representing the directory on success, {@code null} on
-     * failure.
+     * Creates a directory with name {@code name} under an existing directory {@code baseDir} if it
+     * doesn't exist already. Returns a {@code File} object representing the directory if it exists
+     * and {@code null} if not.
      *
      * @hide
      */
@@ -1247,13 +1247,23 @@ public final class FileUtils {
         return createDir(dir) ? dir : null;
     }
 
-    /** @hide */
+    /**
+     * Ensure the given directory exists, creating it if needed. This method is threadsafe.
+     *
+     * @return false if the directory doesn't exist and couldn't be created
+     *
+     * @hide
+     */
     public static boolean createDir(File dir) {
+        if (dir.mkdir()) {
+            return true;
+        }
+
         if (dir.exists()) {
             return dir.isDirectory();
         }
 
-        return dir.mkdir();
+        return false;
     }
 
     /**

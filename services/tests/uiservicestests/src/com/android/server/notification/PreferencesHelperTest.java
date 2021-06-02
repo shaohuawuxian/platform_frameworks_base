@@ -28,8 +28,8 @@ import static android.app.NotificationManager.IMPORTANCE_LOW;
 import static android.app.NotificationManager.IMPORTANCE_MAX;
 import static android.app.NotificationManager.IMPORTANCE_NONE;
 import static android.app.NotificationManager.IMPORTANCE_UNSPECIFIED;
+import static android.util.StatsLog.ANNOTATION_ID_IS_UID;
 
-import static com.android.internal.util.FrameworkStatsLog.ANNOTATION_ID_IS_UID;
 import static com.android.internal.util.FrameworkStatsLog.PACKAGE_NOTIFICATION_CHANNEL_PREFERENCES;
 import static com.android.os.AtomsProto.PackageNotificationChannelPreferences.CHANNEL_ID_FIELD_NUMBER;
 import static com.android.os.AtomsProto.PackageNotificationChannelPreferences.CHANNEL_NAME_FIELD_NUMBER;
@@ -96,6 +96,7 @@ import android.test.suitebuilder.annotation.SmallTest;
 import android.testing.TestableContentResolver;
 import android.util.ArrayMap;
 import android.util.ArraySet;
+import android.util.IntArray;
 import android.util.Pair;
 import android.util.StatsEvent;
 import android.util.Xml;
@@ -2670,6 +2671,96 @@ public class PreferencesHelperTest extends UiServiceTestCase {
     }
 
     @Test
+    public void testLockChannelsForOEM_onlyGivenPkg_appDoesNotExistYet() {
+        mHelper.lockChannelsForOEM(new String[] {PKG_O});
+
+        NotificationChannel a = new NotificationChannel("a", "a", IMPORTANCE_HIGH);
+        NotificationChannel b = new NotificationChannel("b", "b", IMPORTANCE_LOW);
+        mHelper.createNotificationChannel(PKG_O, 3, a, true, false);
+        mHelper.createNotificationChannel(PKG_N_MR1, 30, b, false, false);
+
+        assertTrue(mHelper.getNotificationChannel(PKG_O, 3, a.getId(), false)
+                .isImportanceLockedByOEM());
+        assertFalse(mHelper.getNotificationChannel(PKG_N_MR1, 30, b.getId(), false)
+                .isImportanceLockedByOEM());
+    }
+
+    @Test
+    public void testLockChannelsForOEM_channelSpecific_appDoesNotExistYet() {
+        mHelper.lockChannelsForOEM(new String[] {PKG_O + ":b", PKG_O + ":c"});
+
+        NotificationChannel a = new NotificationChannel("a", "a", IMPORTANCE_HIGH);
+        NotificationChannel b = new NotificationChannel("b", "b", IMPORTANCE_LOW);
+        NotificationChannel c = new NotificationChannel("c", "c", IMPORTANCE_DEFAULT);
+        // different uids, same package
+        mHelper.createNotificationChannel(PKG_O, 3, a, true, false);
+        mHelper.createNotificationChannel(PKG_O, 3, b, false, false);
+        mHelper.createNotificationChannel(PKG_O, 30, c, true, true);
+
+        assertFalse(mHelper.getNotificationChannel(PKG_O, 3, a.getId(), false)
+                .isImportanceLockedByOEM());
+        assertTrue(mHelper.getNotificationChannel(PKG_O, 3, b.getId(), false)
+                .isImportanceLockedByOEM());
+        assertTrue(mHelper.getNotificationChannel(PKG_O, 30, c.getId(), false)
+                .isImportanceLockedByOEM());
+    }
+
+    @Test
+    public void testLockChannelsForOEM_onlyGivenPkg_appDoesNotExistYet_restoreData()
+            throws Exception {
+        mHelper.lockChannelsForOEM(new String[] {PKG_O});
+
+        final String xml = "<ranking version=\"1\">\n"
+                + "<package name=\"" + PKG_O + "\" uid=\"" + UID_O + "\" >\n"
+                + "<channel id=\"a\" name=\"a\" importance=\"3\"/>"
+                + "<channel id=\"b\" name=\"b\" importance=\"3\"/>"
+                + "</package>"
+                + "<package name=\"" + PKG_N_MR1 + "\" uid=\"" + UID_N_MR1 + "\" >\n"
+                + "<channel id=\"a\" name=\"a\" importance=\"3\"/>"
+                + "<channel id=\"b\" name=\"b\" importance=\"3\"/>"
+                + "</package>"
+                + "</ranking>";
+        XmlPullParser parser = Xml.newPullParser();
+        parser.setInput(new BufferedInputStream(new ByteArrayInputStream(xml.getBytes())),
+                null);
+        parser.nextTag();
+        mHelper.readXml(parser, false, UserHandle.USER_ALL);
+
+        assertTrue(mHelper.getNotificationChannel(PKG_O, UID_O, "a", false)
+                .isImportanceLockedByOEM());
+        assertFalse(mHelper.getNotificationChannel(PKG_N_MR1, UID_N_MR1, "b", false)
+                .isImportanceLockedByOEM());
+    }
+
+    @Test
+    public void testLockChannelsForOEM_channelSpecific_appDoesNotExistYet_restoreData()
+            throws Exception {
+        mHelper.lockChannelsForOEM(new String[] {PKG_O + ":b", PKG_O + ":c"});
+
+        final String xml = "<ranking version=\"1\">\n"
+                + "<package name=\"" + PKG_O + "\" uid=\"" + 3 + "\" >\n"
+                + "<channel id=\"a\" name=\"a\" importance=\"3\"/>"
+                + "<channel id=\"b\" name=\"b\" importance=\"3\"/>"
+                + "</package>"
+                + "<package name=\"" + PKG_O + "\" uid=\"" + 30 + "\" >\n"
+                + "<channel id=\"c\" name=\"c\" importance=\"3\"/>"
+                + "</package>"
+                + "</ranking>";
+        XmlPullParser parser = Xml.newPullParser();
+        parser.setInput(new BufferedInputStream(new ByteArrayInputStream(xml.getBytes())),
+                null);
+        parser.nextTag();
+        mHelper.readXml(parser, false, UserHandle.USER_ALL);
+
+        assertFalse(mHelper.getNotificationChannel(PKG_O, 3, "a", false)
+                .isImportanceLockedByOEM());
+        assertTrue(mHelper.getNotificationChannel(PKG_O, 3, "b", false)
+                .isImportanceLockedByOEM());
+        assertTrue(mHelper.getNotificationChannel(PKG_O, 30, "c", false)
+                .isImportanceLockedByOEM());
+    }
+
+    @Test
     public void testLockChannelsForOEM_channelSpecific_clearData() {
         NotificationChannel a = new NotificationChannel("a", "a", IMPORTANCE_HIGH);
         mHelper.getImportance(PKG_O, UID_O);
@@ -3194,12 +3285,51 @@ public class PreferencesHelperTest extends UiServiceTestCase {
         channel2.setImportantConversation(true);
         mHelper.createNotificationChannel(PKG_O, UID_O, channel2, true, false);
 
-        List<ConversationChannelWrapper> convos = mHelper.getConversations(false);
+        List<ConversationChannelWrapper> convos =
+                mHelper.getConversations(IntArray.wrap(new int[] {0}), false);
 
         assertEquals(3, convos.size());
         assertTrue(conversationWrapperContainsChannel(convos, channel));
         assertTrue(conversationWrapperContainsChannel(convos, diffConvo));
         assertTrue(conversationWrapperContainsChannel(convos, channel2));
+    }
+
+    @Test
+    public void testGetConversations_multiUser() {
+        String convoId = "convo";
+        NotificationChannel messages =
+                new NotificationChannel("messages", "Messages", IMPORTANCE_DEFAULT);
+        mHelper.createNotificationChannel(PKG_O, UID_O, messages, true, false);
+
+        NotificationChannel messagesUser10 =
+                new NotificationChannel("messages", "Messages", IMPORTANCE_DEFAULT);
+        mHelper.createNotificationChannel(
+                PKG_O, UID_O + UserHandle.PER_USER_RANGE, messagesUser10, true, false);
+
+        NotificationChannel messagesFromB =
+                new NotificationChannel("B person msgs", "messages from B", IMPORTANCE_DEFAULT);
+        messagesFromB.setConversationId(messages.getId(), "different convo");
+        mHelper.createNotificationChannel(PKG_O, UID_O, messagesFromB, true, false);
+
+        NotificationChannel messagesFromBUser10 =
+                new NotificationChannel("B person msgs", "messages from B", IMPORTANCE_DEFAULT);
+        messagesFromBUser10.setConversationId(messagesUser10.getId(), "different convo");
+        mHelper.createNotificationChannel(
+                PKG_O, UID_O + UserHandle.PER_USER_RANGE, messagesFromBUser10, true, false);
+
+
+        List<ConversationChannelWrapper> convos =
+                mHelper.getConversations(IntArray.wrap(new int[] {0}), false);
+
+        assertEquals(1, convos.size());
+        assertTrue(conversationWrapperContainsChannel(convos, messagesFromB));
+
+        convos =
+                mHelper.getConversations(IntArray.wrap(new int[] {0, UserHandle.getUserId(UID_O + UserHandle.PER_USER_RANGE)}), false);
+
+        assertEquals(2, convos.size());
+        assertTrue(conversationWrapperContainsChannel(convos, messagesFromB));
+        assertTrue(conversationWrapperContainsChannel(convos, messagesFromBUser10));
     }
 
     @Test
@@ -3232,7 +3362,8 @@ public class PreferencesHelperTest extends UiServiceTestCase {
         channel2.setImportantConversation(true);
         mHelper.createNotificationChannel(PKG_O, UID_O, channel2, true, false);
 
-        List<ConversationChannelWrapper> convos = mHelper.getConversations(false);
+        List<ConversationChannelWrapper> convos =
+                mHelper.getConversations(IntArray.wrap(new int[] {0}), false);
 
         assertEquals(2, convos.size());
         assertTrue(conversationWrapperContainsChannel(convos, channel));
@@ -3270,7 +3401,8 @@ public class PreferencesHelperTest extends UiServiceTestCase {
         channel2.setConversationId(calls.getId(), convoId);
         mHelper.createNotificationChannel(PKG_O, UID_O, channel2, true, false);
 
-        List<ConversationChannelWrapper> convos = mHelper.getConversations(true);
+        List<ConversationChannelWrapper> convos =
+                mHelper.getConversations(IntArray.wrap(new int[] {0}), true);
 
         assertEquals(2, convos.size());
         assertTrue(conversationWrapperContainsChannel(convos, channel));

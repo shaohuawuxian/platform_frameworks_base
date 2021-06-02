@@ -31,8 +31,10 @@ import android.compat.Compatibility;
 import android.compat.annotation.ChangeId;
 import android.compat.annotation.EnabledAfter;
 import android.compat.annotation.UnsupportedAppUsage;
+import android.content.ComponentName;
 import android.content.ContentResolver;
 import android.content.Context;
+import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
 import android.content.pm.ParceledListSlice;
 import android.database.DatabaseUtils;
@@ -52,6 +54,7 @@ import android.os.RemoteException;
 import android.os.ServiceManager;
 import android.os.SystemClock;
 import android.os.UserManager;
+import android.provider.Settings;
 import android.util.ArrayMap;
 import android.util.ArraySet;
 import android.util.LongSparseArray;
@@ -778,7 +781,7 @@ public class AppOpsManager {
     //  - add the op to the appropriate template in AppOpsState.OpsTemplate (settings app)
 
     /** @hide No operation specified. */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public static final int OP_NONE = AppProtoEnums.APP_OP_NONE;
     /** @hide Access to coarse location information. */
     @UnsupportedAppUsage
@@ -845,6 +848,8 @@ public class AppOpsManager {
     /** @hide */
     @UnsupportedAppUsage
     public static final int OP_SEND_SMS = AppProtoEnums.APP_OP_SEND_SMS;
+    /** @hide */
+    public static final int OP_MANAGE_ONGOING_CALLS = AppProtoEnums.APP_OP_MANAGE_ONGOING_CALLS;
     /** @hide */
     @UnsupportedAppUsage
     public static final int OP_READ_ICC_SMS = AppProtoEnums.APP_OP_READ_ICC_SMS;
@@ -1112,29 +1117,38 @@ public class AppOpsManager {
     public static final int OP_NO_ISOLATED_STORAGE = AppProtoEnums.APP_OP_NO_ISOLATED_STORAGE;
 
     /**
-     * Reserved key for 100
+     * Phone call is using microphone
      *
      * @hide
      */
-    public static final int OP_RESERVED_100 = 100;
+    // TODO: Add as AppProtoEnums
+    public static final int OP_PHONE_CALL_MICROPHONE = 100;
+    /**
+     * Phone call is using camera
+     *
+     * @hide
+     */
+    // TODO: Add as AppProtoEnums
+    public static final int OP_PHONE_CALL_CAMERA = 101;
 
     /**
-     * Reserved key for 101
+     * Audio is being recorded for hotword detection.
      *
      * @hide
      */
-    public static final int OP_RESERVED_101 = 101;
+    // TODO: Add as AppProtoEnums
+    public static final int OP_RECORD_AUDIO_HOTWORD = 102;
 
     /**
-     * Reserved key for 102
+     * Manage credentials in the system KeyChain.
      *
      * @hide
      */
-    public static final int OP_RESERVED_102 = 102;
+    public static final int OP_MANAGE_CREDENTIALS = AppProtoEnums.APP_OP_MANAGE_CREDENTIALS;
 
     /** @hide */
     @UnsupportedAppUsage
-    public static final int _NUM_OP = 103;
+    public static final int _NUM_OP = 105;
 
     /** Access to coarse location information. */
     public static final String OPSTR_COARSE_LOCATION = "android:coarse_location";
@@ -1439,10 +1453,20 @@ public class AppOpsManager {
     @SystemApi
     public static final String OPSTR_INTERACT_ACROSS_PROFILES = "android:interact_across_profiles";
     /** @hide Start Platform VPN without user intervention */
+    @SystemApi
     public static final String OPSTR_ACTIVATE_PLATFORM_VPN = "android:activate_platform_vpn";
     /** @hide */
     @SystemApi
     public static final String OPSTR_LOADER_USAGE_STATS = "android:loader_usage_stats";
+
+    /**
+     * Grants an app access to the {@link android.telecom.InCallService} API to see
+     * information about ongoing calls and to enable control of calls.
+     * @hide
+     */
+    @SystemApi
+    @TestApi
+    public static final String OPSTR_MANAGE_ONGOING_CALLS = "android:manage_ongoing_calls";
 
     /**
      * AppOp granted to apps that we are started via {@code am instrument -e --no-isolated-storage}
@@ -1452,25 +1476,31 @@ public class AppOpsManager {
     public static final String OPSTR_NO_ISOLATED_STORAGE = "android:no_isolated_storage";
 
     /**
-     * Reserved for 100
+     * Phone call is using microphone
      *
      * @hide
      */
-    public static final String OPSTR_RESERVED_100 = "android:opstr_reserved_100";
+    public static final String OPSTR_PHONE_CALL_MICROPHONE = "android:phone_call_microphone";
+    /**
+     * Phone call is using camera
+     *
+     * @hide
+     */
+    public static final String OPSTR_PHONE_CALL_CAMERA = "android:phone_call_camera";
 
     /**
-     * Reserved for 101
+     * Audio is being recorded for hotword detection.
      *
      * @hide
      */
-    public static final String OPSTR_RESERVED_101 = "android:opstr_reserved_101";
+    public static final String OPSTR_RECORD_AUDIO_HOTWORD = "android:record_audio_hotword";
 
     /**
-     * Reserved for 102
+     * Manage credentials in the system KeyChain.
      *
      * @hide
      */
-    public static final String OPSTR_RESERVED_102 = "android:opstr_reserved_102";
+    public static final String OPSTR_MANAGE_CREDENTIALS = "android:manage_credentials";
 
     /** {@link #sAppOpsToNote} not initialized yet for this op */
     private static final byte SHOULD_COLLECT_NOTE_OP_NOT_INITIALIZED = 0;
@@ -1550,6 +1580,7 @@ public class AppOpsManager {
             OP_MANAGE_EXTERNAL_STORAGE,
             OP_INTERACT_ACROSS_PROFILES,
             OP_LOADER_USAGE_STATS,
+            OP_MANAGE_ONGOING_CALLS,
     };
 
     /**
@@ -1661,9 +1692,11 @@ public class AppOpsManager {
             OP_AUTO_REVOKE_PERMISSIONS_IF_UNUSED, //AUTO_REVOKE_PERMISSIONS_IF_UNUSED
             OP_AUTO_REVOKE_MANAGED_BY_INSTALLER, //OP_AUTO_REVOKE_MANAGED_BY_INSTALLER
             OP_NO_ISOLATED_STORAGE,             // NO_ISOLATED_STORAGE
-            OP_RESERVED_100,                    // OP_RESERVED_100
-            OP_RESERVED_101,                    // OP_RESERVED_101
-            OP_RESERVED_102,                    // OP_RESERVED_102
+            OP_PHONE_CALL_MICROPHONE,           // OP_PHONE_CALL_MICROPHONE
+            OP_PHONE_CALL_CAMERA,               // OP_PHONE_CALL_CAMERA
+            OP_RECORD_AUDIO_HOTWORD,            // RECORD_AUDIO_HOTWORD
+            OP_MANAGE_ONGOING_CALLS,            // MANAGE_ONGOING_CALLS
+            OP_MANAGE_CREDENTIALS,              // MANAGE_CREDENTIALS
     };
 
     /**
@@ -1770,9 +1803,11 @@ public class AppOpsManager {
             OPSTR_AUTO_REVOKE_PERMISSIONS_IF_UNUSED,
             OPSTR_AUTO_REVOKE_MANAGED_BY_INSTALLER,
             OPSTR_NO_ISOLATED_STORAGE,
-            OPSTR_RESERVED_100,
-            OPSTR_RESERVED_101,
-            OPSTR_RESERVED_102,
+            OPSTR_PHONE_CALL_MICROPHONE,
+            OPSTR_PHONE_CALL_CAMERA,
+            OPSTR_RECORD_AUDIO_HOTWORD,
+            OPSTR_MANAGE_ONGOING_CALLS,
+            OPSTR_MANAGE_CREDENTIALS,
     };
 
     /**
@@ -1880,9 +1915,11 @@ public class AppOpsManager {
             "AUTO_REVOKE_PERMISSIONS_IF_UNUSED",
             "AUTO_REVOKE_MANAGED_BY_INSTALLER",
             "NO_ISOLATED_STORAGE",
-            "RESERVED_100",
-            "RESERVED_101",
-            "RESERVED_102",
+            "PHONE_CALL_MICROPHONE",
+            "PHONE_CALL_CAMERA",
+            "RECORD_AUDIO_HOTWORD",
+            "MANAGE_ONGOING_CALLS",
+            "MANAGE_CREDENTIALS",
     };
 
     /**
@@ -1991,9 +2028,11 @@ public class AppOpsManager {
             null, // no permission for OP_AUTO_REVOKE_PERMISSIONS_IF_UNUSED
             null, // no permission for OP_AUTO_REVOKE_MANAGED_BY_INSTALLER
             null, // no permission for OP_NO_ISOLATED_STORAGE
-            null, // OP_RESERVED_100
-            null, // OP_RESERVED_101
-            null, // OP_RESERVED_102
+            null, // no permission for OP_PHONE_CALL_MICROPHONE
+            null, // no permission for OP_PHONE_CALL_CAMERA
+            null, // no permission for OP_RECORD_AUDIO_HOTWORD
+            Manifest.permission.MANAGE_ONGOING_CALLS,
+            null, // no permission for OP_MANAGE_CREDENTIALS
     };
 
     /**
@@ -2102,9 +2141,11 @@ public class AppOpsManager {
             null, // AUTO_REVOKE_PERMISSIONS_IF_UNUSED
             null, // AUTO_REVOKE_MANAGED_BY_INSTALLER
             null, // NO_ISOLATED_STORAGE
-            null, // OP_RESERVED_100
-            null, // OP_RESERVED_101
-            null, // OP_RESERVED_102
+            null, // PHONE_CALL_MICROPHONE
+            null, // PHONE_CALL_MICROPHONE
+            null, // RECORD_AUDIO_HOTWORD
+            null, // MANAGE_ONGOING_CALLS
+            null, // MANAGE_CREDENTIALS
     };
 
     /**
@@ -2212,9 +2253,11 @@ public class AppOpsManager {
             null, // AUTO_REVOKE_PERMISSIONS_IF_UNUSED
             null, // AUTO_REVOKE_MANAGED_BY_INSTALLER
             null, // NO_ISOLATED_STORAGE
-            null, // OP_RESERVED_100
-            null, // OP_RESERVED_101
-            null, // OP_RESERVED_102
+            null, // PHONE_CALL_MICROPHONE
+            null, // PHONE_CALL_CAMERA
+            null, // RECORD_AUDIO_HOTWORD
+            null, // MANAGE_ONGOING_CALLS
+            null, // MANAGE_CREDENTIALS
     };
 
     /**
@@ -2321,9 +2364,11 @@ public class AppOpsManager {
             AppOpsManager.MODE_DEFAULT, // OP_AUTO_REVOKE_PERMISSIONS_IF_UNUSED
             AppOpsManager.MODE_ALLOWED, // OP_AUTO_REVOKE_MANAGED_BY_INSTALLER
             AppOpsManager.MODE_ERRORED, // OP_NO_ISOLATED_STORAGE
-            AppOpsManager.MODE_ERRORED, // OP_RESERVED_100
-            AppOpsManager.MODE_ERRORED, // OP_RESERVED_101
-            AppOpsManager.MODE_ERRORED, // OP_RESERVED_102
+            AppOpsManager.MODE_ALLOWED, // PHONE_CALL_MICROPHONE
+            AppOpsManager.MODE_ALLOWED, // PHONE_CALL_CAMERA
+            AppOpsManager.MODE_ALLOWED, // OP_RECORD_AUDIO_HOTWORD
+            AppOpsManager.MODE_DEFAULT, // MANAGE_ONGOING_CALLS
+            AppOpsManager.MODE_DEFAULT, // MANAGE_CREDENTIALS
     };
 
     /**
@@ -2418,9 +2463,9 @@ public class AppOpsManager {
             false, // READ_MEDIA_AUDIO
             false, // WRITE_MEDIA_AUDIO
             false, // READ_MEDIA_VIDEO
-            false, // WRITE_MEDIA_VIDEO
+            true,  // WRITE_MEDIA_VIDEO
             false, // READ_MEDIA_IMAGES
-            false, // WRITE_MEDIA_IMAGES
+            true,  // WRITE_MEDIA_IMAGES
             true,  // LEGACY_STORAGE
             false, // ACCESS_ACCESSIBILITY
             false, // READ_DEVICE_IDENTIFIERS
@@ -2434,9 +2479,11 @@ public class AppOpsManager {
             false, // AUTO_REVOKE_PERMISSIONS_IF_UNUSED
             false, // AUTO_REVOKE_MANAGED_BY_INSTALLER
             true, // NO_ISOLATED_STORAGE
-            false, // OP_RESERVED_100
-            false, // OP_RESERVED_101
-            false, // OP_RESERVED_102
+            false, // PHONE_CALL_MICROPHONE
+            false, // PHONE_CALL_CAMERA
+            false, // RECORD_AUDIO_HOTWORD
+            true, // MANAGE_ONGOING_CALLS
+            false, // MANAGE_CREDENTIALS
     };
 
     /**
@@ -2548,7 +2595,7 @@ public class AppOpsManager {
      * Retrieve a non-localized name for the operation, for debugging output.
      * @hide
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public static String opToName(int op) {
         if (op == OP_NONE) return "NONE";
         return op < sOpNames.length ? sOpNames[op] : ("Unknown(" + op + ")");
@@ -2579,7 +2626,7 @@ public class AppOpsManager {
      * Retrieve the permission associated with an operation, or null if there is not one.
      * @hide
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     @TestApi
     public static String opToPermission(int op) {
         return sOpPerms[op];
@@ -6792,7 +6839,7 @@ public class AppOpsManager {
 
     /** @hide */
     @RequiresPermission(android.Manifest.permission.MANAGE_APP_OPS_MODES)
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public void resetAllModes() {
         try {
             mService.resetAllModes(mContext.getUserId(), null);
@@ -7588,8 +7635,9 @@ public class AppOpsManager {
                     collectNotedOpForSelf(op, proxiedAttributionTag);
                 } else if (collectionMode == COLLECT_SYNC
                         // Only collect app-ops when the proxy is trusted
-                        && mContext.checkPermission(Manifest.permission.UPDATE_APP_OPS_STATS, -1,
-                        myUid) == PackageManager.PERMISSION_GRANTED) {
+                        && (mContext.checkPermission(Manifest.permission.UPDATE_APP_OPS_STATS, -1,
+                        myUid) == PackageManager.PERMISSION_GRANTED || isTrustedVoiceServiceProxy(
+                        mContext, mContext.getOpPackageName(), op, mContext.getUserId()))) {
                     collectNotedOpSync(op, proxiedAttributionTag);
                 }
             }
@@ -7597,6 +7645,43 @@ public class AppOpsManager {
             return mode;
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * Checks if the voice recognition service is a trust proxy.
+     *
+     * @return {@code true} if the package is a trust voice recognition service proxy
+     * @hide
+     */
+    public static boolean isTrustedVoiceServiceProxy(Context context, String packageName,
+            int code, int userId) {
+        // This is a workaround for R QPR, new API change is not allowed. We only allow the current
+        // voice recognizer is also the voice interactor to noteproxy op.
+        if (code != OP_RECORD_AUDIO) {
+            return false;
+        }
+        final String voiceRecognitionComponent = Settings.Secure.getString(
+                context.getContentResolver(), Settings.Secure.VOICE_RECOGNITION_SERVICE);
+
+        final String voiceRecognitionServicePackageName =
+                getComponentPackageNameFromString(voiceRecognitionComponent);
+        return (Objects.equals(packageName, voiceRecognitionServicePackageName))
+                && isPackagePreInstalled(context, packageName, userId);
+    }
+
+    private static String getComponentPackageNameFromString(String from) {
+        ComponentName componentName = from != null ? ComponentName.unflattenFromString(from) : null;
+        return componentName != null ? componentName.getPackageName() : "";
+    }
+
+    private static boolean isPackagePreInstalled(Context context, String packageName, int userId) {
+        try {
+            final PackageManager pm = context.getPackageManager();
+            final ApplicationInfo info = pm.getApplicationInfoAsUser(packageName, 0, userId);
+            return ((info.flags & ApplicationInfo.FLAG_SYSTEM) != 0);
+        } catch (PackageManager.NameNotFoundException e) {
+            return false;
         }
     }
 

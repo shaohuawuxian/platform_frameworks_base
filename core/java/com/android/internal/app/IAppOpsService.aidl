@@ -32,7 +32,7 @@ import com.android.internal.app.MessageSamplingConfig;
 
 interface IAppOpsService {
     // These methods are also called by native code, so must
-    // be kept in sync with frameworks/native/libs/binder/include/binder/IAppOpsService.h
+    // be kept in sync with frameworks/native/libs/permission/include/binder/IAppOpsService.h
     // and not be reordered
     int checkOperation(int code, int uid, String packageName);
     int noteOperation(int code, int uid, String packageName, @nullable String attributionTag,
@@ -82,7 +82,7 @@ interface IAppOpsService {
     void setUidMode(int code, int uid, int mode);
     @UnsupportedAppUsage
     void setMode(int code, int uid, String packageName, int mode);
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = 30, trackingBug = 170729553)
     void resetAllModes(int reqUserId, String reqPackageName);
     void setAudioRestriction(int code, int usage, int uid, int mode, in String[] exceptionPackages);
 

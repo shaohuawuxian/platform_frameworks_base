@@ -26,7 +26,7 @@
     <string name="status_bar_latest_events_title" msgid="202755896454005436">"Eslatmalar"</string>
     <string name="battery_low_title" msgid="6891106956328275225">"Batareya tez orada tugaydi"</string>
     <string name="battery_low_percent_format" msgid="4276661262843170964">"<xliff:g id="PERCENTAGE">%s</xliff:g> qoldi"</string>
-    <string name="battery_low_percent_format_hybrid" msgid="3985614339605686167">"<xliff:g id="PERCENTAGE">%1$s</xliff:g> (joriy holatda taxminan <xliff:g id="TIME">%2$s</xliff:g> qoldi)"</string>
+    <string name="battery_low_percent_format_hybrid" msgid="3985614339605686167">"Batareya qivvati – <xliff:g id="PERCENTAGE">%1$s</xliff:g>, tugashiga taxminan <xliff:g id="TIME">%2$s</xliff:g> qoldi"</string>
     <string name="battery_low_percent_format_hybrid_short" msgid="5917433188456218857">"<xliff:g id="PERCENTAGE">%1$s</xliff:g> (taxminan <xliff:g id="TIME">%2$s</xliff:g> qoldi)"</string>
     <string name="battery_low_percent_format_saver_started" msgid="4968468824040940688">"<xliff:g id="PERCENTAGE">%s</xliff:g> qoldi. Quvvat tejash rejimi yoniq."</string>
     <string name="invalid_charger" msgid="4370074072117767416">"USB orqali quvvatlash imkonsiz. Qurilmangiz bilan kelgan quvvatlash moslamasidan foydalaning."</string>
@@ -108,10 +108,8 @@
     <string name="screenrecord_resume_label" msgid="4972223043729555575">"Davom etish"</string>
     <string name="screenrecord_cancel_label" msgid="7850926573274483294">"Bekor qilish"</string>
     <string name="screenrecord_share_label" msgid="5025590804030086930">"Ulashish"</string>
-    <string name="screenrecord_delete_label" msgid="1376347010553987058">"O‘chirish"</string>
     <string name="screenrecord_cancel_success" msgid="1775448688137393901">"Ekrandan yozib olish bekor qilindi"</string>
     <string name="screenrecord_save_message" msgid="490522052388998226">"Ekrandan yozib olingan video saqlandi. Uni ochish uchun bildirishnomani bosing."</string>
-    <string name="screenrecord_delete_description" msgid="1604522770162810570">"Ekrandan yozib olingan video o‘chirib tashlandi"</string>
     <string name="screenrecord_delete_error" msgid="2870506119743013588">"Ekrandan yozib olingan vi olib tashlanmadi"</string>
     <string name="screenrecord_permission_error" msgid="7856841237023137686">"Zarur ruxsatlar olinmadi"</string>
     <string name="screenrecord_start_error" msgid="2200660692479682368">"Ekranni yozib olish boshlanmadi"</string>
@@ -476,7 +474,7 @@
     <string name="accessibility_multi_user_switch_quick_contact" msgid="4504508915324898576">"Profilni ko‘rsatish"</string>
     <string name="user_add_user" msgid="4336657383006913022">"Foydalanuvchi"</string>
     <string name="user_new_user_name" msgid="2019166282704195789">"Yangi foydalanuvchi"</string>
-    <string name="guest_exit_guest_dialog_title" msgid="5015697561580641422">"Mehmon hisobi o‘chirib tashlansinmi?"</string>
+    <string name="guest_exit_guest_dialog_title" msgid="5015697561580641422">"Mehmon olib tashlansinmi?"</string>
     <string name="guest_exit_guest_dialog_message" msgid="8183450985628495709">"Ushbu seansdagi barcha ilovalar va ma’lumotlar o‘chirib tashlanadi."</string>
     <string name="guest_exit_guest_dialog_remove" msgid="7505817591242703757">"Olib tashlash"</string>
     <string name="guest_wipe_session_title" msgid="7147965814683990944">"Xush kelibsiz, mehmon!"</string>
@@ -485,7 +483,7 @@
     <string name="guest_wipe_session_dontwipe" msgid="3211052048269304205">"Ha, davom ettirilsin"</string>
     <string name="guest_notification_title" msgid="4434456703930764167">"Mehmon foydalanuvchi"</string>
     <string name="guest_notification_text" msgid="4202692942089571351">"Ilova va ma’l-ni o‘chirish u-n mehmon hisobini o‘chiring"</string>
-    <string name="guest_notification_remove_action" msgid="4153019027696868099">"MEHMON HISOBINI O‘CHIRISH"</string>
+    <string name="guest_notification_remove_action" msgid="4153019027696868099">"MEHMONNI OLIB TASHLASH"</string>
     <string name="user_logout_notification_title" msgid="3644848998053832589">"Foydalanuvchi nomidan chiqish"</string>
     <string name="user_logout_notification_text" msgid="7441286737342997991">"Joriy foydalanuvchini tizimdan chiqaring"</string>
     <string name="user_logout_notification_action" msgid="7974458760719361881">"FOYDALANUVCHI NOMIDAN CHIQISH"</string>
@@ -515,7 +513,7 @@
     <string name="notification_section_header_alerting" msgid="5581175033680477651">"Bildirishnomalar"</string>
     <string name="notification_section_header_conversations" msgid="821834744538345661">"Suhbatlar"</string>
     <string name="accessibility_notification_section_header_gentle_clear_all" msgid="6490207897764933919">"Barcha sokin bildirishnomalarni tozalash"</string>
-    <string name="dnd_suppressing_shade_text" msgid="5588252250634464042">"Bezovta qilinmasin rejimida bildirishnomalar pauza qilingan"</string>
+    <string name="dnd_suppressing_shade_text" msgid="5588252250634464042">"Bezovta qilinmasin rejimida bildirishnomalar pauza qilinadi"</string>
     <string name="media_projection_action_text" msgid="3634906766918186440">"Boshlash"</string>
     <string name="empty_shade_text" msgid="8935967157319717412">"Bildirishnomalar yo‘q"</string>
     <string name="profile_owned_footer" msgid="2756770645766113964">"Profil kuzatilishi mumkin"</string>
@@ -550,7 +548,7 @@
     <string name="monitoring_description_management_ca_certificate" msgid="7785013130658110130">"Tashkilotingiz bu qurilmada CA sertifikatini o‘rnatdi. U himoyalangan tarmoq trafigini nazorat qilishi va o‘zgartirishi mumkin."</string>
     <string name="monitoring_description_managed_profile_ca_certificate" msgid="7904323416598435647">"Tashkilotingiz ishchi profilingizga CA sertifikatini o‘rnatdi. U himoyalangan tarmoq trafigini nazorat qilishi va o‘zgartirishi mumkin."</string>
     <string name="monitoring_description_ca_certificate" msgid="448923057059097497">"Qurilmada CA sertifikati o‘rnatilgan. U himoyalangan tarmoq trafigini nazorat qilishi va o‘zgartirishi mumkin."</string>
-    <string name="monitoring_description_management_network_logging" msgid="216983105036994771">"Administrator qurilmangizdagi trafikni nazorat qiluvchi tarmoq jurnalini yoqdi."</string>
+    <string name="monitoring_description_management_network_logging" msgid="216983105036994771">"Administrator qurilmangizdagi trafikni nazorat qiluvchi tarmoq jurnalini yuritishni faollashtirgan."</string>
     <string name="monitoring_description_named_vpn" msgid="5749932930634037027">"<xliff:g id="VPN_APP">%1$s</xliff:g> ilovasi ishga tushirilgan. U internetdagi harakatlaringiz, jumladan, e-pochta, ilova va veb-saytlardagi xatti-harakatlaringizni kuzatishi mumkin."</string>
     <string name="monitoring_description_two_named_vpns" msgid="3516830755681229463">"<xliff:g id="VPN_APP_0">%1$s</xliff:g> va <xliff:g id="VPN_APP_1">%2$s</xliff:g> ilovalari ishga tushirilgan. Ular tarmoqdagi, jumladan, e-pochta, ilova va veb-saytlardagi xatti-harakatlaringizni kuzatishi mumkin."</string>
     <string name="monitoring_description_managed_profile_named_vpn" msgid="368812367182387320">"Ishchi profilingizda tarmoqdagi, jumladan, e-pochta, ilova va veb-saytlardagi xatti-harakatlaringizni kuzatishi mumkin bo‘lgan <xliff:g id="VPN_APP">%1$s</xliff:g> ilovasi ishga tushirilgan."</string>
@@ -565,7 +563,7 @@
     <string name="monitoring_description_vpn_settings" msgid="5264167033247632071">"VPN sozlamalarini ochish"</string>
     <string name="monitoring_description_ca_cert_settings_separator" msgid="7107390013344435439">" "</string>
     <string name="monitoring_description_ca_cert_settings" msgid="8329781950135541003">"Ishonchli sertifikatlarni ochish"</string>
-    <string name="monitoring_description_network_logging" msgid="577305979174002252">"Administrator qurilmangizdagi trafikni nazorat qiluvchi tarmoq jurnalini yoqdi.\n\nBatafsil axborot olish uchun administratoringizga murojaat qiling."</string>
+    <string name="monitoring_description_network_logging" msgid="577305979174002252">"Administrator qurilmangizdagi trafikni nazorat qiluvchi tarmoq jurnalini yuritishni faollashtirgan.\n\nBatafsil axborot olish uchun administratoringizga murojaat qiling."</string>
     <string name="monitoring_description_vpn" msgid="1685428000684586870">"Siz ilovaga VPN tarmog‘iga ulanishga ruxsat bergansiz.\n\nUshbu ilova qurilmangiz va internetdagi harakatlaringizni, jumladan, e-pochta, ilovalar va veb-saytlardagi xatti-harakatlaringizni kuzatishi mumkin."</string>
     <string name="monitoring_description_vpn_profile_owned" msgid="4964237035412372751">"Sizning ishchi profilingiz <xliff:g id="ORGANIZATION">%1$s</xliff:g> tomonidan boshqariladi.\n\nAdministrator internetdagi harakatlaringizni, jumladan, e-pochta, ilova va xavfsiz veb-saytlar bilan ishlashingizni kuzatishi mumkin.\n\nBatafsil axborot olish uchun administrator bilan bog‘laning.\n\nShuningdek, siz VPN tarmog‘iga ham ulangansiz. U internetdagi harakatlaringizni kuzatishi mumkin."</string>
     <string name="legacy_vpn_name" msgid="4174223520162559145">"VPN"</string>
@@ -702,13 +700,13 @@
     <string name="inline_block_button" msgid="479892866568378793">"Bloklash"</string>
     <string name="inline_keep_button" msgid="299631874103662170">"Ha"</string>
     <string name="inline_minimize_button" msgid="1474436209299333445">"Kichraytirish"</string>
-    <string name="inline_silent_button_silent" msgid="525243786649275816">"Tovushsiz"</string>
+    <string name="inline_silent_button_silent" msgid="525243786649275816">"Sokin"</string>
     <string name="inline_silent_button_stay_silent" msgid="2129254868305468743">"Ovozsiz qolsin"</string>
     <string name="inline_silent_button_alert" msgid="5705343216858250354">"Ogohlantirish"</string>
     <string name="inline_silent_button_keep_alerting" msgid="6577845442184724992">"Signal berishda davom etilsin"</string>
     <string name="inline_turn_off_notifications" msgid="8543989584403106071">"Bildirishnoma kelmasin"</string>
     <string name="inline_keep_showing_app" msgid="4393429060390649757">"Bu ilovadan keladigan bildirishnomalar chiqaversinmi?"</string>
-    <string name="notification_silence_title" msgid="8608090968400832335">"Tovushsiz"</string>
+    <string name="notification_silence_title" msgid="8608090968400832335">"Sokin"</string>
     <string name="notification_alert_title" msgid="3656229781017543655">"Standart"</string>
     <string name="notification_bubble_title" msgid="8330481035191903164">"Pufaklar"</string>
     <string name="notification_channel_summary_low" msgid="4860617986908931158">"Tovush yoki tebranishsiz"</string>
@@ -720,8 +718,8 @@
     <string name="notification_conversation_channel_settings" msgid="2409977688430606835">"Sozlamalar"</string>
     <string name="notification_priority_title" msgid="2079708866333537093">"Muhim"</string>
     <string name="no_shortcut" msgid="8257177117568230126">"<xliff:g id="APP_NAME">%1$s</xliff:g> ilovasida suhbat funksiyalari ishlamaydi"</string>
-    <string name="bubble_overflow_empty_title" msgid="3120029421991510842">"Avvalgi bulutchalar topilmadi"</string>
-    <string name="bubble_overflow_empty_subtitle" msgid="2030874469510497397">"Bu yerda oxirgi va yopilgan bulutcha shaklidagi bildirishnomalar chiqadi"</string>
+    <string name="bubble_overflow_empty_title" msgid="3120029421991510842">"Hech qanday bulutcha topilmadi"</string>
+    <string name="bubble_overflow_empty_subtitle" msgid="2030874469510497397">"Eng oxirgi va yopilgan bulutchali chatlar shu yerda chiqadi"</string>
     <string name="notification_unblockable_desc" msgid="2073030886006190804">"Bu bildirishnomalarni tahrirlash imkonsiz."</string>
     <string name="notification_multichannel_desc" msgid="7414593090056236179">"Ushbu bildirishnomalar guruhi bu yerda sozlanmaydi"</string>
     <string name="notification_delegate_header" msgid="1264510071031479920">"Ishonchli bildirishnoma"</string>
@@ -768,7 +766,7 @@
     </plurals>
     <string name="battery_panel_title" msgid="5931157246673665963">"Batareya sarfi"</string>
     <string name="battery_detail_charging_summary" msgid="8821202155297559706">"Quvvat tejash rejimidan quvvatlash vaqtida foydalanib bo‘lmaydi"</string>
-    <string name="battery_detail_switch_title" msgid="6940976502957380405">"Quvvat tejash rejimi"</string>
+    <string name="battery_detail_switch_title" msgid="6940976502957380405">"Quvvat tejash"</string>
     <string name="battery_detail_switch_summary" msgid="3668748557848025990">"Unumdorlik pasayadi va fonda internetdan foydalanish cheklanadi"</string>
     <string name="keyboard_key_button_template" msgid="8005673627272051429">"<xliff:g id="NAME">%1$s</xliff:g> tugmasi"</string>
     <string name="keyboard_key_home" msgid="3734400625170020657">"Bosh ekran"</string>
@@ -884,12 +882,13 @@
     <string name="accessibility_action_divider_top_50" msgid="6275211443706497621">"Tepada 50%"</string>
     <string name="accessibility_action_divider_top_30" msgid="5780597635887574916">"Tepada 30%"</string>
     <string name="accessibility_action_divider_bottom_full" msgid="7352434720610115395">"Pastda to‘liq ekran"</string>
-    <string name="accessibility_qs_edit_tile_label" msgid="9079791448815232967">"<xliff:g id="POSITION">%1$d</xliff:g>-joy, “<xliff:g id="TILE_NAME">%2$s</xliff:g>” tugmasi. Tahrirlash uchun ustiga ikki marta bosing."</string>
-    <string name="accessibility_qs_edit_add_tile_label" msgid="8292218072049068613">"“<xliff:g id="TILE_NAME">%1$s</xliff:g>” tugmasi. Qo‘shish uchun ustiga ikki marta bosing."</string>
-    <string name="accessibility_qs_edit_move_tile" msgid="6027997446473163426">"“<xliff:g id="TILE_NAME">%1$s</xliff:g>” tugmasini ko‘chirish"</string>
-    <string name="accessibility_qs_edit_remove_tile" msgid="3406781901949899624">"<xliff:g id="TILE_NAME">%1$s</xliff:g> tugmasini olib tashlash"</string>
-    <string name="accessibility_qs_edit_tile_add" msgid="6289879620154587233">"<xliff:g id="POSITION">%2$d</xliff:g>-joyga buni qo‘shish: <xliff:g id="TILE_NAME">%1$s</xliff:g>"</string>
-    <string name="accessibility_qs_edit_tile_move" msgid="4841770637244326837">"<xliff:g id="POSITION">%2$d</xliff:g>-joyga buni ko‘chirish: <xliff:g id="TILE_NAME">%1$s</xliff:g>"</string>
+    <string name="accessibility_qs_edit_remove_tile_action" msgid="775511891457193480">"katakchani olib tashlash"</string>
+    <string name="accessibility_qs_edit_tile_add_action" msgid="5051211910345301833">"oxiriga katakcha kiritish"</string>
+    <string name="accessibility_qs_edit_tile_start_move" msgid="2009373939914517817">"Katakchani boshqa joyga olish"</string>
+    <string name="accessibility_qs_edit_tile_start_add" msgid="7560798153975555772">"Katakcha kiritish"</string>
+    <string name="accessibility_qs_edit_tile_move_to_position" msgid="5198161544045930556">"Bu joyga olish: <xliff:g id="POSITION">%1$d</xliff:g>"</string>
+    <string name="accessibility_qs_edit_tile_add_to_position" msgid="9029163095148274690">"Bu joyga kiritish: <xliff:g id="POSITION">%1$d</xliff:g>"</string>
+    <string name="accessibility_qs_edit_position" msgid="4509277359815711830">"Joylashuv: <xliff:g id="POSITION">%1$d</xliff:g>"</string>
     <string name="accessibility_desc_quick_settings_edit" msgid="741658939453595297">"Tezkor sozlamalar muharriri"</string>
     <string name="accessibility_desc_notification_icon" msgid="7331265967584178674">"<xliff:g id="ID_1">%1$s</xliff:g> bildirishnomasi: <xliff:g id="ID_2">%2$s</xliff:g>"</string>
     <string name="dock_forced_resizable" msgid="4689301323912928801">"Ilova ekranni ikkiga bo‘lish rejimini qo‘llab-quvvatlamaydi."</string>
@@ -922,11 +921,13 @@
     <string name="pip_skip_to_prev" msgid="3742589641443049237">"Avvalgisiga qaytish"</string>
     <string name="accessibility_action_pip_resize" msgid="8237306972921160456">"Oʻlchamini oʻzgartirish"</string>
     <string name="thermal_shutdown_title" msgid="2702966892682930264">"Qizigani uchun o‘chirildi"</string>
-    <string name="thermal_shutdown_message" msgid="7432744214105003895">"Telefoningiz hozir normal holatda ishlayapti"</string>
+    <string name="thermal_shutdown_message" msgid="6142269839066172984">"Endi telefoningiz normal holatda ishlayapti.\nBatafsil axborot uchun bosing"</string>
     <string name="thermal_shutdown_dialog_message" msgid="6745684238183492031">"Telefon qizib ketganligi sababli sovitish uchun o‘chirib qo‘yilgan. Endi telefoningiz normal holatda ishlayapti.\n\nTelefon bu hollarda qizib ketishi mumkin:\n	• Resurstalab ilovalar ishlatilganda (masalan, o‘yin, video yoki navigatsiya ilovalari)\n	• Katta faylni yuklab olishda yoki yuklashda\n	• Telefondan yuqori haroratda foydalanganda"</string>
+    <string name="thermal_shutdown_dialog_help_text" msgid="6413474593462902901">"Batafsil axborot"</string>
     <string name="high_temp_title" msgid="2218333576838496100">"Telefon qizib ketdi"</string>
-    <string name="high_temp_notif_message" msgid="163928048626045592">"Telefon sovish paytida ayrim funksiyalar ishlamasligi mumkin"</string>
+    <string name="high_temp_notif_message" msgid="1277346543068257549">"Telefon sovib qolganda ayrim funksiyalari ishlamasligi mumkin.\nBatafsil axborot uchun bosing"</string>
     <string name="high_temp_dialog_message" msgid="3793606072661253968">"Telefon avtomatik ravishda o‘zini sovitadi. Telefoningizdan foydalanishda davom etishingiz mumkin, lekin u sekinroq ishlashi mumkin.\n\nTelefon sovishi bilan normal holatda ishlashni boshlaydi."</string>
+    <string name="high_temp_dialog_help_text" msgid="7380171287943345858">"Batafsil axborot"</string>
     <string name="high_temp_alarm_title" msgid="2359958549570161495">"Quvvatlash moslamasini uzing"</string>
     <string name="high_temp_alarm_notify_message" msgid="7186272817783835089">"Bu qurilmani quvvatlashda muammo bor. Quvvat adapteri va kabelni tarmoqdan uzing, ular qizib ketgan boʻlishi mumkin."</string>
     <string name="high_temp_alarm_help_care_steps" msgid="5017002218341329566">"Batafsil axborot"</string>
@@ -988,6 +989,13 @@
     <string name="open_saver_setting_action" msgid="2111461909782935190">"Sozlamalar"</string>
     <string name="auto_saver_okay_action" msgid="7815925750741935386">"OK"</string>
     <string name="heap_dump_tile_name" msgid="2464189856478823046">"Dump SysUI Heap"</string>
+    <string name="ongoing_privacy_chip_content_single_app" msgid="2969750601815230385">"<xliff:g id="APP">%1$s</xliff:g> ishlatmoqda: <xliff:g id="TYPES_LIST">%2$s</xliff:g>."</string>
+    <string name="ongoing_privacy_chip_content_multiple_apps" msgid="8341216022442383954">"Ilovalarda ishlatilmoqda: <xliff:g id="TYPES_LIST">%s</xliff:g>."</string>
+    <string name="ongoing_privacy_dialog_separator" msgid="1866222499727706187">", "</string>
+    <string name="ongoing_privacy_dialog_last_separator" msgid="5615876114268009767">" va "</string>
+    <string name="privacy_type_camera" msgid="7974051382167078332">"kamera"</string>
+    <string name="privacy_type_location" msgid="7991481648444066703">"joylashuv"</string>
+    <string name="privacy_type_microphone" msgid="9136763906797732428">"mikrofon"</string>
     <string name="sensor_privacy_mode" msgid="4462866919026513692">"Sensorlar nofaol"</string>
     <string name="device_services" msgid="1549944177856658705">"Qurilma xizmatlari"</string>
     <string name="music_controls_no_title" msgid="4166497066552290938">"Nomsiz"</string>
@@ -1066,7 +1074,8 @@
     <string name="controls_seeding_in_progress" msgid="3033855341410264148">"Tavsiyalar yuklanmoqda"</string>
     <string name="controls_media_title" msgid="1746947284862928133">"Media"</string>
     <string name="controls_media_close_session" msgid="3957093425905475065">"Joriy seans berkitilsin."</string>
-    <string name="controls_media_dismiss_button" msgid="4485675693008031646">"Berkitish"</string>
+    <string name="controls_media_active_session" msgid="1984383994625845642">"Joriy seansni berkitish imkonsiz."</string>
+    <string name="controls_media_dismiss_button" msgid="9081375542265132213">"Yopish"</string>
     <string name="controls_media_resume" msgid="1933520684481586053">"Davom etish"</string>
     <string name="controls_media_settings_button" msgid="5815790345117172504">"Sozlamalar"</string>
     <string name="controls_error_timeout" msgid="794197289772728958">"Nofaol. Ilovani tekshiring"</string>
@@ -1081,4 +1090,11 @@
     <string name="controls_added_tooltip" msgid="4842812921719153085">"Yangi boshqaruv elementlari bilan tanishish uchun quvvat tugmasini bosib turing"</string>
     <string name="controls_menu_add" msgid="4447246119229920050">"Element kiritish"</string>
     <string name="controls_menu_edit" msgid="890623986951347062">"Elementlarni tahrirlash"</string>
+    <string name="media_output_dialog_add_output" msgid="5642703238877329518">"Chiquvchi qurilmani kiritish"</string>
+    <string name="media_output_dialog_group" msgid="5571251347877452212">"Guruh"</string>
+    <string name="media_output_dialog_single_device" msgid="3102758980643351058">"1 ta qurilma tanlandi"</string>
+    <string name="media_output_dialog_multiple_devices" msgid="1093771040315422350">"<xliff:g id="COUNT">%1$d</xliff:g> ta qurilma tanlandi"</string>
+    <string name="media_output_dialog_disconnected" msgid="1834473104836986046">"<xliff:g id="DEVICE_NAME">%1$s</xliff:g> (uzilgan)"</string>
+    <string name="media_output_dialog_connect_failed" msgid="3225190634236259010">"Ulanmadi. Qayta urining."</string>
+    <string name="media_output_dialog_pairing_new" msgid="9099497976087485862">"Yangi qurilmani ulash"</string>
 </resources>

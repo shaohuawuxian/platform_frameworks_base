@@ -29,6 +29,10 @@ import java.util.Objects;
  * information is provided in accordance with carrier policy and branding preferences; it is not
  * necessarily a precise or accurate representation of the current state and should be treated
  * accordingly.
+ * To be notified of changes in TelephonyDisplayInfo, use
+ * {@link TelephonyManager#registerTelephonyCallback} with a {@link TelephonyCallback}
+ * that implements {@link TelephonyCallback.DisplayInfoListener}.
+ * Override the onDisplayInfoChanged() method to handle the broadcast.
  */
 public final class TelephonyDisplayInfo implements Parcelable {
     /**

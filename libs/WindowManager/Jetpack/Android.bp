@@ -12,6 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+package {
+    // See: http://go/android-license-faq
+    // A large-scale-change added 'default_applicable_licenses' to import
+    // all of the 'license_kinds' from "frameworks_base_license"
+    // to get the below license kinds:
+    //   SPDX-license-identifier-Apache-2.0
+    default_applicable_licenses: ["frameworks_base_license"],
+}
+
 android_library_import {
     name: "window-sidecar",
     aars: ["window-sidecar-release.aar"],
@@ -24,14 +33,14 @@ java_library {
     static_libs: ["window-sidecar"],
     installable: true,
     sdk_version: "core_platform",
-    vendor: true,
+    system_ext_specific: true,
     libs: ["framework", "androidx.annotation_annotation",],
     required: ["androidx.window.sidecar.xml",],
 }
 
 prebuilt_etc {
     name: "androidx.window.sidecar.xml",
-    vendor: true,
+    system_ext_specific: true,
     sub_dir: "permissions",
     src: "androidx.window.sidecar.xml",
     filename_from_src: true,

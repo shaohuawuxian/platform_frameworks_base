@@ -111,6 +111,7 @@ public class Annotation {
     public @interface NetworkType {
     }
 
+    // TODO(b/180542000): remove and replace references with @ApnSetting.ApnType
     @IntDef(flag = true, prefix = {"TYPE_"}, value = {
             ApnSetting.TYPE_DEFAULT,
             ApnSetting.TYPE_MMS,
@@ -124,6 +125,7 @@ public class Annotation {
             ApnSetting.TYPE_EMERGENCY,
             ApnSetting.TYPE_MCX,
             ApnSetting.TYPE_XCAP,
+            // ApnSetting.TYPE_ENTERPRISE
     })
     @Retention(RetentionPolicy.SOURCE)
     public @interface ApnType {
@@ -624,6 +626,20 @@ public class Annotation {
     public @interface UiccAppType{}
 
     /**
+     * UICC SIM Application Types including UNKNOWN
+     */
+    @IntDef(prefix = { "APPTYPE_" }, value = {
+            TelephonyManager.APPTYPE_UNKNOWN,
+            TelephonyManager.APPTYPE_SIM,
+            TelephonyManager.APPTYPE_USIM,
+            TelephonyManager.APPTYPE_RUIM,
+            TelephonyManager.APPTYPE_CSIM,
+            TelephonyManager.APPTYPE_ISIM
+    })
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface UiccAppTypeExt{}
+
+    /**
      * Override network type
      */
     @Retention(RetentionPolicy.SOURCE)
@@ -634,4 +650,15 @@ public class Annotation {
             TelephonyDisplayInfo.OVERRIDE_NETWORK_TYPE_NR_NSA,
             TelephonyDisplayInfo.OVERRIDE_NETWORK_TYPE_NR_NSA_MMWAVE})
     public @interface OverrideNetworkType {}
+
+    /**
+     *  Result of a thermal mitigation request.
+     */
+    @Retention(RetentionPolicy.SOURCE)
+    @IntDef(prefix = { "THERMAL_MITIGATION_RESULT_" }, value = {
+        TelephonyManager.THERMAL_MITIGATION_RESULT_SUCCESS,
+        TelephonyManager.THERMAL_MITIGATION_RESULT_MODEM_ERROR,
+        TelephonyManager.THERMAL_MITIGATION_RESULT_INVALID_STATE,
+        TelephonyManager.THERMAL_MITIGATION_RESULT_UNKNOWN_ERROR})
+    public @interface ThermalMitigationResult {}
 }

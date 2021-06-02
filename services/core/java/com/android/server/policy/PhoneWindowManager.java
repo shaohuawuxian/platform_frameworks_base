@@ -69,6 +69,7 @@ import static android.view.WindowManager.TAKE_SCREENSHOT_SELECTED_REGION;
 import static android.view.WindowManagerGlobal.ADD_OKAY;
 import static android.view.WindowManagerGlobal.ADD_PERMISSION_DENIED;
 
+import static com.android.internal.config.sysui.SystemUiDeviceConfigFlags.SCREENSHOT_KEYCHORD_DELAY;
 import static com.android.server.policy.WindowManagerPolicy.WindowManagerFuncs.CAMERA_LENS_COVERED;
 import static com.android.server.policy.WindowManagerPolicy.WindowManagerFuncs.CAMERA_LENS_COVER_ABSENT;
 import static com.android.server.policy.WindowManagerPolicy.WindowManagerFuncs.CAMERA_LENS_UNCOVERED;
@@ -148,6 +149,7 @@ import android.os.UEventObserver;
 import android.os.UserHandle;
 import android.os.VibrationEffect;
 import android.os.Vibrator;
+import android.provider.DeviceConfig;
 import android.provider.MediaStore;
 import android.provider.Settings;
 import android.service.dreams.DreamManagerInternal;
@@ -209,7 +211,6 @@ import com.android.server.policy.keyguard.KeyguardStateMonitor.StateCallback;
 import com.android.server.statusbar.StatusBarManagerInternal;
 import com.android.server.vr.VrManagerInternal;
 import com.android.server.wm.ActivityTaskManagerInternal;
-import com.android.server.wm.ActivityTaskManagerInternal.SleepToken;
 import com.android.server.wm.AppTransition;
 import com.android.server.wm.DisplayPolicy;
 import com.android.server.wm.DisplayRotation;
@@ -491,7 +492,7 @@ public class PhoneWindowManager implements WindowManagerPolicy {
     private boolean mPendingKeyguardOccluded;
     private boolean mKeyguardOccludedChanged;
 
-    SleepToken mScreenOffSleepToken;
+    private ActivityTaskManagerInternal.SleepTokenAcquirer mScreenOffSleepTokenAcquirer;
     volatile boolean mKeyguardOccluded;
     Intent mHomeIntent;
     Intent mCarDockIntent;
@@ -1380,12 +1381,14 @@ public class PhoneWindowManager implements WindowManagerPolicy {
     }
 
     private long getScreenshotChordLongPressDelay() {
+        long delayMs = DeviceConfig.getLong(
+                DeviceConfig.NAMESPACE_SYSTEMUI, SCREENSHOT_KEYCHORD_DELAY,
+                ViewConfiguration.get(mContext).getScreenshotChordKeyTimeout());
         if (mKeyguardDelegate.isShowing()) {
             // Double the time it takes to take a screenshot from the keyguard
-            return (long) (KEYGUARD_SCREENSHOT_CHORD_DELAY_MULTIPLIER *
-                    ViewConfiguration.get(mContext).getScreenshotChordKeyTimeout());
+            return (long) (KEYGUARD_SCREENSHOT_CHORD_DELAY_MULTIPLIER * delayMs);
         }
-        return ViewConfiguration.get(mContext).getScreenshotChordKeyTimeout();
+        return delayMs;
     }
 
     private long getRingerToggleChordDelay() {
@@ -1463,8 +1466,15 @@ public class PhoneWindowManager implements WindowManagerPolicy {
                 Settings.Secure.USER_SETUP_COMPLETE, 0, UserHandle.USER_CURRENT) != 0;
         if (mHasFeatureLeanback) {
             isSetupComplete &= isTvUserSetupComplete();
+        } else if (mHasFeatureAuto) {
+            isSetupComplete &= isAutoUserSetupComplete();
         }
         return isSetupComplete;
+    }
+
+    private boolean isAutoUserSetupComplete() {
+        return Settings.Secure.getIntForUser(mContext.getContentResolver(),
+                "android.car.SETUP_WIZARD_IN_PROGRESS", 0, UserHandle.USER_CURRENT) == 0;
     }
 
     private boolean isTvUserSetupComplete() {
@@ -1743,6 +1753,9 @@ public class PhoneWindowManager implements WindowManagerPolicy {
         mAccessibilityShortcutController =
                 new AccessibilityShortcutController(mContext, new Handler(), mCurrentUserId);
         mLogger = new MetricsLogger();
+
+        mScreenOffSleepTokenAcquirer = mActivityTaskManagerInternal
+                .createSleepTokenAcquirer("ScreenOff");
 
         Resources res = mContext.getResources();
         mWakeOnDpadKeyPress =
@@ -2286,9 +2299,9 @@ public class PhoneWindowManager implements WindowManagerPolicy {
 
     /** {@inheritDoc} */
     @Override
-    public StartingSurface addSplashScreen(IBinder appToken, String packageName, int theme,
-            CompatibilityInfo compatInfo, CharSequence nonLocalizedLabel, int labelRes, int icon,
-            int logo, int windowFlags, Configuration overrideConfig, int displayId) {
+    public StartingSurface addSplashScreen(IBinder appToken, int userId, String packageName,
+            int theme, CompatibilityInfo compatInfo, CharSequence nonLocalizedLabel, int labelRes,
+            int icon, int logo, int windowFlags, Configuration overrideConfig, int displayId) {
         if (!SHOW_SPLASH_SCREENS) {
             return null;
         }
@@ -2315,10 +2328,12 @@ public class PhoneWindowManager implements WindowManagerPolicy {
 
             if (theme != context.getThemeResId() || labelRes != 0) {
                 try {
-                    context = context.createPackageContext(packageName, CONTEXT_RESTRICTED);
+                    context = context.createPackageContextAsUser(packageName, CONTEXT_RESTRICTED,
+                            UserHandle.of(userId));
                     context.setTheme(theme);
                 } catch (PackageManager.NameNotFoundException e) {
-                    // Ignore
+                    Slog.w(TAG,  "Failed creating package context with package name "
+                            + packageName + " for user " + userId, e);
                 }
             }
 
@@ -4991,15 +5006,9 @@ public class PhoneWindowManager implements WindowManagerPolicy {
     // TODO (multidisplay): Support multiple displays in WindowManagerPolicy.
     private void updateScreenOffSleepToken(boolean acquire) {
         if (acquire) {
-            if (mScreenOffSleepToken == null) {
-                mScreenOffSleepToken = mActivityTaskManagerInternal.acquireSleepToken(
-                        "ScreenOff", DEFAULT_DISPLAY);
-            }
+            mScreenOffSleepTokenAcquirer.acquire(DEFAULT_DISPLAY);
         } else {
-            if (mScreenOffSleepToken != null) {
-                mScreenOffSleepToken.release();
-                mScreenOffSleepToken = null;
-            }
+            mScreenOffSleepTokenAcquirer.release(DEFAULT_DISPLAY);
         }
     }
 
@@ -5248,6 +5257,7 @@ public class PhoneWindowManager implements WindowManagerPolicy {
         long[] pattern;
         switch (effectId) {
             case HapticFeedbackConstants.CONTEXT_CLICK:
+            case HapticFeedbackConstants.GESTURE_END:
                 return VibrationEffect.get(VibrationEffect.EFFECT_TICK);
             case HapticFeedbackConstants.TEXT_HANDLE_MOVE:
                 if (!mHapticTextHandleEnabled) {
@@ -5260,7 +5270,6 @@ public class PhoneWindowManager implements WindowManagerPolicy {
             case HapticFeedbackConstants.VIRTUAL_KEY_RELEASE:
             case HapticFeedbackConstants.ENTRY_BUMP:
             case HapticFeedbackConstants.DRAG_CROSSING:
-            case HapticFeedbackConstants.GESTURE_END:
                 return VibrationEffect.get(VibrationEffect.EFFECT_TICK, false);
             case HapticFeedbackConstants.KEYBOARD_TAP: // == KEYBOARD_PRESS
             case HapticFeedbackConstants.VIRTUAL_KEY:

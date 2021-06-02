@@ -88,6 +88,26 @@ public abstract class DevicePolicyManagerInternal {
     public abstract boolean isActiveAdminWithPolicy(int uid, int reqPolicy);
 
     /**
+     * Checks if an app with given uid is an active device owner of its user.
+     *
+     * <p>This takes the DPMS lock.  DO NOT call from PM/UM/AM with their lock held.
+     *
+     * @param uid App uid.
+     * @return true if the uid is an active device owner.
+     */
+    public abstract boolean isActiveDeviceOwner(int uid);
+
+    /**
+     * Checks if an app with given uid is an active profile owner of its user.
+     *
+     * <p>This takes the DPMS lock.  DO NOT call from PM/UM/AM with their lock held.
+     *
+     * @param uid App uid.
+     * @return true if the uid is an active profile owner.
+     */
+    public abstract boolean isActiveProfileOwner(int uid);
+
+    /**
      * Checks if an app with given uid is the active supervision admin.
      *
      * <p>This takes the DPMS lock. DO NOT call from PM/UM/AM with their lock held.
@@ -222,4 +242,16 @@ public abstract class DevicePolicyManagerInternal {
      * Returns the profile owner component for the given user, or {@code null} if there is not one.
      */
     public abstract ComponentName getProfileOwnerAsUser(int userHandle);
+
+    /**
+     * Returns whether this class supports being deferred the responsibility for resetting the given
+     * op.
+     */
+    public abstract boolean supportsResetOp(int op);
+
+    /**
+     * Resets the given op across the profile group of the given user for the given package. Assumes
+     * {@link #supportsResetOp(int)} is true.
+     */
+    public abstract void resetOp(int op, String packageName, @UserIdInt int userId);
 }

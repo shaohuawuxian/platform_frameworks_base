@@ -1,7 +1,15 @@
+package {
+    // See: http://go/android-license-faq
+    // A large-scale-change added 'default_applicable_licenses' to import
+    // all of the 'license_kinds' from "frameworks_base_license"
+    // to get the below license kinds:
+    //   SPDX-license-identifier-Apache-2.0
+    default_applicable_licenses: ["frameworks_base_license"],
+}
+
 filegroup {
     name: "services.core-sources",
     srcs: ["java/**/*.java"],
-    exclude_srcs: [":connectivity-service-srcs"],
     path: "java",
     visibility: ["//frameworks/base/services"],
 }
@@ -72,9 +80,18 @@ genrule {
     out: ["services.core.protolog.json"],
 }
 
+genrule {
+    name: "statslog-art-java-gen",
+    tools: ["stats-log-api-gen"],
+    cmd: "$(location stats-log-api-gen) --java $(out) --module art" +
+         " --javaPackage com.android.internal.art --javaClass ArtStatsLog --worksource",
+    out: ["com/android/internal/art/ArtStatsLog.java"],
+}
+
 java_library_static {
     name: "services.core.unboosted",
     srcs: [
+        ":statslog-art-java-gen",
         ":services.core.protologsrc",
         ":dumpstate_aidl",
         ":framework_native_aidl",
@@ -84,6 +101,7 @@ java_library_static {
         ":storaged_aidl",
         ":vold_aidl",
         ":platform-compat-config",
+        ":platform-compat-overrides",
         ":display-device-config",
         "java/com/android/server/EventLogTags.logtags",
         "java/com/android/server/am/EventLogTags.logtags",
@@ -94,10 +112,9 @@ java_library_static {
     libs: [
         "services.net",
         "android.hardware.light-V2.0-java",
-        "android.hardware.power-java",
+        "android.hardware.power-V1-java",
         "android.hardware.power-V1.0-java",
-        "android.hardware.vibrator-java",
-        "android.net.ipsec.ike.stubs.module_lib",
+        "android.hardware.vibrator-V1-java",
         "app-compat-annotations",
         "framework-tethering.stubs.module_lib",
         "service-permission.stubs.system_server",
@@ -112,11 +129,14 @@ java_library_static {
         "time_zone_distro",
         "time_zone_distro_installer",
         "android.hardware.authsecret-V1.0-java",
+        "android.hardware.boot-V1.0-java",
+        "android.hardware.boot-V1.1-java",
+        "android.hardware.boot-V1.2-java",
         "android.hardware.broadcastradio-V2.0-java",
         "android.hardware.health-V1.0-java",
         "android.hardware.health-V2.0-java",
         "android.hardware.health-V2.1-java",
-        "android.hardware.light-java",
+        "android.hardware.light-V1-java",
         "android.hardware.tv.cec-V1.0-java",
         "android.hardware.weaver-V1.0-java",
         "android.hardware.biometrics.face-V1.0-java",
@@ -124,13 +144,13 @@ java_library_static {
         "android.hardware.oemlock-V1.0-java",
         "android.hardware.configstore-V1.0-java",
         "android.hardware.contexthub-V1.0-java",
-        "android.hardware.rebootescrow-java",
+        "android.hardware.rebootescrow-V1-java",
         "android.hardware.soundtrigger-V2.3-java",
         "android.hidl.manager-V1.2-java",
         "capture_state_listener-aidl-java",
-        "dnsresolver_aidl_interface-java",
+        "dnsresolver_aidl_interface-V7-java",
         "icu4j_calendar_astronomer",
-        "netd_aidl_interfaces-platform-java",
+        "netd-client",
         "overlayable_policy_aidl-java",
         "SurfaceFlingerProperties",
         "com.android.sysprop.watchdog",
@@ -179,49 +199,3 @@ prebuilt_etc {
     src: ":services.core.json.gz",
 }
 
-// TODO: Move connectivity service sources to independent directory.
-filegroup {
-    name: "connectivity-service-srcs",
-    srcs: [
-        "java/com/android/server/ConnectivityService.java",
-        "java/com/android/server/ConnectivityServiceInitializer.java",
-        "java/com/android/server/TestNetworkService.java",
-        "java/com/android/server/connectivity/AutodestructReference.java",
-        "java/com/android/server/connectivity/ConnectivityConstants.java",
-        "java/com/android/server/connectivity/DataConnectionStats.java",
-        "java/com/android/server/connectivity/DefaultNetworkMetrics.java",
-        "java/com/android/server/connectivity/DnsManager.java",
-        "java/com/android/server/connectivity/IpConnectivityEventBuilder.java",
-        "java/com/android/server/connectivity/IpConnectivityMetrics.java",
-        "java/com/android/server/connectivity/KeepaliveTracker.java",
-        "java/com/android/server/connectivity/LingerMonitor.java",
-        "java/com/android/server/connectivity/MockableSystemProperties.java",
-        "java/com/android/server/connectivity/MultipathPolicyTracker.java",
-        "java/com/android/server/connectivity/Nat464Xlat.java",
-        "java/com/android/server/connectivity/NetdEventListenerService.java",
-        "java/com/android/server/connectivity/NetworkAgentInfo.java",
-        "java/com/android/server/connectivity/NetworkDiagnostics.java",
-        "java/com/android/server/connectivity/NetworkNotificationManager.java",
-        "java/com/android/server/connectivity/NetworkRanker.java",
-        "java/com/android/server/connectivity/PermissionMonitor.java",
-        "java/com/android/server/connectivity/ProxyTracker.java",
-        "java/com/android/server/connectivity/TcpKeepaliveController.java",
-        "java/com/android/server/connectivity/Vpn.java",
-        "java/com/android/server/connectivity/VpnIkev2Utils.java",
-        "java/com/android/server/net/LockdownVpnTracker.java",
-    ],
-}
-
-java_library {
-    name: "service-connectivity",
-    srcs: [
-        ":connectivity-service-srcs",
-    ],
-    installable: true,
-    libs: [
-        "android.net.ipsec.ike",
-        "services.core",
-        "services.net",
-        "unsupportedappusage",
-    ],
-}

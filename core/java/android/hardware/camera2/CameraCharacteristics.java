@@ -26,6 +26,7 @@ import android.hardware.camera2.params.RecommendedStreamConfigurationMap;
 import android.hardware.camera2.params.SessionConfiguration;
 import android.hardware.camera2.utils.ArrayUtils;
 import android.hardware.camera2.utils.TypeReference;
+import android.os.Build;
 import android.util.Rational;
 
 import java.util.ArrayList;
@@ -79,7 +80,7 @@ public final class CameraCharacteristics extends CameraMetadata<CameraCharacteri
          *
          * @hide
          */
-        @UnsupportedAppUsage
+        @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
         public Key(String name, Class<T> type, long vendorId) {
             mKey = new CameraMetadataNative.Key<T>(name,  type, vendorId);
         }
@@ -193,7 +194,7 @@ public final class CameraCharacteristics extends CameraMetadata<CameraCharacteri
         }
     }
 
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     private final CameraMetadataNative mProperties;
     private List<CameraCharacteristics.Key<?>> mKeys;
     private List<CameraCharacteristics.Key<?>> mKeysNeedingPermission;
@@ -2771,7 +2772,9 @@ public final class CameraCharacteristics extends CameraMetadata<CameraCharacteri
      * </ol>
      * </li>
      * <li>Setting {@link CaptureRequest#CONTROL_ZOOM_RATIO android.control.zoomRatio} to values different than 1.0 and
-     * {@link CaptureRequest#SCALER_CROP_REGION android.scaler.cropRegion} to be windowboxing at the same time is undefined behavior.</li>
+     * {@link CaptureRequest#SCALER_CROP_REGION android.scaler.cropRegion} to be windowboxing at the same time are not supported. In this
+     * case, the camera framework will override the {@link CaptureRequest#SCALER_CROP_REGION android.scaler.cropRegion} to be the active
+     * array.</li>
      * </ul>
      * <p>LEGACY capability devices will only support CENTER_ONLY cropping.</p>
      * <p><b>Possible values:</b>

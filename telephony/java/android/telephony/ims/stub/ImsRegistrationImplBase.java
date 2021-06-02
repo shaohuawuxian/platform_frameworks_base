@@ -17,16 +17,19 @@
 package android.telephony.ims.stub;
 
 import android.annotation.IntDef;
+import android.annotation.IntRange;
+import android.annotation.NonNull;
+import android.annotation.Nullable;
 import android.annotation.SystemApi;
 import android.net.Uri;
 import android.os.RemoteException;
 import android.telephony.ims.ImsReasonInfo;
+import android.telephony.ims.ImsRegistrationAttributes;
 import android.telephony.ims.RegistrationManager;
 import android.telephony.ims.aidl.IImsRegistration;
 import android.telephony.ims.aidl.IImsRegistrationCallback;
 import android.util.Log;
 
-import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.telephony.util.RemoteCallbackListExt;
 import com.android.internal.util.ArrayUtils;
 
@@ -36,6 +39,9 @@ import java.lang.annotation.RetentionPolicy;
 /**
  * Controls IMS registration for this ImsService and notifies the framework when the IMS
  * registration for this ImsService has changed status.
+ * <p>
+ * Note: There is no guarantee on the thread that the calls from the framework will be called on. It
+ * is the implementors responsibility to handle moving the calls to a working thread if required.
  * @hide
  */
 @SystemApi
@@ -47,11 +53,11 @@ public class ImsRegistrationImplBase {
      * @hide
      */
     // Defines the underlying radio technology type that we have registered for IMS over.
-    @IntDef(flag = true,
-            value = {
+    @IntDef(value = {
                     REGISTRATION_TECH_NONE,
                     REGISTRATION_TECH_LTE,
-                    REGISTRATION_TECH_IWLAN
+                    REGISTRATION_TECH_IWLAN,
+                    REGISTRATION_TECH_NR
             })
     @Retention(RetentionPolicy.SOURCE)
     public @interface ImsRegistrationTech {}
@@ -60,13 +66,18 @@ public class ImsRegistrationImplBase {
      */
     public static final int REGISTRATION_TECH_NONE = -1;
     /**
-     * IMS is registered to IMS via LTE.
+     * This ImsService is registered to IMS via LTE.
      */
     public static final int REGISTRATION_TECH_LTE = 0;
     /**
-     * IMS is registered to IMS via IWLAN.
+     * This ImsService is registered to IMS via IWLAN.
      */
     public static final int REGISTRATION_TECH_IWLAN = 1;
+    // REGISTRATION_TECH = 2 omitted purposefully.
+    /**
+     * This ImsService is registered to IMS via NR.
+     */
+    public static final int REGISTRATION_TECH_NR = 3;
 
     // Registration states, used to notify new ImsRegistrationImplBase#Callbacks of the current
     // state.
@@ -79,7 +90,10 @@ public class ImsRegistrationImplBase {
 
         @Override
         public @ImsRegistrationTech int getRegistrationTechnology() throws RemoteException {
-            return getConnectionType();
+            synchronized (mLock) {
+                return (mRegistrationAttributes == null) ? REGISTRATION_TECH_NONE
+                        : mRegistrationAttributes.getRegistrationTechnology();
+            }
         }
 
         @Override
@@ -91,14 +105,28 @@ public class ImsRegistrationImplBase {
         public void removeRegistrationCallback(IImsRegistrationCallback c) throws RemoteException {
             ImsRegistrationImplBase.this.removeRegistrationCallback(c);
         }
+
+        @Override
+        public void triggerFullNetworkRegistration(int sipCode, String sipReason) {
+            ImsRegistrationImplBase.this.triggerFullNetworkRegistration(sipCode, sipReason);
+        }
+
+        @Override
+        public void triggerUpdateSipDelegateRegistration() {
+            ImsRegistrationImplBase.this.updateSipDelegateRegistration();
+        }
+
+        @Override
+        public void triggerSipDelegateDeregistration() {
+            ImsRegistrationImplBase.this.triggerSipDelegateDeregistration();
+        }
     };
 
     private final RemoteCallbackListExt<IImsRegistrationCallback> mCallbacks =
             new RemoteCallbackListExt<>();
     private final Object mLock = new Object();
     // Locked on mLock
-    private @ImsRegistrationTech
-    int mConnectionType = REGISTRATION_TECH_NONE;
+    private ImsRegistrationAttributes mRegistrationAttributes;
     // Locked on mLock
     private int mRegistrationState = REGISTRATION_STATE_UNKNOWN;
     // Locked on mLock, create unspecified disconnect cause.
@@ -126,19 +154,74 @@ public class ImsRegistrationImplBase {
     }
 
     /**
+     * Called by the framework to request that the ImsService perform the network registration
+     * of all SIP delegates associated with this ImsService.
+     * <p>
+     * If the SIP delegate feature tag configuration has changed, then this method will be
+     * called in order to let the ImsService know that it can pick up these changes in the IMS
+     * registration.
+     */
+    public void updateSipDelegateRegistration() {
+        // Stub implementation, ImsService should implement this
+    }
+
+
+    /**
+     * Called by the framework to request that the ImsService perform the network deregistration of
+     * all SIP delegates associated with this ImsService.
+     * <p>
+     * This is typically called in situations where the user has changed the configuration of the
+     * device (for example, the default messaging application) and the framework is reconfiguring
+     * the tags associated with each IMS application.
+     * <p>
+     * This should not affect the registration of features managed by the ImsService itself, such as
+     * feature tags related to MMTEL registration.
+     */
+    public void triggerSipDelegateDeregistration() {
+        // Stub implementation, ImsService should implement this
+    }
+
+    /**
+     * Called by the framework to notify the ImsService that a SIP delegate connection has received
+     * a SIP message containing a permanent failure response (such as a 403) or an indication that a
+     * SIP response timer has timed out in response to an outgoing SIP message. This method will be
+     * called when this condition occurs to trigger the ImsService to tear down the full IMS
+     * registration and re-register again.
+     *
+     * @param sipCode The SIP error code that represents a permanent failure that was received in
+     *    response to a request generated by the IMS application. See RFC3261 7.2 for the general
+     *    classes of responses available here, however the codes that generate this condition may
+     *    be carrier specific.
+     * @param sipReason The reason associated with the SIP error code. {@code null} if there was no
+     *    reason associated with the error.
+     */
+    public void triggerFullNetworkRegistration(@IntRange(from = 100, to = 699) int sipCode,
+            @Nullable String sipReason) {
+        // Stub implementation, ImsService should implement this
+    }
+
+
+    /**
      * Notify the framework that the device is connected to the IMS network.
      *
-     * @param imsRadioTech the radio access technology. Valid values are defined as
-     * {@link #REGISTRATION_TECH_LTE} and {@link #REGISTRATION_TECH_IWLAN}.
+     * @param imsRadioTech the radio access technology.
      */
     public final void onRegistered(@ImsRegistrationTech int imsRadioTech) {
-        updateToState(imsRadioTech, RegistrationManager.REGISTRATION_STATE_REGISTERED);
+        onRegistered(new ImsRegistrationAttributes.Builder(imsRadioTech).build());
+    }
+
+    /**
+     * Notify the framework that the device is connected to the IMS network.
+     *
+     * @param attributes The attributes associated with the IMS registration.
+     */
+    public final void onRegistered(@NonNull ImsRegistrationAttributes attributes) {
+        updateToState(attributes, RegistrationManager.REGISTRATION_STATE_REGISTERED);
         mCallbacks.broadcastAction((c) -> {
             try {
-                c.onRegistered(imsRadioTech);
+                c.onRegistered(attributes);
             } catch (RemoteException e) {
-                Log.w(LOG_TAG, e + " " + "onRegistrationConnected() - Skipping " +
-                        "callback.");
+                Log.w(LOG_TAG, e + "onRegistered(int, Set) - Skipping callback.");
             }
         });
     }
@@ -146,17 +229,24 @@ public class ImsRegistrationImplBase {
     /**
      * Notify the framework that the device is trying to connect the IMS network.
      *
-     * @param imsRadioTech the radio access technology. Valid values are defined as
-     * {@link #REGISTRATION_TECH_LTE} and {@link #REGISTRATION_TECH_IWLAN}.
+     * @param imsRadioTech the radio access technology.
      */
     public final void onRegistering(@ImsRegistrationTech int imsRadioTech) {
-        updateToState(imsRadioTech, RegistrationManager.REGISTRATION_STATE_REGISTERING);
+        onRegistering(new ImsRegistrationAttributes.Builder(imsRadioTech).build());
+    }
+
+    /**
+     * Notify the framework that the device is trying to connect the IMS network.
+     *
+     * @param attributes The attributes associated with the IMS registration.
+     */
+    public final void onRegistering(@NonNull ImsRegistrationAttributes attributes) {
+        updateToState(attributes, RegistrationManager.REGISTRATION_STATE_REGISTERING);
         mCallbacks.broadcastAction((c) -> {
             try {
-                c.onRegistering(imsRadioTech);
+                c.onRegistering(attributes);
             } catch (RemoteException e) {
-                Log.w(LOG_TAG, e + " " + "onRegistrationProcessing() - Skipping " +
-                        "callback.");
+                Log.w(LOG_TAG, e + "onRegistering(int, Set) - Skipping callback.");
             }
         });
     }
@@ -185,8 +275,7 @@ public class ImsRegistrationImplBase {
             try {
                 c.onDeregistered(reasonInfo);
             } catch (RemoteException e) {
-                Log.w(LOG_TAG, e + " " + "onRegistrationDisconnected() - Skipping " +
-                        "callback.");
+                Log.w(LOG_TAG, e + "onDeregistered() - Skipping callback.");
             }
         });
     }
@@ -205,8 +294,7 @@ public class ImsRegistrationImplBase {
             try {
                 c.onTechnologyChangeFailed(imsRadioTech, reasonInfo);
             } catch (RemoteException e) {
-                Log.w(LOG_TAG, e + " " + "onRegistrationChangeFailed() - Skipping " +
-                        "callback.");
+                Log.w(LOG_TAG, e + "onTechnologyChangeFailed() - Skipping callback.");
             }
         });
     }
@@ -230,14 +318,13 @@ public class ImsRegistrationImplBase {
         try {
             callback.onSubscriberAssociatedUriChanged(uris);
         } catch (RemoteException e) {
-            Log.w(LOG_TAG, e + " " + "onSubscriberAssociatedUriChanged() - Skipping "
-                    + "callback.");
+            Log.w(LOG_TAG, e + "onSubscriberAssociatedUriChanged() - Skipping callback.");
         }
     }
 
-    private void updateToState(@ImsRegistrationTech int connType, int newState) {
+    private void updateToState(ImsRegistrationAttributes attributes, int newState) {
         synchronized (mLock) {
-            mConnectionType = connType;
+            mRegistrationAttributes = attributes;
             mRegistrationState = newState;
             mLastDisconnectCause = null;
         }
@@ -249,7 +336,7 @@ public class ImsRegistrationImplBase {
             mUrisSet = false;
             mUris = null;
 
-            updateToState(REGISTRATION_TECH_NONE,
+            updateToState(new ImsRegistrationAttributes.Builder(REGISTRATION_TECH_NONE).build(),
                     RegistrationManager.REGISTRATION_STATE_NOT_REGISTERED);
             if (info != null) {
                 mLastDisconnectCause = info;
@@ -261,29 +348,19 @@ public class ImsRegistrationImplBase {
     }
 
     /**
-     * @return the current registration connection type. Valid values are
-     * {@link #REGISTRATION_TECH_LTE} and {@link #REGISTRATION_TECH_IWLAN}
-     * @hide
-     */
-    @VisibleForTesting
-    public final @ImsRegistrationTech int getConnectionType() {
-        synchronized (mLock) {
-            return mConnectionType;
-        }
-    }
-
-    /**
      * @param c the newly registered callback that will be updated with the current registration
      *         state.
      */
     private void updateNewCallbackWithState(IImsRegistrationCallback c)
             throws RemoteException {
         int state;
+        ImsRegistrationAttributes attributes;
         ImsReasonInfo disconnectInfo;
         boolean urisSet;
         Uri[] uris;
         synchronized (mLock) {
             state = mRegistrationState;
+            attributes = mRegistrationAttributes;
             disconnectInfo = mLastDisconnectCause;
             urisSet = mUrisSet;
             uris = mUris;
@@ -294,11 +371,11 @@ public class ImsRegistrationImplBase {
                 break;
             }
             case RegistrationManager.REGISTRATION_STATE_REGISTERING: {
-                c.onRegistering(getConnectionType());
+                c.onRegistering(attributes);
                 break;
             }
             case RegistrationManager.REGISTRATION_STATE_REGISTERED: {
-                c.onRegistered(getConnectionType());
+                c.onRegistered(attributes);
                 break;
             }
             case REGISTRATION_STATE_UNKNOWN: {
