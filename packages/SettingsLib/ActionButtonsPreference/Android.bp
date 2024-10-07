@@ -9,12 +9,17 @@ package {
 
 android_library {
     name: "SettingsLibActionButtonsPreference",
+    use_resource_processor: true,
+    defaults: [
+        "SettingsLintDefaults",
+    ],
 
     srcs: ["src/**/*.java"],
     resource_dirs: ["res"],
 
     static_libs: [
-          "androidx.preference_preference",
+        "androidx.preference_preference",
+        "SettingsLibUtils",
     ],
 
     sdk_version: "system_current",

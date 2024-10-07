@@ -25,6 +25,7 @@ import static android.view.contentcapture.ContentCaptureSession.STATE_SERVICE_RE
 import static android.view.contentcapture.ContentCaptureSession.STATE_SERVICE_UPDATING;
 
 import android.annotation.NonNull;
+import android.app.assist.ActivityId;
 import android.content.ComponentName;
 import android.os.Bundle;
 import android.os.IBinder;
@@ -34,8 +35,8 @@ import android.service.contentcapture.SnapshotData;
 import android.util.LocalLog;
 import android.util.Slog;
 import android.view.contentcapture.ContentCaptureContext;
+import android.view.contentcapture.ContentCaptureSession;
 import android.view.contentcapture.ContentCaptureSessionId;
-import android.view.contentcapture.MainContentCaptureSession;
 
 import com.android.internal.annotations.GuardedBy;
 import com.android.internal.os.IResultReceiver;
@@ -75,9 +76,9 @@ final class ContentCaptureServerSession {
     public final ComponentName appComponentName;
 
     ContentCaptureServerSession(@NonNull Object lock, @NonNull IBinder activityToken,
-            @NonNull ContentCapturePerUserService service, @NonNull ComponentName appComponentName,
-            @NonNull IResultReceiver sessionStateReceiver, int taskId, int displayId, int sessionId,
-            int uid, int flags) {
+            @NonNull ActivityId activityId, @NonNull ContentCapturePerUserService service,
+            @NonNull ComponentName appComponentName, @NonNull IResultReceiver sessionStateReceiver,
+            int taskId, int displayId, int sessionId, int uid, int flags) {
         Preconditions.checkArgument(sessionId != NO_SESSION_ID);
         mLock = lock;
         mActivityToken = activityToken;
@@ -86,7 +87,7 @@ final class ContentCaptureServerSession {
         mId = sessionId;
         mUid = uid;
         mContentCaptureContext = new ContentCaptureContext(/* clientContext= */ null,
-                appComponentName, taskId, displayId, flags);
+                activityId, appComponentName, displayId, activityToken, flags);
         mSessionStateReceiver = sessionStateReceiver;
         try {
             sessionStateReceiver.asBinder().linkToDeath(() -> onClientDeath(), 0);
@@ -122,7 +123,7 @@ final class ContentCaptureServerSession {
     public void setContentCaptureEnabledLocked(boolean enabled) {
         try {
             final Bundle extras = new Bundle();
-            extras.putBoolean(MainContentCaptureSession.EXTRA_ENABLED_STATE, true);
+            extras.putBoolean(ContentCaptureSession.EXTRA_ENABLED_STATE, true);
             mSessionStateReceiver.send(enabled ? RESULT_CODE_TRUE : RESULT_CODE_FALSE, extras);
         } catch (RemoteException e) {
             Slog.w(TAG, "Error async reporting result to client: " + e);

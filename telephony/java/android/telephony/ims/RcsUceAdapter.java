@@ -20,21 +20,21 @@ import android.Manifest;
 import android.annotation.CallbackExecutor;
 import android.annotation.IntDef;
 import android.annotation.NonNull;
+import android.annotation.Nullable;
+import android.annotation.RequiresFeature;
 import android.annotation.RequiresPermission;
 import android.annotation.SystemApi;
 import android.content.Context;
+import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Binder;
 import android.os.IBinder;
 import android.os.RemoteException;
 import android.os.ServiceSpecificException;
-import android.telephony.CarrierConfigManager;
-import android.telephony.SubscriptionManager;
 import android.telephony.TelephonyFrameworkInitializer;
 import android.telephony.ims.aidl.IImsRcsController;
 import android.telephony.ims.aidl.IRcsUceControllerCallback;
 import android.telephony.ims.aidl.IRcsUcePublishStateCallback;
-import android.telephony.ims.feature.RcsFeature;
 import android.util.Log;
 
 import java.lang.annotation.Retention;
@@ -51,6 +51,7 @@ import java.util.concurrent.Executor;
  *
  * @see ImsRcsManager#getUceAdapter() for information on creating an instance of this class.
  */
+@RequiresFeature(PackageManager.FEATURE_TELEPHONY_IMS)
 public class RcsUceAdapter {
     private static final String TAG = "RcsUceAdapter";
 
@@ -58,20 +59,28 @@ public class RcsUceAdapter {
      * This carrier supports User Capability Exchange as, defined by the framework using
      * SIP OPTIONS. If set, the RcsFeature should support capability exchange. If not set, this
      * RcsFeature should not publish capabilities or service capability requests.
+     * @deprecated Use {@link ImsRcsManager#CAPABILITY_TYPE_OPTIONS_UCE} instead.
      * @hide
      */
+    @Deprecated
     public static final int CAPABILITY_TYPE_OPTIONS_UCE = 1 << 0;
 
     /**
      * This carrier supports User Capability Exchange as, defined by the framework using a
      * presence server. If set, the RcsFeature should support capability exchange. If not set, this
      * RcsFeature should not publish capabilities or service capability requests.
+     * @deprecated Use {@link ImsRcsManager#CAPABILITY_TYPE_PRESENCE_UCE} instead.
      * @hide
      */
+    @Deprecated
     @SystemApi
     public static final int CAPABILITY_TYPE_PRESENCE_UCE = 1 << 1;
 
-    /**@hide*/
+    /**
+     * @deprecated Use {@link ImsRcsManager.RcsImsCapabilityFlag} instead.
+     * @hide
+     */
+    @Deprecated
     @Retention(RetentionPolicy.SOURCE)
     @IntDef(prefix = "CAPABILITY_TYPE_", value = {
             CAPABILITY_TYPE_OPTIONS_UCE,
@@ -271,6 +280,13 @@ public class RcsUceAdapter {
     @SystemApi
     public static final int CAPABILITY_UPDATE_TRIGGER_MOVE_TO_NR5G_VOPS_ENABLED = 11;
 
+    /**
+     * A capability update has been requested due to IMS being registered over INTERNET PDN.
+     * @hide
+     */
+    @SystemApi
+    public static final int CAPABILITY_UPDATE_TRIGGER_MOVE_TO_INTERNET_PDN = 12;
+
     /**@hide*/
     @Retention(RetentionPolicy.SOURCE)
     @IntDef(prefix = "ERROR_", value = {
@@ -285,7 +301,8 @@ public class RcsUceAdapter {
             CAPABILITY_UPDATE_TRIGGER_MOVE_TO_WLAN,
             CAPABILITY_UPDATE_TRIGGER_MOVE_TO_IWLAN,
             CAPABILITY_UPDATE_TRIGGER_MOVE_TO_NR5G_VOPS_DISABLED,
-            CAPABILITY_UPDATE_TRIGGER_MOVE_TO_NR5G_VOPS_ENABLED
+            CAPABILITY_UPDATE_TRIGGER_MOVE_TO_NR5G_VOPS_ENABLED,
+            CAPABILITY_UPDATE_TRIGGER_MOVE_TO_INTERNET_PDN
     })
     public @interface StackPublishTriggerType {}
 
@@ -337,6 +354,14 @@ public class RcsUceAdapter {
     @SystemApi
     public static final int PUBLISH_STATE_OTHER_ERROR = 6;
 
+    /**
+     * The device is currently trying to publish its capabilities to the network.
+     * @hide
+     */
+    @SystemApi
+    public static final int PUBLISH_STATE_PUBLISHING = 7;
+
+
     /**@hide*/
     @Retention(RetentionPolicy.SOURCE)
     @IntDef(prefix = "PUBLISH_STATE_", value = {
@@ -345,7 +370,8 @@ public class RcsUceAdapter {
             PUBLISH_STATE_VOICE_PROVISION_ERROR,
             PUBLISH_STATE_RCS_PROVISION_ERROR,
             PUBLISH_STATE_REQUEST_TIMEOUT,
-            PUBLISH_STATE_OTHER_ERROR
+            PUBLISH_STATE_OTHER_ERROR,
+            PUBLISH_STATE_PUBLISHING
     })
     public @interface PublishState {}
 
@@ -360,8 +386,21 @@ public class RcsUceAdapter {
         /**
          * Notifies the callback when the publish state has changed.
          * @param publishState The latest update to the publish state.
+         *
+         * @deprecated Replaced by {@link #onPublishStateChange}, deprecated for
+         * sip information.
          */
+        @Deprecated
         void onPublishStateChange(@PublishState int publishState);
+
+        /**
+         * Notifies the callback when the publish state has changed or the publish operation is
+         * done.
+         * @param attributes The latest information related to the publish.
+         */
+        default void onPublishStateChange(@NonNull PublishAttributes attributes) {
+            onPublishStateChange(attributes.getPublishState());
+        };
     }
 
     /**
@@ -382,13 +421,13 @@ public class RcsUceAdapter {
             }
 
             @Override
-            public void onPublishStateChanged(int publishState) {
+            public void onPublishUpdated(@NonNull PublishAttributes attributes) {
                 if (mPublishStateChangeListener == null) return;
 
                 final long callingIdentity = Binder.clearCallingIdentity();
                 try {
                     mExecutor.execute(() ->
-                            mPublishStateChangeListener.onPublishStateChange(publishState));
+                            mPublishStateChangeListener.onPublishStateChange(attributes));
                 } finally {
                     restoreCallingIdentity(callingIdentity);
                 }
@@ -411,12 +450,12 @@ public class RcsUceAdapter {
     /**
      * A callback for the response to a UCE request. The method
      * {@link CapabilitiesCallback#onCapabilitiesReceived} will be called zero or more times as the
-     * capabilities are received for each requested contact.
+     * capabilities are fetched from multiple sources, both cached on the device and on the network.
      * <p>
      * This request will take a varying amount of time depending on if the contacts requested are
      * cached or if it requires a network query. The timeout time of these requests can vary
      * depending on the network, however in poor cases it could take up to a minute for a request
-     * to timeout. In that time only a subset of capabilities may have been retrieved.
+     * to timeout. In that time, only a subset of capabilities may have been retrieved.
      * <p>
      * After {@link CapabilitiesCallback#onComplete} or {@link CapabilitiesCallback#onError} has
      * been called, the reference to this callback will be discarded on the service side.
@@ -427,18 +466,29 @@ public class RcsUceAdapter {
     public interface CapabilitiesCallback {
 
         /**
-         * Notify this application that the pending capability request has returned successfully
-         * for one or more of the requested contacts.
+         * The pending capability request has completed successfully for one or more of the
+         * requested contacts.
+         * This may be called one or more times before the request is fully completed, as
+         * capabilities may need to be fetched from multiple sources both on device and on the
+         * network. Once the capabilities of all the requested contacts have been received,
+         * {@link #onComplete()} will be called. If there was an error during the capability
+         * exchange process, {@link #onError(int, long)} will be called instead.
          * @param contactCapabilities List of capabilities associated with each contact requested.
          */
         void onCapabilitiesReceived(@NonNull List<RcsContactUceCapability> contactCapabilities);
 
         /**
-         * The pending request has completed successfully due to all requested contacts information
-         * being delivered. The callback {@link #onCapabilitiesReceived(List)}
-         * for each contacts is required to be called before {@link #onComplete} is called.
+         * Called when the pending request has completed successfully due to all requested contacts
+         * information being delivered. The callback {@link #onCapabilitiesReceived(List)} will be
+         * called one or more times and will contain the contacts in the request that the device has
+         * received capabilities for.
+         *
+         * @see #onComplete(SipDetails) onComplete(SipDetails) provides more information related to
+         * the underlying SIP transaction used to perform the capabilities exchange. Either this
+         * method or the alternate method should be implemented to determine when the request has
+         * completed successfully.
          */
-        void onComplete();
+        default void onComplete() {}
 
         /**
          * The pending request has resulted in an error and may need to be retried, depending on the
@@ -446,8 +496,50 @@ public class RcsUceAdapter {
          * @param errorCode The reason for the framework being unable to process the request.
          * @param retryIntervalMillis The time in milliseconds the requesting application should
          * wait before retrying, if non-zero.
+         *
+         * @see #onError(int, long, SipDetails) onError(int, long, SipDetails) provides more
+         * information related to the underlying SIP transaction that resulted in an error. Either
+         * this method or the alternative method should be implemented to determine when the
+         * request has completed with an error.
          */
-        void onError(@ErrorCode int errorCode, long retryIntervalMillis);
+        default void onError(@ErrorCode int errorCode, long retryIntervalMillis) {}
+
+        /**
+         * Called when the pending request has completed successfully due to all requested contacts
+         * information being delivered. The callback {@link #onCapabilitiesReceived(List)} will be
+         * called one or more times and will contain the contacts in the request that the device has
+         * received capabilities for.
+         *
+         * This method contains more information about the underlying SIP transaction if it exists.
+         * If this information is not needed, {@link #onComplete()} can be implemented
+         * instead.
+         *
+         * @param details The SIP information related to this request if the device supports
+         *                supplying this information. This parameter will be {@code null} if this
+         *                information is not available.
+         */
+        default void onComplete(@Nullable SipDetails details) {
+            onComplete();
+        };
+
+        /**
+         * The pending request has resulted in an error and may need to be retried, depending on the
+         * error code.
+         *
+         * This method contains more information about the underlying SIP transaction if it exists.
+         * If this information is not needed, {@link #onError(int, long)} can be implemented
+         * instead.
+         * @param errorCode The reason for the framework being unable to process the request.
+         * @param retryIntervalMillis The time in milliseconds the requesting application should
+         * wait before retrying, if non-zero.
+         * @param details The SIP information related to this request if the device supports
+         *                supplying this information. This parameter will be {@code null} if this
+         *                information is not available.
+         */
+        default void onError(@ErrorCode int errorCode, long retryIntervalMillis,
+                @Nullable SipDetails details) {
+            onError(errorCode, retryIntervalMillis);
+        };
     }
 
     private final Context mContext;
@@ -480,9 +572,12 @@ public class RcsUceAdapter {
      * <p>
      * Be sure to check the availability of this feature using
      * {@link ImsRcsManager#isAvailable(int, int)} and ensuring
-     * {@link RcsFeature.RcsImsCapabilities#CAPABILITY_TYPE_OPTIONS_UCE} or
-     * {@link RcsFeature.RcsImsCapabilities#CAPABILITY_TYPE_PRESENCE_UCE} is enabled or else
-     * this operation will fail with {@link #ERROR_NOT_AVAILABLE} or {@link #ERROR_NOT_ENABLED}.
+     * {@link
+     * android.telephony.ims.feature.RcsFeature.RcsImsCapabilities#CAPABILITY_TYPE_OPTIONS_UCE} or
+     * {@link
+     * android.telephony.ims.feature.RcsFeature.RcsImsCapabilities#CAPABILITY_TYPE_PRESENCE_UCE} is
+     * enabled or else this operation will fail with {@link #ERROR_NOT_AVAILABLE} or
+     * {@link #ERROR_NOT_ENABLED}.
      *
      * @param contactNumbers A list of numbers that the capabilities are being requested for.
      * @param executor The executor that will be used when the request is completed and the
@@ -493,6 +588,8 @@ public class RcsUceAdapter {
      * {@link RcsUceAdapter} is valid, but the ImsService associated with the subscription is not
      * available. This can happen if the ImsService has crashed, for example, or if the subscription
      * becomes inactive. See {@link ImsException#getCode()} for more information on the error codes.
+     * @throws UnsupportedOperationException If the device does not have
+     *          {@link PackageManager#FEATURE_TELEPHONY_IMS}.
      * @hide
      */
     @SystemApi
@@ -529,19 +626,20 @@ public class RcsUceAdapter {
                 }
             }
             @Override
-            public void onComplete() {
+            public void onComplete(@Nullable SipDetails details) {
                 final long callingIdentity = Binder.clearCallingIdentity();
                 try {
-                    executor.execute(() -> c.onComplete());
+                    executor.execute(() -> c.onComplete(details));
                 } finally {
                     restoreCallingIdentity(callingIdentity);
                 }
             }
             @Override
-            public void onError(int errorCode, long retryAfterMilliseconds) {
+            public void onError(int errorCode, long retryAfterMilliseconds,
+                    @Nullable SipDetails details) {
                 final long callingIdentity = Binder.clearCallingIdentity();
                 try {
-                    executor.execute(() -> c.onError(errorCode, retryAfterMilliseconds));
+                    executor.execute(() -> c.onError(errorCode, retryAfterMilliseconds, details));
                 } finally {
                     restoreCallingIdentity(callingIdentity);
                 }
@@ -573,8 +671,10 @@ public class RcsUceAdapter {
      * <p>
      * Be sure to check the availability of this feature using
      * {@link ImsRcsManager#isAvailable(int, int)} and ensuring
-     * {@link RcsFeature.RcsImsCapabilities#CAPABILITY_TYPE_OPTIONS_UCE} or
-     * {@link RcsFeature.RcsImsCapabilities#CAPABILITY_TYPE_PRESENCE_UCE} is
+     * {@link
+     * android.telephony.ims.feature.RcsFeature.RcsImsCapabilities#CAPABILITY_TYPE_OPTIONS_UCE} or
+     * {@link
+     * android.telephony.ims.feature.RcsFeature.RcsImsCapabilities#CAPABILITY_TYPE_PRESENCE_UCE} is
      * enabled or else this operation will fail with
      * {@link #ERROR_NOT_AVAILABLE} or {@link #ERROR_NOT_ENABLED}.
      *
@@ -587,6 +687,8 @@ public class RcsUceAdapter {
      * {@link RcsUceAdapter} is valid, but the ImsService associated with the subscription is not
      * available. This can happen if the ImsService has crashed, for example, or if the subscription
      * becomes inactive. See {@link ImsException#getCode()} for more information on the error codes.
+     * @throws UnsupportedOperationException If the device does not have
+     *          {@link PackageManager#FEATURE_TELEPHONY_IMS}.
      * @hide
      */
     @SystemApi
@@ -623,19 +725,20 @@ public class RcsUceAdapter {
                 }
             }
             @Override
-            public void onComplete() {
+            public void onComplete(@Nullable SipDetails details) {
                 final long callingIdentity = Binder.clearCallingIdentity();
                 try {
-                    executor.execute(() -> c.onComplete());
+                    executor.execute(() -> c.onComplete(details));
                 } finally {
                     restoreCallingIdentity(callingIdentity);
                 }
             }
             @Override
-            public void onError(int errorCode, long retryAfterMilliseconds) {
+            public void onError(int errorCode, long retryAfterMilliseconds,
+                    @Nullable SipDetails details) {
                 final long callingIdentity = Binder.clearCallingIdentity();
                 try {
-                    executor.execute(() -> c.onError(errorCode, retryAfterMilliseconds));
+                    executor.execute(() -> c.onError(errorCode, retryAfterMilliseconds, details));
                 } finally {
                     restoreCallingIdentity(callingIdentity);
                 }
@@ -663,6 +766,8 @@ public class RcsUceAdapter {
      * {@link RcsUceAdapter} is valid, but the ImsService associated with the subscription is not
      * available. This can happen if the ImsService has crashed, for example, or if the subscription
      * becomes inactive. See {@link ImsException#getCode()} for more information on the error codes.
+     * @throws UnsupportedOperationException If the device does not have
+     *          {@link PackageManager#FEATURE_TELEPHONY_IMS}.
      * @hide
      */
     @SystemApi
@@ -690,7 +795,8 @@ public class RcsUceAdapter {
      * Registers a {@link OnPublishStateChangedListener} with the system, which will provide publish
      * state updates for the subscription specified in {@link ImsManager@getRcsManager(subid)}.
      * <p>
-     * Use {@link SubscriptionManager.OnSubscriptionsChangedListener} to listen to subscription
+     * Use {@link android.telephony.SubscriptionManager.OnSubscriptionsChangedListener} to listen
+     * to subscription
      * changed events and call
      * {@link #removeOnPublishStateChangedListener(OnPublishStateChangedListener)} to clean up.
      * <p>
@@ -703,6 +809,8 @@ public class RcsUceAdapter {
      * the {@link ImsService} associated with the subscription is not available. This can happen if
      * the service crashed, for example. See {@link ImsException#getCode()} for a more detailed
      * reason.
+     * @throws UnsupportedOperationException If the device does not have
+     *          {@link PackageManager#FEATURE_TELEPHONY_IMS}.
      * @hide
      */
     @SystemApi
@@ -748,6 +856,8 @@ public class RcsUceAdapter {
      * the {@link ImsService} associated with the subscription is not available. This can happen if
      * the service crashed, for example. See {@link ImsException#getCode()} for a more detailed
      * reason.
+     * @throws UnsupportedOperationException If the device does not have
+     *          {@link PackageManager#FEATURE_TELEPHONY_IMS}.
      * @hide
      */
     @SystemApi
@@ -792,7 +902,8 @@ public class RcsUceAdapter {
      * cache associated with those contacts as the local cache becomes stale.
      * <p>
      * This setting will only enable this feature if
-     * {@link CarrierConfigManager.Ims#KEY_RCS_BULK_CAPABILITY_EXCHANGE_BOOL} is also enabled.
+     * {@link android.telephony.CarrierConfigManager.Ims#KEY_RCS_BULK_CAPABILITY_EXCHANGE_BOOL} is
+     * also enabled.
      * <p>
      * Note: This setting does not affect whether or not the device publishes its service
      * capabilities if the subscription supports presence publication.
@@ -803,6 +914,8 @@ public class RcsUceAdapter {
      * {@link RcsUceAdapter} is valid, but the ImsService associated with the subscription is not
      * available. This can happen if the ImsService has crashed, for example, or if the subscription
      * becomes inactive. See {@link ImsException#getCode()} for more information on the error codes.
+     * @throws UnsupportedOperationException If the device does not have
+     *          {@link PackageManager#FEATURE_TELEPHONY_IMS}.
      */
     @RequiresPermission(Manifest.permission.READ_PHONE_STATE)
     public boolean isUceSettingEnabled() throws ImsException {
@@ -843,7 +956,8 @@ public class RcsUceAdapter {
      * session.
      * <p>
      * This setting will only enable this feature if
-     * {@link CarrierConfigManager.Ims#KEY_RCS_BULK_CAPABILITY_EXCHANGE_BOOL} is also enabled.
+     * {@link android.telephony.CarrierConfigManager.Ims#KEY_RCS_BULK_CAPABILITY_EXCHANGE_BOOL} is
+     * also enabled.
      * <p>
      * Note: This setting does not affect whether or not the device publishes its service
      * capabilities if the subscription supports presence publication.
@@ -855,6 +969,8 @@ public class RcsUceAdapter {
      * {@link RcsUceAdapter} is valid, but the ImsService associated with the subscription is not
      * available. This can happen if the ImsService has crashed, for example, or if the subscription
      * becomes inactive. See {@link ImsException#getCode()} for more information on the error codes.
+     * @throws UnsupportedOperationException If the device does not have
+     *          {@link PackageManager#FEATURE_TELEPHONY_IMS}.
      * @hide
      */
     @SystemApi

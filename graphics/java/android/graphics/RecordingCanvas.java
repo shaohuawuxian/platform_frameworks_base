@@ -16,15 +16,12 @@
 
 package android.graphics;
 
+import android.annotation.ColorInt;
 import android.annotation.NonNull;
-import android.annotation.Nullable;
-import android.util.Pools.SynchronizedPool;
-import android.view.DisplayListCanvas;
-import android.view.TextureLayer;
 import android.os.SystemProperties;
+import android.util.Pools.SynchronizedPool;
 
 import dalvik.annotation.optimization.CriticalNative;
-import dalvik.annotation.optimization.FastNative;
 
 /**
  * A Canvas implementation that records view system drawing operations for deferred rendering.
@@ -36,14 +33,14 @@ import dalvik.annotation.optimization.FastNative;
  * {@link RenderNode#endRecording()} is called. It must not be retained beyond that as it is
  * internally reused.
  */
-public final class RecordingCanvas extends DisplayListCanvas {
+public final class RecordingCanvas extends BaseRecordingCanvas {
     // The recording canvas pool should be large enough to handle a deeply nested
     // view hierarchy because display lists are generated recursively.
     private static final int POOL_LIMIT = 25;
 
     /** @hide */
     private static int getPanelFrameSize() {
-        final int DefaultSize = 100 * 1024 * 1024; // 100 MB;
+        final int DefaultSize = 150 * 1024 * 1024; // 150 MB;
         return Math.max(SystemProperties.getInt("ro.hwui.max_texture_allocation_size", DefaultSize),
                 DefaultSize);
     }
@@ -61,7 +58,7 @@ public final class RecordingCanvas extends DisplayListCanvas {
     private int mWidth;
     private int mHeight;
 
-    /** @hide */
+    /*package*/
     static RecordingCanvas obtain(@NonNull RenderNode node, int width, int height) {
         if (node == null) throw new IllegalArgumentException("node cannot be null");
         RecordingCanvas canvas = sPool.acquire();
@@ -77,29 +74,22 @@ public final class RecordingCanvas extends DisplayListCanvas {
         return canvas;
     }
 
-    /** @hide */
+    /*package*/
     void recycle() {
         mNode = null;
         sPool.release(this);
     }
 
-    /** @hide */
-    long finishRecording() {
-        return nFinishRecording(mNativeCanvasWrapper);
-    }
-
-    /** @hide */
-    @Override
-    public boolean isRecordingFor(Object o) {
-        return o == mNode;
+    /*package*/
+    void finishRecording(RenderNode node) {
+        nFinishRecording(mNativeCanvasWrapper, node.mNativeRenderNode);
     }
 
     ///////////////////////////////////////////////////////////////////////////
     // Constructors
     ///////////////////////////////////////////////////////////////////////////
 
-    /** @hide */
-    protected RecordingCanvas(@NonNull RenderNode node, int width, int height) {
+    private RecordingCanvas(@NonNull RenderNode node, int width, int height) {
         super(nCreateDisplayListCanvas(node.mNativeRenderNode, width, height));
         mDensity = 0; // disable bitmap density scaling
     }
@@ -155,51 +145,17 @@ public final class RecordingCanvas extends DisplayListCanvas {
 
     @Override
     public void enableZ() {
-        nInsertReorderBarrier(mNativeCanvasWrapper, true);
+        nEnableZ(mNativeCanvasWrapper, true);
     }
 
     @Override
     public void disableZ() {
-        nInsertReorderBarrier(mNativeCanvasWrapper, false);
+        nEnableZ(mNativeCanvasWrapper, false);
     }
 
     ///////////////////////////////////////////////////////////////////////////
-    // Functor
+    // WebView
     ///////////////////////////////////////////////////////////////////////////
-
-    /**
-     * Records the functor specified with the drawGLFunction function pointer. This is
-     * functionality used by webview for calling into their renderer from our display lists.
-     *
-     * @param drawGLFunction A native function pointer
-     *
-     * @hide
-     * @deprecated Use {@link #drawWebViewFunctor(int)}
-     */
-    @Deprecated
-    public void callDrawGLFunction2(long drawGLFunction) {
-        nCallDrawGLFunction(mNativeCanvasWrapper, drawGLFunction, null);
-    }
-
-    /**
-     * Records the functor specified with the drawGLFunction function pointer. This is
-     * functionality used by webview for calling into their renderer from our display lists.
-     *
-     * @param drawGLFunctor A native function pointer
-     * @param releasedCallback Called when the display list is destroyed, and thus
-     * the functor is no longer referenced by this canvas's display list.
-     *
-     * NOTE: The callback does *not* necessarily mean that there are no longer
-     * any references to the functor, just that the reference from this specific
-     * canvas's display list has been released.
-     *
-     * @hide
-     * @deprecated Use {@link #drawWebViewFunctor(int)}
-     */
-    @Deprecated
-    public void drawGLFunctor2(long drawGLFunctor, @Nullable Runnable releasedCallback) {
-        nCallDrawGLFunction(mNativeCanvasWrapper, drawGLFunctor, releasedCallback);
-    }
 
     /**
      * Calls the provided functor that was created via WebViewFunctor_create()
@@ -231,9 +187,9 @@ public final class RecordingCanvas extends DisplayListCanvas {
      * Draws the specified layer onto this canvas.
      *
      * @param layer The layer to composite on this canvas
-     * @hide
+     * @hide TODO: Make this a SystemApi for b/155905258
      */
-    public void drawTextureLayer(TextureLayer layer) {
+    public void drawTextureLayer(@NonNull TextureLayer layer) {
         nDrawTextureLayer(mNativeCanvasWrapper, layer.getLayerHandle());
     }
 
@@ -255,6 +211,28 @@ public final class RecordingCanvas extends DisplayListCanvas {
             CanvasProperty<Float> radius, CanvasProperty<Paint> paint) {
         nDrawCircle(mNativeCanvasWrapper, cx.getNativeContainer(), cy.getNativeContainer(),
                 radius.getNativeContainer(), paint.getNativeContainer());
+    }
+
+    /**
+     * Draws a ripple
+     *
+     * @param cx
+     * @param cy
+     * @param radius
+     * @param paint
+     * @param progress
+     * @param shader
+     *
+     * @hide
+     */
+    public void drawRipple(CanvasProperty<Float> cx, CanvasProperty<Float> cy,
+            CanvasProperty<Float> radius, CanvasProperty<Paint> paint,
+            CanvasProperty<Float> progress, CanvasProperty<Float> turbulencePhase,
+            @ColorInt int color, RuntimeShader shader) {
+        nDrawRipple(mNativeCanvasWrapper, cx.getNativeContainer(), cy.getNativeContainer(),
+                radius.getNativeContainer(), paint.getNativeContainer(),
+                progress.getNativeContainer(), turbulencePhase.getNativeContainer(),
+                color, shader.getNativeShaderBuilder());
     }
 
     /**
@@ -284,18 +262,11 @@ public final class RecordingCanvas extends DisplayListCanvas {
     protected void throwIfCannotDraw(Bitmap bitmap) {
         super.throwIfCannotDraw(bitmap);
         int bitmapSize = bitmap.getByteCount();
-        if (bitmapSize > MAX_BITMAP_SIZE) {
+        if (bitmap.getConfig() != Bitmap.Config.HARDWARE && bitmapSize > MAX_BITMAP_SIZE) {
             throw new RuntimeException(
                     "Canvas: trying to draw too large(" + bitmapSize + "bytes) bitmap.");
         }
     }
-
-
-    // ------------------ Fast JNI ------------------------
-
-    @FastNative
-    private static native void nCallDrawGLFunction(long renderer,
-            long drawGLFunction, Runnable releasedCallback);
 
 
     // ------------------ Critical JNI ------------------------
@@ -305,14 +276,12 @@ public final class RecordingCanvas extends DisplayListCanvas {
     @CriticalNative
     private static native void nResetDisplayListCanvas(long canvas, long node,
             int width, int height);
-    @CriticalNative
     private static native int nGetMaximumTextureWidth();
-    @CriticalNative
     private static native int nGetMaximumTextureHeight();
     @CriticalNative
-    private static native void nInsertReorderBarrier(long renderer, boolean enableReorder);
+    private static native void nEnableZ(long renderer, boolean enableZ);
     @CriticalNative
-    private static native long nFinishRecording(long renderer);
+    private static native void nFinishRecording(long renderer, long renderNode);
     @CriticalNative
     private static native void nDrawRenderNode(long renderer, long renderNode);
     @CriticalNative
@@ -320,6 +289,9 @@ public final class RecordingCanvas extends DisplayListCanvas {
     @CriticalNative
     private static native void nDrawCircle(long renderer, long propCx,
             long propCy, long propRadius, long propPaint);
+    @CriticalNative
+    private static native void nDrawRipple(long renderer, long propCx, long propCy, long propRadius,
+            long propPaint, long propProgress, long turbulencePhase, int color, long runtimeEffect);
     @CriticalNative
     private static native void nDrawRoundRect(long renderer, long propLeft, long propTop,
             long propRight, long propBottom, long propRx, long propRy, long propPaint);

@@ -27,7 +27,6 @@ import static org.junit.Assert.assertTrue;
 import android.os.SystemClock;
 import android.platform.test.annotations.Presubmit;
 
-import androidx.test.filters.FlakyTest;
 import androidx.test.filters.MediumTest;
 
 import org.junit.After;
@@ -110,7 +109,6 @@ public class PersisterQueueTests {
     }
 
     @Test
-    @FlakyTest(bugId = 131005232)
     public void testProcessOneItem_Flush() throws Exception {
         mFactory.setExpectedProcessedItemNumber(1);
         mListener.setExpectedOnPreProcessItemCallbackTimes(1);
@@ -127,7 +125,7 @@ public class PersisterQueueTests {
                 processDuration < PRE_TASK_DELAY_MS);
 
         assertTrue("Target didn't call callback enough times.",
-                mFactory.waitForAllExpectedItemsProcessed(TIMEOUT_ALLOWANCE));
+                mListener.waitForAllExpectedCallbackDone(TIMEOUT_ALLOWANCE));
         // Once before processing this item, once after that.
         assertEquals(2, mListener.mProbablyDoneResults.size());
         // The last one must be called with probably done being true.
@@ -162,7 +160,6 @@ public class PersisterQueueTests {
     }
 
     @Test
-    @FlakyTest(bugId = 128526085)
     public void testProcessTwoItems_OneAfterAnother() throws Exception {
         // First item
         mFactory.setExpectedProcessedItemNumber(1);

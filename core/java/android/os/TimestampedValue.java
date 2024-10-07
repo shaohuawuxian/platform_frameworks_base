@@ -35,6 +35,7 @@ import java.util.Objects;
  * @param <T> the type of the value with an associated timestamp
  * @hide
  */
+@android.ravenwood.annotation.RavenwoodKeepWholeClass
 public final class TimestampedValue<T> implements Parcelable {
     private final long mReferenceTimeMillis;
     @Nullable
@@ -60,7 +61,7 @@ public final class TimestampedValue<T> implements Parcelable {
     }
 
     @Override
-    public boolean equals(Object o) {
+    public boolean equals(@Nullable Object o) {
         if (this == o) {
             return true;
         }

@@ -22,11 +22,11 @@ import static android.accessibilityservice.AccessibilityService.SHOW_MODE_HARD_K
 import static android.accessibilityservice.AccessibilityService.SHOW_MODE_HIDDEN;
 import static android.accessibilityservice.AccessibilityService.SHOW_MODE_IGNORE_HARD_KEYBOARD;
 import static android.accessibilityservice.AccessibilityService.SHOW_MODE_MASK;
-import static android.view.accessibility.AccessibilityManager.ACCESSIBILITY_BUTTON;
-import static android.view.accessibility.AccessibilityManager.ACCESSIBILITY_SHORTCUT_KEY;
-import static android.view.accessibility.AccessibilityManager.ShortcutType;
+import static android.provider.Settings.Secure.ACCESSIBILITY_MAGNIFICATION_MODE_FULLSCREEN;
+import static android.provider.Settings.Secure.ACCESSIBILITY_MAGNIFICATION_MODE_NONE;
 
 import static com.android.internal.accessibility.AccessibilityShortcutController.MAGNIFICATION_CONTROLLER_NAME;
+import static com.android.internal.accessibility.common.ShortcutConstants.UserShortcutType;
 
 import android.accessibilityservice.AccessibilityService.SoftKeyboardShowMode;
 import android.accessibilityservice.AccessibilityServiceInfo;
@@ -35,20 +35,27 @@ import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.content.ComponentName;
 import android.content.Context;
+import android.content.pm.PackageManager;
+import android.content.pm.ResolveInfo;
 import android.os.Binder;
 import android.os.RemoteCallbackList;
 import android.provider.Settings;
 import android.text.TextUtils;
+import android.util.ArrayMap;
 import android.util.ArraySet;
 import android.util.Slog;
+import android.util.SparseArray;
+import android.util.SparseIntArray;
 import android.view.accessibility.AccessibilityManager;
 import android.view.accessibility.IAccessibilityManagerClient;
 
+import com.android.internal.R;
 import com.android.internal.accessibility.AccessibilityShortcutController;
 
 import java.io.FileDescriptor;
 import java.io.PrintWriter;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -56,6 +63,8 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
 /**
  * Class that hold states and settings per user and share between
@@ -92,6 +101,20 @@ class AccessibilityUserState {
     final ArraySet<String> mAccessibilityShortcutKeyTargets = new ArraySet<>();
 
     final ArraySet<String> mAccessibilityButtonTargets = new ArraySet<>();
+    private final ArraySet<String> mAccessibilityQsTargets = new ArraySet<>();
+
+    /**
+     * The QuickSettings tiles in the QS Panel. This can be different from
+     * {@link #mAccessibilityQsTargets} in that {@link #mA11yTilesInQsPanel} stores the
+     * TileService's or the a11y framework tile component names (e.g.
+     * {@link AccessibilityShortcutController#COLOR_INVERSION_TILE_COMPONENT_NAME}) instead of the
+     * A11y Feature's component names.
+     * <p/>
+     * In addition, {@link #mA11yTilesInQsPanel} stores what's on the QS Panel, whereas
+     * {@link #mAccessibilityQsTargets} stores the targets that configured qs as their shortcut and
+     * also grant full device control permission.
+     */
+    private final ArraySet<ComponentName> mA11yTilesInQsPanel = new ArraySet<>();
 
     private final ServiceInfoChangeListener mServiceInfoChangeListener;
 
@@ -100,8 +123,10 @@ class AccessibilityUserState {
     private String mTargetAssignedToAccessibilityButton;
 
     private boolean mBindInstantServiceAllowed;
+    private boolean mIsAudioDescriptionByDefaultRequested;
     private boolean mIsAutoclickEnabled;
-    private boolean mIsDisplayMagnificationEnabled;
+    private boolean mIsMagnificationSingleFingerTripleTapEnabled;
+    private boolean mMagnificationTwoFingerTripleTapEnabled;
     private boolean mIsFilterKeyEventsEnabled;
     private boolean mIsPerformGesturesEnabled;
     private boolean mAccessibilityFocusOnlyInActiveWindow;
@@ -110,16 +135,49 @@ class AccessibilityUserState {
     private boolean mServiceHandlesDoubleTap;
     private boolean mRequestMultiFingerGestures;
     private boolean mRequestTwoFingerPassthrough;
+    private boolean mSendMotionEventsEnabled;
+    private SparseArray<Boolean> mServiceDetectsGestures = new SparseArray<>(0);
     private int mUserInteractiveUiTimeout;
     private int mUserNonInteractiveUiTimeout;
     private int mNonInteractiveUiTimeout = 0;
     private int mInteractiveUiTimeout = 0;
     private int mLastSentClientState = -1;
 
+    /** {@code true} if the device config supports window magnification. */
+    private final boolean mSupportWindowMagnification;
+    // The magnification modes on displays.
+    private final SparseIntArray mMagnificationModes = new SparseIntArray();
+    // The magnification capabilities used to know magnification mode could be switched.
+    private int mMagnificationCapabilities = ACCESSIBILITY_MAGNIFICATION_MODE_FULLSCREEN;
+    // Whether the following typing focus feature for magnification is enabled.
+    private boolean mMagnificationFollowTypingEnabled = true;
+    // Whether the always on magnification feature is enabled.
+    private boolean mAlwaysOnMagnificationEnabled = false;
+
+    /** The stroke width of the focus rectangle in pixels */
+    private int mFocusStrokeWidth;
+    /** The color of the focus rectangle */
+    private int mFocusColor;
+    // The default value of the focus stroke width.
+    private final int mFocusStrokeWidthDefaultValue;
+    // The default value of the focus color.
+    private final int mFocusColorDefaultValue;
+    private final Map<ComponentName, ComponentName> mA11yServiceToTileService = new ArrayMap<>();
+    private final Map<ComponentName, ComponentName> mA11yActivityToTileService = new ArrayMap<>();
+
     private Context mContext;
 
     @SoftKeyboardShowMode
     private int mSoftKeyboardShowMode = SHOW_MODE_AUTO;
+
+    boolean isValidMagnificationModeLocked(int displayId) {
+        final int mode = getMagnificationModeLocked(displayId);
+        if (!mSupportWindowMagnification
+                && mode == Settings.Secure.ACCESSIBILITY_MAGNIFICATION_MODE_WINDOW) {
+            return false;
+        }
+        return (mMagnificationCapabilities & mode) != 0;
+    }
 
     interface ServiceInfoChangeListener {
         void onServiceInfoChangedLocked(AccessibilityUserState userState);
@@ -130,6 +188,15 @@ class AccessibilityUserState {
         mUserId = userId;
         mContext = context;
         mServiceInfoChangeListener = serviceInfoChangeListener;
+        mFocusStrokeWidthDefaultValue = mContext.getResources().getDimensionPixelSize(
+                R.dimen.accessibility_focus_highlight_stroke_width);
+        mFocusColorDefaultValue = mContext.getResources().getColor(
+                R.color.accessibility_focus_highlight_color);
+        mFocusStrokeWidth = mFocusStrokeWidthDefaultValue;
+        mFocusColor = mFocusColorDefaultValue;
+        mSupportWindowMagnification = mContext.getResources().getBoolean(
+                R.bool.config_magnification_area) && mContext.getPackageManager().hasSystemFeature(
+                PackageManager.FEATURE_WINDOW_MAGNIFICATION);
     }
 
     boolean isHandlingAccessibilityEventsLocked() {
@@ -162,15 +229,21 @@ class AccessibilityUserState {
         mServiceHandlesDoubleTap = false;
         mRequestMultiFingerGestures = false;
         mRequestTwoFingerPassthrough = false;
-        mIsDisplayMagnificationEnabled = false;
+        mSendMotionEventsEnabled = false;
+        mIsMagnificationSingleFingerTripleTapEnabled = false;
+        mMagnificationTwoFingerTripleTapEnabled = false;
         mIsAutoclickEnabled = false;
         mUserNonInteractiveUiTimeout = 0;
         mUserInteractiveUiTimeout = 0;
+        mMagnificationModes.clear();
+        mFocusStrokeWidth = mFocusStrokeWidthDefaultValue;
+        mFocusColor = mFocusColorDefaultValue;
+        mMagnificationFollowTypingEnabled = true;
+        mAlwaysOnMagnificationEnabled = false;
     }
 
     void addServiceLocked(AccessibilityServiceConnection serviceConnection) {
         if (!mBoundServices.contains(serviceConnection)) {
-            serviceConnection.onAdded();
             mBoundServices.add(serviceConnection);
             mComponentNameToServiceMap.put(serviceConnection.getComponentName(), serviceConnection);
             mServiceInfoChangeListener.onServiceInfoChangedLocked(this);
@@ -332,18 +405,22 @@ class AccessibilityUserState {
     }
 
     /**
-     * Remove service from crashed service list if users disable it.
+     * Remove the service from the crashed and binding service lists if the user disabled it.
      */
-    void updateCrashedServicesIfNeededLocked() {
+    void removeDisabledServicesFromTemporaryStatesLocked() {
         for (int i = 0, count = mInstalledServices.size(); i < count; i++) {
             final AccessibilityServiceInfo installedService = mInstalledServices.get(i);
             final ComponentName componentName = ComponentName.unflattenFromString(
                     installedService.getId());
 
-            if (mCrashedServices.contains(componentName)
-                    && !mEnabledServices.contains(componentName)) {
-                // Remove it from mCrashedServices since users toggle the switch bar to retry.
+            if (!mEnabledServices.contains(componentName)) {
+                // Remove from mCrashedServices, since users may toggle the on/off switch to retry.
                 mCrashedServices.remove(componentName);
+                // Remove from mBindingServices, since services can get stuck in the binding state
+                // if binding starts but never finishes. If the service later attempts to finish
+                // binding but it is not in the enabled list then it will exit before initializing;
+                // see AccessibilityServiceConnection#initializeService().
+                mBindingServices.remove(componentName);
             }
         }
     }
@@ -352,9 +429,10 @@ class AccessibilityUserState {
         return mBoundServices;
     }
 
-    int getClientStateLocked(boolean isUiAutomationRunning) {
+    int getClientStateLocked(boolean uiAutomationCanIntrospect,
+            int traceClientState) {
         int clientState = 0;
-        final boolean a11yEnabled = isUiAutomationRunning
+        final boolean a11yEnabled = uiAutomationCanIntrospect
                 || isHandlingAccessibilityEventsLocked();
         if (a11yEnabled) {
             clientState |= AccessibilityManager.STATE_FLAG_ACCESSIBILITY_ENABLED;
@@ -368,6 +446,13 @@ class AccessibilityUserState {
         if (mIsTextHighContrastEnabled) {
             clientState |= AccessibilityManager.STATE_FLAG_HIGH_TEXT_CONTRAST_ENABLED;
         }
+        if (mIsAudioDescriptionByDefaultRequested) {
+            clientState |=
+                    AccessibilityManager.STATE_FLAG_AUDIO_DESCRIPTION_BY_DEFAULT_ENABLED;
+        }
+
+        clientState |= traceClientState;
+
         return clientState;
     }
 
@@ -450,12 +535,22 @@ class AccessibilityUserState {
                 .append(String.valueOf(mRequestMultiFingerGestures));
         pw.append(", requestTwoFingerPassthrough=")
                 .append(String.valueOf(mRequestTwoFingerPassthrough));
+        pw.append(", sendMotionEventsEnabled").append(String.valueOf(mSendMotionEventsEnabled));
         pw.append(", displayMagnificationEnabled=").append(String.valueOf(
-                mIsDisplayMagnificationEnabled));
+                mIsMagnificationSingleFingerTripleTapEnabled));
         pw.append(", autoclickEnabled=").append(String.valueOf(mIsAutoclickEnabled));
         pw.append(", nonInteractiveUiTimeout=").append(String.valueOf(mNonInteractiveUiTimeout));
         pw.append(", interactiveUiTimeout=").append(String.valueOf(mInteractiveUiTimeout));
         pw.append(", installedServiceCount=").append(String.valueOf(mInstalledServices.size()));
+        pw.append(", magnificationModes=").append(String.valueOf(mMagnificationModes));
+        pw.append(", magnificationCapabilities=")
+                .append(String.valueOf(mMagnificationCapabilities));
+        pw.append(", audioDescriptionByDefaultEnabled=")
+                .append(String.valueOf(mIsAudioDescriptionByDefaultRequested));
+        pw.append(", magnificationFollowTypingEnabled=")
+                .append(String.valueOf(mMagnificationFollowTypingEnabled));
+        pw.append(", alwaysOnMagnificationEnabled=")
+                .append(String.valueOf(mAlwaysOnMagnificationEnabled));
         pw.append("}");
         pw.println();
         pw.append("     shortcut key:{");
@@ -480,6 +575,10 @@ class AccessibilityUserState {
         pw.println("}");
         pw.append("     button target:{").append(mTargetAssignedToAccessibilityButton);
         pw.println("}");
+        pw.append("     qs shortcut targets:").append(mAccessibilityQsTargets.toString());
+        pw.println();
+        pw.append("     a11y tiles in QS panel:").append(mA11yTilesInQsPanel.toString());
+        pw.println();
         pw.append("     Bound services:{");
         final int serviceCount = mBoundServices.size();
         for (int j = 0; j < serviceCount; j++) {
@@ -527,6 +626,15 @@ class AccessibilityUserState {
                 pw.append(componentName.toShortString());
             }
         }
+        pw.println("}");
+        pw.println("     Client list info:{");
+        mUserClients.dump(pw, "          Client list ");
+        pw.println("          Registered clients:{");
+        for (int i = 0; i < mUserClients.getRegisteredCallbackCount(); i++) {
+            AccessibilityManagerService.Client client = (AccessibilityManagerService.Client)
+                    mUserClients.getRegisteredCallbackCookie(i);
+            pw.append(Arrays.toString(client.mPackageNames));
+        }
         pw.println("}]");
     }
 
@@ -538,12 +646,20 @@ class AccessibilityUserState {
         mIsAutoclickEnabled = enabled;
     }
 
-    public boolean isDisplayMagnificationEnabledLocked() {
-        return mIsDisplayMagnificationEnabled;
+    public boolean isMagnificationSingleFingerTripleTapEnabledLocked() {
+        return mIsMagnificationSingleFingerTripleTapEnabled;
     }
 
-    public void setDisplayMagnificationEnabledLocked(boolean enabled) {
-        mIsDisplayMagnificationEnabled = enabled;
+    public void setMagnificationSingleFingerTripleTapEnabledLocked(boolean enabled) {
+        mIsMagnificationSingleFingerTripleTapEnabled = enabled;
+    }
+
+    public boolean isMagnificationTwoFingerTripleTapEnabledLocked() {
+        return mMagnificationTwoFingerTripleTapEnabled;
+    }
+
+    public void setMagnificationTwoFingerTripleTapEnabledLocked(boolean enabled) {
+        mMagnificationTwoFingerTripleTapEnabled = enabled;
     }
 
     public boolean isFilterKeyEventsEnabledLocked() {
@@ -579,6 +695,73 @@ class AccessibilityUserState {
     }
 
     /**
+     * Gets the magnification mode for the given display.
+     * @return magnification mode
+     *
+     * @see Settings.Secure#ACCESSIBILITY_MAGNIFICATION_MODE_FULLSCREEN
+     * @see Settings.Secure#ACCESSIBILITY_MAGNIFICATION_MODE_WINDOW
+     */
+    public int getMagnificationModeLocked(int displayId) {
+        int mode = mMagnificationModes.get(displayId, ACCESSIBILITY_MAGNIFICATION_MODE_NONE);
+        if (mode == ACCESSIBILITY_MAGNIFICATION_MODE_NONE) {
+            mode = ACCESSIBILITY_MAGNIFICATION_MODE_FULLSCREEN;
+            setMagnificationModeLocked(displayId, mode);
+        }
+        return mode;
+    }
+
+
+    /**
+     * Gets the magnification capabilities setting of current user.
+     *
+     * @return magnification capabilities
+     *
+     * @see Settings.Secure#ACCESSIBILITY_MAGNIFICATION_MODE_FULLSCREEN
+     * @see Settings.Secure#ACCESSIBILITY_MAGNIFICATION_MODE_WINDOW
+     * @see Settings.Secure#ACCESSIBILITY_MAGNIFICATION_MODE_ALL
+     */
+    int getMagnificationCapabilitiesLocked() {
+        return mMagnificationCapabilities;
+    }
+
+    /**
+     * Sets the magnification capabilities from Settings value.
+     *
+     * @see Settings.Secure#ACCESSIBILITY_MAGNIFICATION_MODE_FULLSCREEN
+     * @see Settings.Secure#ACCESSIBILITY_MAGNIFICATION_MODE_WINDOW
+     * @see Settings.Secure#ACCESSIBILITY_MAGNIFICATION_MODE_ALL
+     */
+    public void setMagnificationCapabilitiesLocked(int capabilities) {
+        mMagnificationCapabilities = capabilities;
+    }
+
+    public void setMagnificationFollowTypingEnabled(boolean enabled) {
+        mMagnificationFollowTypingEnabled = enabled;
+    }
+
+    public boolean isMagnificationFollowTypingEnabled() {
+        return mMagnificationFollowTypingEnabled;
+    }
+
+    public void setAlwaysOnMagnificationEnabled(boolean enabled) {
+        mAlwaysOnMagnificationEnabled = enabled;
+    }
+
+    public boolean isAlwaysOnMagnificationEnabled() {
+        return mAlwaysOnMagnificationEnabled;
+    }
+
+    /**
+     * Sets the magnification mode to the given display.
+     *
+     * @param displayId The display id.
+     * @param mode The magnification mode.
+     */
+    public void setMagnificationModeLocked(int displayId, int mode) {
+        mMagnificationModes.put(displayId, mode);
+    }
+
+    /**
      * Disable both shortcuts' magnification function.
      */
     public void disableShortcutMagnificationLocked() {
@@ -593,13 +776,22 @@ class AccessibilityUserState {
      * @param shortcutType The shortcut type.
      * @return The array set of the strings
      */
-    public ArraySet<String> getShortcutTargetsLocked(@ShortcutType int shortcutType) {
-        if (shortcutType == ACCESSIBILITY_SHORTCUT_KEY) {
+    public ArraySet<String> getShortcutTargetsLocked(@UserShortcutType int shortcutType) {
+        if (shortcutType == UserShortcutType.HARDWARE) {
             return mAccessibilityShortcutKeyTargets;
-        } else if (shortcutType == ACCESSIBILITY_BUTTON) {
+        } else if (shortcutType == UserShortcutType.SOFTWARE) {
             return mAccessibilityButtonTargets;
+        } else if (shortcutType == UserShortcutType.QUICK_SETTINGS) {
+            return getA11yQsTargets();
+        } else if ((shortcutType == UserShortcutType.TRIPLETAP
+                && isMagnificationSingleFingerTripleTapEnabledLocked()) || (
+                shortcutType == UserShortcutType.TWOFINGER_DOUBLETAP
+                        && isMagnificationTwoFingerTripleTapEnabledLocked())) {
+            ArraySet<String> targets = new ArraySet<>();
+            targets.add(MAGNIFICATION_CONTROLLER_NAME);
+            return targets;
         }
-        return null;
+        return new ArraySet<>();
     }
 
     /**
@@ -642,9 +834,18 @@ class AccessibilityUserState {
      * @param target The component name of the shortcut target.
      * @return true if the shortcut target is removed.
      */
-    public boolean removeShortcutTargetLocked(@ShortcutType int shortcutType,
-            ComponentName target) {
-        return getShortcutTargetsLocked(shortcutType).removeIf(name -> {
+    public boolean removeShortcutTargetLocked(
+            @UserShortcutType int shortcutType, ComponentName target) {
+        if (shortcutType == UserShortcutType.TRIPLETAP
+                || shortcutType == UserShortcutType.TWOFINGER_DOUBLETAP) {
+            throw new UnsupportedOperationException(
+                    "removeShortcutTargetLocked only support shortcut type: "
+                            + "software and hardware and quick settings for now"
+            );
+        }
+
+        Set<String> targets = getShortcutTargetsLocked(shortcutType);
+        boolean result = targets.removeIf(name -> {
             ComponentName componentName;
             if (name == null
                     || (componentName = ComponentName.unflattenFromString(name)) == null) {
@@ -652,6 +853,11 @@ class AccessibilityUserState {
             }
             return componentName.equals(target);
         });
+        if (shortcutType == UserShortcutType.QUICK_SETTINGS) {
+            updateA11yQsTargetLocked(targets);
+        }
+
+        return result;
     }
 
     /**
@@ -714,6 +920,14 @@ class AccessibilityUserState {
         mIsTextHighContrastEnabled = enabled;
     }
 
+    public boolean isAudioDescriptionByDefaultEnabledLocked() {
+        return mIsAudioDescriptionByDefaultRequested;
+    }
+
+    public void setAudioDescriptionByDefaultEnabledLocked(boolean enabled) {
+        mIsAudioDescriptionByDefaultRequested = enabled;
+    }
+
     public boolean isTouchExplorationEnabledLocked() {
         return mIsTouchExplorationEnabled;
     }
@@ -745,6 +959,13 @@ class AccessibilityUserState {
         mRequestTwoFingerPassthrough = enabled;
     }
 
+    public boolean isSendMotionEventsEnabled() {
+        return mSendMotionEventsEnabled;
+    }
+
+    public void setSendMotionEventsEnabled(boolean mode) {
+        mSendMotionEventsEnabled = mode;
+    }
 
     public int getUserInteractiveUiTimeoutLocked() {
         return mUserInteractiveUiTimeout;
@@ -812,5 +1033,139 @@ class AccessibilityUserState {
             }
         }
         return false;
+    }
+
+    /**
+     * Gets the stroke width of the focus rectangle.
+     * @return The stroke width.
+     */
+    public int getFocusStrokeWidthLocked() {
+        return mFocusStrokeWidth;
+    }
+
+    /**
+     * Gets the color of the focus rectangle.
+     * @return The color.
+     */
+    public int getFocusColorLocked() {
+        return mFocusColor;
+    }
+
+    /**
+     * Sets the stroke width and color of the focus rectangle.
+     *
+     * @param strokeWidth The strokeWidth of the focus rectangle.
+     * @param color The color of the focus rectangle.
+     */
+    public void setFocusAppearanceLocked(int strokeWidth, int color) {
+        mFocusStrokeWidth = strokeWidth;
+        mFocusColor = color;
+    }
+
+    public void setServiceDetectsGesturesEnabled(int displayId, boolean mode) {
+        mServiceDetectsGestures.put(displayId, mode);
+    }
+
+    public void resetServiceDetectsGestures() {
+        mServiceDetectsGestures.clear();
+    }
+
+    public boolean isServiceDetectsGesturesEnabled(int displayId) {
+        if (mServiceDetectsGestures.contains(displayId)) {
+            return mServiceDetectsGestures.get(displayId);
+        }
+        return false;
+    }
+
+    public void updateTileServiceMapForAccessibilityServiceLocked() {
+        mA11yServiceToTileService.clear();
+        mInstalledServices.forEach(
+                a11yServiceInfo -> {
+                    String tileServiceName = a11yServiceInfo.getTileServiceName();
+                    if (!TextUtils.isEmpty(tileServiceName)) {
+                        ResolveInfo resolveInfo = a11yServiceInfo.getResolveInfo();
+                        ComponentName a11yFeature = new ComponentName(
+                                resolveInfo.serviceInfo.packageName,
+                                resolveInfo.serviceInfo.name
+                        );
+                        ComponentName tileService = new ComponentName(
+                                a11yFeature.getPackageName(),
+                                tileServiceName
+                        );
+                        mA11yServiceToTileService.put(a11yFeature, tileService);
+                    }
+                }
+        );
+    }
+
+    public void updateTileServiceMapForAccessibilityActivityLocked() {
+        mA11yActivityToTileService.clear();
+        mInstalledShortcuts.forEach(
+                a11yShortcutInfo -> {
+                    String tileServiceName = a11yShortcutInfo.getTileServiceName();
+                    if (!TextUtils.isEmpty(tileServiceName)) {
+                        ComponentName a11yFeature = a11yShortcutInfo.getComponentName();
+                        ComponentName tileService = new ComponentName(
+                                a11yFeature.getPackageName(),
+                                tileServiceName);
+                        mA11yActivityToTileService.put(a11yFeature, tileService);
+                    }
+                }
+        );
+    }
+
+    public void updateA11yQsTargetLocked(Set<String> targets) {
+        mAccessibilityQsTargets.clear();
+        mAccessibilityQsTargets.addAll(targets);
+    }
+
+    /**
+     * Returns a copy of the targets which has qs shortcut turned on
+     */
+    public ArraySet<String> getA11yQsTargets() {
+        return new ArraySet<>(mAccessibilityQsTargets);
+    }
+
+    public void updateA11yTilesInQsPanelLocked(Set<ComponentName> componentNames) {
+        mA11yTilesInQsPanel.clear();
+        mA11yTilesInQsPanel.addAll(componentNames);
+    }
+
+    /**
+     * Returns a copy of the a11y tiles that are in the QuickSettings panel
+     */
+    public ArraySet<ComponentName> getA11yQsTilesInQsPanel() {
+        return new ArraySet<>(mA11yTilesInQsPanel);
+    }
+
+    /**
+     * Returns a map of AccessibilityService or AccessibilityShortcut to its provided TileService
+     */
+    public Map<ComponentName, ComponentName> getA11yFeatureToTileService() {
+        Map<ComponentName, ComponentName> featureToTileServiceMap = new ArrayMap<>();
+        featureToTileServiceMap.putAll(mA11yServiceToTileService);
+        featureToTileServiceMap.putAll(mA11yActivityToTileService);
+        return featureToTileServiceMap;
+    }
+
+    /**
+     * Returns a map of TileService's componentName to the AccessibilityServiceInfo it ties to.
+     */
+    public Map<ComponentName, AccessibilityServiceInfo> getTileServiceToA11yServiceInfoMapLocked() {
+        Map<ComponentName, AccessibilityServiceInfo> tileServiceToA11yServiceInfoMap =
+                new ArrayMap<>();
+        Map<ComponentName, AccessibilityServiceInfo> a11yServiceToServiceInfoMap =
+                mInstalledServices.stream().collect(
+                        Collectors.toMap(
+                                AccessibilityServiceInfo::getComponentName,
+                                Function.identity()));
+        for (Map.Entry<ComponentName, ComponentName> serviceToTile :
+                mA11yServiceToTileService.entrySet()) {
+            if (a11yServiceToServiceInfoMap.containsKey(serviceToTile.getKey())) {
+                tileServiceToA11yServiceInfoMap.put(serviceToTile.getValue(),
+                        a11yServiceToServiceInfoMap.get(serviceToTile.getKey()));
+            }
+        }
+        return tileServiceToA11yServiceInfoMap;
     }
 }

@@ -16,6 +16,7 @@
 package com.android.server.hdmi;
 
 import android.hardware.tv.cec.V1_0.SendMessageResult;
+import android.util.Slog;
 
 import com.android.internal.annotations.VisibleForTesting;
 
@@ -23,6 +24,7 @@ import com.android.internal.annotations.VisibleForTesting;
  * Feature action that handles System Audio Mode initiated by AVR devices.
  */
 public class SystemAudioInitiationActionFromAvr extends HdmiCecFeatureAction {
+    private static final String TAG = "SystemAudioInitiationActionFromAvr";
 
     // State that waits for <Active Source> once send <Request Active Source>.
     private static final int STATE_WAITING_FOR_ACTIVE_SOURCE = 1;
@@ -115,11 +117,16 @@ public class SystemAudioInitiationActionFromAvr extends HdmiCecFeatureAction {
 
     private void handleActiveSourceTimeout() {
         HdmiLogger.debug("Cannot get active source.");
+        if (audioSystem().mService.isStandbyMessageReceived()) {
+            Slog.d(TAG, "Device is going to sleep, avoid to wake it up.");
+            return;
+        }
         // If not able to find Active Source and the current device has playbcak functionality,
         // claim Active Source and start to query TV system audio mode support.
         if (audioSystem().mService.isPlaybackDevice()) {
             audioSystem().mService.setAndBroadcastActiveSourceFromOneDeviceType(
-                    Constants.ADDR_BROADCAST, getSourcePath());
+                    Constants.ADDR_BROADCAST, getSourcePath(),
+                    "SystemAudioInitiationActionFromAvr#handleActiveSourceTimeout()");
             mState = STATE_WAITING_FOR_TV_SUPPORT;
             queryTvSystemAudioModeSupport();
         } else {

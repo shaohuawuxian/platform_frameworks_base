@@ -22,6 +22,7 @@ import static android.app.NotificationManager.INTERRUPTION_FILTER_NONE;
 import static android.app.NotificationManager.INTERRUPTION_FILTER_PRIORITY;
 import static android.app.NotificationManager.INTERRUPTION_FILTER_UNKNOWN;
 
+import android.annotation.SuppressLint;
 import android.app.ActivityManager;
 import android.app.INotificationManager;
 import android.app.Notification;
@@ -44,6 +45,8 @@ import android.os.Process;
 import android.os.RemoteException;
 import android.os.ShellCommand;
 import android.os.UserHandle;
+import android.service.notification.NotificationListenerService;
+import android.service.notification.StatusBarNotification;
 import android.text.TextUtils;
 import android.util.Slog;
 
@@ -63,11 +66,9 @@ public class NotificationShellCmd extends ShellCommand {
             + "  disallow_listener COMPONENT [user_id (current user if not specified)]\n"
             + "  allow_assistant COMPONENT [user_id (current user if not specified)]\n"
             + "  remove_assistant COMPONENT [user_id (current user if not specified)]\n"
-            + "  set_dnd [on|none (same as on)|priority|alarms|all|off (same as all)]"
+            + "  set_dnd [on|none (same as on)|priority|alarms|all|off (same as all)]\n"
             + "  allow_dnd PACKAGE [user_id (current user if not specified)]\n"
             + "  disallow_dnd PACKAGE [user_id (current user if not specified)]\n"
-            + "  suspend_package PACKAGE\n"
-            + "  unsuspend_package PACKAGE\n"
             + "  reset_assistant_user_set [user_id (current user if not specified)]\n"
             + "  get_approved_assistant [user_id (current user if not specified)]\n"
             + "  post [--help | flags] TAG TEXT\n"
@@ -116,7 +117,6 @@ public class NotificationShellCmd extends ShellCommand {
     private final NotificationManagerService mDirectService;
     private final INotificationManager mBinderService;
     private final PackageManager mPm;
-    private NotificationChannel mChannel;
 
     public NotificationShellCmd(NotificationManagerService service) {
         mDirectService = service;
@@ -135,7 +135,7 @@ public class NotificationShellCmd extends ShellCommand {
         }
         String callingPackage = null;
         final int callingUid = Binder.getCallingUid();
-        long identity = Binder.clearCallingIdentity();
+        final long identity = Binder.clearCallingIdentity();
         try {
             if (callingUid == Process.ROOT_UID) {
                 callingPackage = NotificationManagerService.ROOT_PKG;
@@ -182,7 +182,13 @@ public class NotificationShellCmd extends ShellCommand {
                             interruptionFilter = INTERRUPTION_FILTER_ALL;
                     }
                     final int filter = interruptionFilter;
-                    mBinderService.setInterruptionFilter(callingPackage, filter);
+                    if (android.app.Flags.modesApi()) {
+                        mBinderService.setInterruptionFilter(callingPackage, filter,
+                                /* fromUser= */ true);
+                    } else {
+                        mBinderService.setInterruptionFilter(callingPackage, filter,
+                                /* fromUser= */ false);
+                    }
                 }
                 break;
                 case "allow_dnd": {
@@ -216,7 +222,8 @@ public class NotificationShellCmd extends ShellCommand {
                     if (peekNextArg() != null) {
                         userId = Integer.parseInt(getNextArgRequired());
                     }
-                    mBinderService.setNotificationListenerAccessGrantedForUser(cn, userId, true);
+                    mBinderService.setNotificationListenerAccessGrantedForUser(
+                            cn, userId, true, true);
                 }
                 break;
                 case "disallow_listener": {
@@ -229,7 +236,8 @@ public class NotificationShellCmd extends ShellCommand {
                     if (peekNextArg() != null) {
                         userId = Integer.parseInt(getNextArgRequired());
                     }
-                    mBinderService.setNotificationListenerAccessGrantedForUser(cn, userId, false);
+                    mBinderService.setNotificationListenerAccessGrantedForUser(
+                            cn, userId, false, true);
                 }
                 break;
                 case "allow_assistant": {
@@ -258,25 +266,6 @@ public class NotificationShellCmd extends ShellCommand {
                     mBinderService.setNotificationAssistantAccessGrantedForUser(cn, userId, false);
                 }
                 break;
-                case "suspend_package": {
-                    // only use for testing
-                    mDirectService.simulatePackageSuspendBroadcast(true, getNextArgRequired());
-                }
-                break;
-                case "unsuspend_package": {
-                    // only use for testing
-                    mDirectService.simulatePackageSuspendBroadcast(false, getNextArgRequired());
-                }
-                break;
-                case "distract_package": {
-                    // only use for testing
-                    // Flag values are in
-                    // {@link android.content.pm.PackageManager.DistractionRestriction}.
-                    mDirectService.simulatePackageDistractionBroadcast(
-                            Integer.parseInt(getNextArgRequired()),
-                            getNextArgRequired().split(","));
-                    break;
-                }
                 case "reset_assistant_user_set": {
                     int userId = ActivityManager.getCurrentUser();
                     if (peekNextArg() != null) {
@@ -411,19 +400,28 @@ public class NotificationShellCmd extends ShellCommand {
                                     + "--context <snooze-criterion-id>) <key>");
                             return 1;
                     }
-                    if (null == mDirectService.getNotificationRecord(key)) {
-                        pw.println("error: no notification matching key: " + key);
-                        return 1;
-                    }
                     if (duration > 0 || criterion != null) {
+                        ShellNls nls = new ShellNls();
+                        nls.registerAsSystemService(mDirectService.getContext(),
+                                new ComponentName(nls.getClass().getPackageName(),
+                                        nls.getClass().getName()),
+                                ActivityManager.getCurrentUser());
+                        if (!waitForBind(nls)) {
+                            pw.println("error: could not bind a listener in time");
+                            return 1;
+                        }
                         if (duration > 0) {
                             pw.println(String.format("snoozing <%s> until time: %s", key,
                                     new Date(System.currentTimeMillis() + duration)));
+                            nls.snoozeNotification(key, duration);
                         } else {
                             pw.println(String.format("snoozing <%s> until criterion: %s", key,
                                     criterion));
+                            nls.snoozeNotification(key, criterion);
                         }
-                        mDirectService.snoozeNotificationInt(key, duration, criterion, null);
+                        waitForSnooze(nls, key);
+                        nls.unregisterAsSystemService();
+                        waitForUnbind(nls);
                     } else {
                         pw.println("error: invalid value for --" + subflag + ": " + flagarg);
                         return 1;
@@ -546,14 +544,17 @@ public class NotificationShellCmd extends ShellCommand {
                     final PendingIntent pi;
                     if ("broadcast".equals(intentKind)) {
                         pi = PendingIntent.getBroadcastAsUser(
-                                context, 0, intent, PendingIntent.FLAG_UPDATE_CURRENT,
+                                context, 0, intent, PendingIntent.FLAG_UPDATE_CURRENT
+                                        | PendingIntent.FLAG_IMMUTABLE,
                                 UserHandle.CURRENT);
                     } else if ("service".equals(intentKind)) {
                         pi = PendingIntent.getService(
-                                context, 0, intent, PendingIntent.FLAG_UPDATE_CURRENT);
+                                context, 0, intent, PendingIntent.FLAG_UPDATE_CURRENT
+                                        | PendingIntent.FLAG_IMMUTABLE);
                     } else {
                         pi = PendingIntent.getActivityAsUser(
-                                context, 0, intent, PendingIntent.FLAG_UPDATE_CURRENT, null,
+                                context, 0, intent, PendingIntent.FLAG_UPDATE_CURRENT
+                                        | PendingIntent.FLAG_IMMUTABLE, null,
                                 UserHandle.CURRENT);
                     }
                     builder.setContentIntent(pi);
@@ -704,9 +705,79 @@ public class NotificationShellCmd extends ShellCommand {
         return 0;
     }
 
+    private void waitForSnooze(ShellNls nls, String key) {
+        for (int i = 0; i < 20; i++) {
+            StatusBarNotification[] sbns = nls.getSnoozedNotifications();
+            for (StatusBarNotification sbn : sbns) {
+                if (sbn.getKey().equals(key)) {
+                    return;
+                }
+            }
+            try {
+                Thread.sleep(100);
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
+        }
+        return;
+    }
+
+    private boolean waitForBind(ShellNls nls) {
+        for (int i = 0; i < 20; i++) {
+            if (nls.isConnected) {
+                Slog.i(TAG, "Bound Shell NLS");
+                return true;
+            } else {
+                try {
+                    Thread.sleep(100);
+                } catch (InterruptedException e) {
+                    e.printStackTrace();
+                }
+            }
+        }
+        return false;
+    }
+
+    private void waitForUnbind(ShellNls nls) {
+        for (int i = 0; i < 10; i++) {
+            if (!nls.isConnected) {
+                Slog.i(TAG, "Unbound Shell NLS");
+                return;
+            } else {
+                try {
+                    Thread.sleep(100);
+                } catch (InterruptedException e) {
+                    e.printStackTrace();
+                }
+            }
+        }
+    }
+
     @Override
     public void onHelp() {
         getOutPrintWriter().println(USAGE);
+    }
+
+    @SuppressLint("OverrideAbstract")
+    private static class ShellNls extends NotificationListenerService {
+        private static ShellNls
+                sNotificationListenerInstance = null;
+        boolean isConnected;
+
+        @Override
+        public void onListenerConnected() {
+            super.onListenerConnected();
+            sNotificationListenerInstance = this;
+            isConnected = true;
+        }
+        @Override
+        public void onListenerDisconnected() {
+            isConnected = false;
+        }
+
+        public static ShellNls getInstance() {
+            return sNotificationListenerInstance;
+        }
     }
 }
 

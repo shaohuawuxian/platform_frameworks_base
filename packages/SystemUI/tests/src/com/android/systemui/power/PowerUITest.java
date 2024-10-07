@@ -28,7 +28,6 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import android.content.BroadcastReceiver;
-import android.content.Context;
 import android.content.IntentFilter;
 import android.os.BatteryManager;
 import android.os.Handler;
@@ -37,32 +36,35 @@ import android.os.IThermalService;
 import android.os.PowerManager;
 import android.os.Temperature;
 import android.provider.Settings;
-import android.test.suitebuilder.annotation.SmallTest;
-import android.testing.AndroidTestingRunner;
+import android.service.vr.IVrManager;
+import android.service.vr.IVrStateCallbacks;
 import android.testing.TestableLooper;
 import android.testing.TestableLooper.RunWithLooper;
 import android.testing.TestableResources;
 
+import androidx.test.ext.junit.runners.AndroidJUnit4;
+import androidx.test.filters.SmallTest;
+
 import com.android.settingslib.fuelgauge.Estimate;
-import com.android.systemui.R;
 import com.android.systemui.SysuiTestCase;
 import com.android.systemui.broadcast.BroadcastDispatcher;
+import com.android.systemui.keyguard.WakefulnessLifecycle;
 import com.android.systemui.power.PowerUI.WarningsUI;
+import com.android.systemui.res.R;
+import com.android.systemui.settings.UserTracker;
 import com.android.systemui.statusbar.CommandQueue;
-import com.android.systemui.statusbar.phone.StatusBar;
 
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 
 import java.time.Duration;
 import java.util.concurrent.TimeUnit;
 
-import dagger.Lazy;
-
-@RunWith(AndroidTestingRunner.class)
+@RunWith(AndroidJUnit4.class)
 @RunWithLooper
 @SmallTest
 public class PowerUITest extends SysuiTestCase {
@@ -80,27 +82,22 @@ public class PowerUITest extends SysuiTestCase {
     private static final int OLD_BATTERY_LEVEL_10 = 10;
     private static final long VERY_BELOW_SEVERE_HYBRID_THRESHOLD = TimeUnit.MINUTES.toMillis(15);
     public static final int BATTERY_LEVEL_10 = 10;
-    private WarningsUI mMockWarnings;
+    @Mock private WarningsUI mMockWarnings;
     private PowerUI mPowerUI;
-    private EnhancedEstimates mEnhancedEstimates;
+    @Mock private EnhancedEstimates mEnhancedEstimates;
     @Mock private PowerManager mPowerManager;
+    @Mock private UserTracker mUserTracker;
+    @Mock private WakefulnessLifecycle mWakefulnessLifecycle;
     @Mock private IThermalService mThermalServiceMock;
     private IThermalEventListener mUsbThermalEventListener;
     private IThermalEventListener mSkinThermalEventListener;
     @Mock private BroadcastDispatcher mBroadcastDispatcher;
     @Mock private CommandQueue mCommandQueue;
-    @Mock private Lazy<StatusBar> mStatusBarLazy;
-    @Mock private StatusBar mStatusBar;
+    @Mock private IVrManager mVrManager;
 
     @Before
     public void setup() {
         MockitoAnnotations.initMocks(this);
-        mMockWarnings = mDependency.injectMockDependency(WarningsUI.class);
-        mEnhancedEstimates = mDependency.injectMockDependency(EnhancedEstimates.class);
-
-        when(mStatusBarLazy.get()).thenReturn(mStatusBar);
-
-        mContext.addMockSystemService(Context.POWER_SERVICE, mPowerManager);
 
         createPowerUi();
         mSkinThermalEventListener = mPowerUI.new SkinThermalEventListener();
@@ -140,6 +137,23 @@ public class PowerUITest extends SysuiTestCase {
         TestableLooper.get(this).processAllMessages();
         verify(mMockWarnings, times(1)).showHighTemperatureWarning();
         verify(mMockWarnings, never()).dismissHighTemperatureWarning();
+    }
+
+    @Test
+    public void testSkinWarning_throttlingEmergency_butVrMode() throws Exception {
+        mPowerUI.start();
+
+        ArgumentCaptor<IVrStateCallbacks> vrCallback =
+                ArgumentCaptor.forClass(IVrStateCallbacks.class);
+        verify(mVrManager).registerListener(vrCallback.capture());
+
+        vrCallback.getValue().onVrStateChanged(true);
+        final Temperature temp = getEmergencyStatusTemp(Temperature.TYPE_SKIN, "skin2");
+        mSkinThermalEventListener.notifyThrottling(temp);
+
+        TestableLooper.get(this).processAllMessages();
+        // don't show skin high temperature warning when in VR mode
+        verify(mMockWarnings, never()).showHighTemperatureWarning();
     }
 
     @Test
@@ -434,12 +448,6 @@ public class PowerUITest extends SysuiTestCase {
         state.mIsPowerSaver = true;
         shouldShow = mPowerUI.shouldShowHybridWarning(state.get());
         assertThat(shouldShow).isFalse();
-
-        state.mIsPowerSaver = false;
-        // if disabled we should not show the low warning.
-        state.mIsLowLevelWarningEnabled = false;
-        shouldShow = mPowerUI.shouldShowHybridWarning(state.get());
-        assertThat(shouldShow).isFalse();
     }
 
     @Test
@@ -508,8 +516,8 @@ public class PowerUITest extends SysuiTestCase {
 
         // We should dismiss if the device is plugged in
         state.mPlugged = true;
-        state.mTimeRemainingMillis = Duration.ofHours(1).toMillis();
-        state.mLowThresholdMillis = Duration.ofHours(2).toMillis();
+        state.mBatteryLevel = 19;
+        state.mLowLevelThreshold = 20;
         boolean shouldDismiss = mPowerUI.shouldDismissHybridWarning(state.get());
         assertThat(shouldDismiss).isTrue();
 
@@ -519,7 +527,7 @@ public class PowerUITest extends SysuiTestCase {
         assertThat(shouldDismiss).isFalse();
 
         // If we go over the low warning threshold we should dismiss
-        state.mTimeRemainingMillis = Duration.ofHours(3).toMillis();
+        state.mBatteryLevel = 21;
         shouldDismiss = mPowerUI.shouldDismissHybridWarning(state.get());
         assertThat(shouldDismiss).isTrue();
     }
@@ -688,7 +696,16 @@ public class PowerUITest extends SysuiTestCase {
     }
 
     private void createPowerUi() {
-        mPowerUI = new PowerUI(mContext, mBroadcastDispatcher, mCommandQueue, mStatusBarLazy);
+        mPowerUI = new PowerUI(
+                mContext,
+                mBroadcastDispatcher,
+                mCommandQueue,
+                mVrManager,
+                mMockWarnings,
+                mEnhancedEstimates,
+                mWakefulnessLifecycle,
+                mPowerManager,
+                mUserTracker);
         mPowerUI.mThermalService = mThermalServiceMock;
     }
 

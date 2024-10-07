@@ -25,28 +25,53 @@ import static org.mockito.Matchers.eq;
 import static org.mockito.Mockito.any;
 import static org.mockito.Mockito.anyString;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
+import android.app.ActivityManager;
 import android.app.Notification;
 import android.app.NotificationManager;
+import android.content.BroadcastReceiver;
+import android.content.Context;
+import android.content.ContextWrapper;
+import android.content.Intent;
+import android.content.IntentFilter;
 import android.os.BatteryManager;
-import android.test.suitebuilder.annotation.SmallTest;
+import android.os.Bundle;
+import android.os.Handler;
+import android.os.UserHandle;
+import android.testing.TestableLooper;
 
-import androidx.test.runner.AndroidJUnit4;
+import androidx.test.ext.junit.runners.AndroidJUnit4;
+import androidx.test.filters.SmallTest;
 
+import com.android.internal.logging.UiEventLogger;
 import com.android.internal.messages.nano.SystemMessageProto.SystemMessage;
+import com.android.settingslib.fuelgauge.BatterySaverUtils;
 import com.android.systemui.SysuiTestCase;
+import com.android.systemui.animation.DialogTransitionAnimator;
+import com.android.systemui.animation.Expandable;
+import com.android.systemui.broadcast.BroadcastSender;
 import com.android.systemui.plugins.ActivityStarter;
+import com.android.systemui.settings.UserTracker;
+import com.android.systemui.statusbar.phone.SystemUIDialog;
+import com.android.systemui.statusbar.policy.BatteryController;
 import com.android.systemui.util.NotificationChannels;
 
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.ArgumentCaptor;
+import org.mockito.Mock;
+import org.mockito.MockitoAnnotations;
+
+import java.lang.ref.WeakReference;
 
 @SmallTest
 @RunWith(AndroidJUnit4.class)
+@TestableLooper.RunWithLooper
 public class PowerNotificationWarningsTest extends SysuiTestCase {
 
     public static final String FORMATTED_45M = "0h 45m";
@@ -54,12 +79,55 @@ public class PowerNotificationWarningsTest extends SysuiTestCase {
     private final NotificationManager mMockNotificationManager = mock(NotificationManager.class);
     private PowerNotificationWarnings mPowerNotificationWarnings;
 
+    @Mock
+    private BatteryController mBatteryController;
+    @Mock
+    private DialogTransitionAnimator mDialogTransitionAnimator;
+    @Mock
+    private UiEventLogger mUiEventLogger;
+    @Mock
+    private UserTracker mUserTracker;
+    @Mock
+    private Expandable mExpandable;
+    @Mock
+    private DialogTransitionAnimator.Controller mController;
+    @Mock
+    private SystemUIDialog.Factory mSystemUIDialogFactory;
+    @Mock
+    private SystemUIDialog mSystemUIDialog;
+
+    private BroadcastReceiver mReceiver;
+
     @Before
     public void setUp() throws Exception {
+        MockitoAnnotations.initMocks(this);
+
+        Context wrapper = new ContextWrapper(mContext) {
+            @Override
+            public Intent registerReceiverAsUser(BroadcastReceiver receiver, UserHandle user,
+                    IntentFilter filter, String broadcastPermission, Handler scheduler, int flags) {
+                mReceiver = receiver;
+                return null;
+            }
+        };
+
         // Test Instance.
         mContext.addMockSystemService(NotificationManager.class, mMockNotificationManager);
         ActivityStarter starter = mDependency.injectMockDependency(ActivityStarter.class);
-        mPowerNotificationWarnings = new PowerNotificationWarnings(mContext, starter);
+        BroadcastSender broadcastSender = mDependency.injectMockDependency(BroadcastSender.class);
+        when(mUserTracker.getUserId()).thenReturn(ActivityManager.getCurrentUser());
+        when(mUserTracker.getUserHandle()).thenReturn(
+                UserHandle.of(ActivityManager.getCurrentUser()));
+        when(mSystemUIDialogFactory.create()).thenReturn(mSystemUIDialog);
+        mPowerNotificationWarnings = new PowerNotificationWarnings(
+                wrapper,
+                starter,
+                broadcastSender,
+                () -> mBatteryController,
+                mDialogTransitionAnimator,
+                mUiEventLogger,
+                mUserTracker,
+                mSystemUIDialogFactory);
         BatteryStateSnapshot snapshot = new BatteryStateSnapshot(100, false, false, 1,
                 BatteryManager.BATTERY_HEALTH_GOOD, 5, 15);
         mPowerNotificationWarnings.updateSnapshot(snapshot);
@@ -164,5 +232,52 @@ public class PowerNotificationWarningsTest extends SysuiTestCase {
         assertThat(mPowerNotificationWarnings.mUsbHighTempDialog).isNotNull();
 
         mPowerNotificationWarnings.mUsbHighTempDialog.dismiss();
+    }
+
+    @Test
+    public void testDialogStartedFromLauncher_viewVisible() {
+        when(mBatteryController.getLastPowerSaverStartExpandable())
+                .thenReturn(new WeakReference<>(mExpandable));
+        when(mExpandable.dialogTransitionController(any())).thenReturn(mController);
+
+        Intent intent = new Intent(BatterySaverUtils.ACTION_SHOW_START_SAVER_CONFIRMATION);
+        intent.putExtras(new Bundle());
+
+        mReceiver.onReceive(mContext, intent);
+
+        verify(mDialogTransitionAnimator).show(any(), eq(mController));
+
+        mPowerNotificationWarnings.getSaverConfirmationDialog().dismiss();
+    }
+
+    @Test
+    public void testDialogStartedNotFromLauncher_viewNotVisible() {
+        when(mBatteryController.getLastPowerSaverStartExpandable())
+                .thenReturn(new WeakReference<>(mExpandable));
+
+        Intent intent = new Intent(BatterySaverUtils.ACTION_SHOW_START_SAVER_CONFIRMATION);
+        intent.putExtras(new Bundle());
+
+        mReceiver.onReceive(mContext, intent);
+
+        verify(mDialogTransitionAnimator, never()).show(any(), any());
+
+        verify(mPowerNotificationWarnings.getSaverConfirmationDialog()).show();
+        mPowerNotificationWarnings.getSaverConfirmationDialog().dismiss();
+    }
+
+    @Test
+    public void testDialogShownNotFromLauncher() {
+        when(mBatteryController.getLastPowerSaverStartExpandable()).thenReturn(null);
+
+        Intent intent = new Intent(BatterySaverUtils.ACTION_SHOW_START_SAVER_CONFIRMATION);
+        intent.putExtras(new Bundle());
+
+        mReceiver.onReceive(mContext, intent);
+
+        verify(mDialogTransitionAnimator, never()).showFromView(any(), any());
+
+        verify(mPowerNotificationWarnings.getSaverConfirmationDialog()).show();
+        mPowerNotificationWarnings.getSaverConfirmationDialog().dismiss();
     }
 }

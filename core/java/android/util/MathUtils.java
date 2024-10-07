@@ -24,6 +24,7 @@ import android.graphics.Rect;
  *
  * @hide Pending API council approval
  */
+@android.ravenwood.annotation.RavenwoodKeepWholeClass
 public final class MathUtils {
     private static final float DEG_TO_RAD = 3.1415926f / 180.0f;
     private static final float RAD_TO_DEG = 180.0f / 3.1415926f;
@@ -163,6 +164,10 @@ public final class MathUtils {
     @UnsupportedAppUsage
     public static float lerp(float start, float stop, float amount) {
         return start + (stop - start) * amount;
+    }
+
+    public static float lerp(int start, int stop, float amount) {
+        return lerp((float) start, (float) stop, amount);
     }
 
     /**

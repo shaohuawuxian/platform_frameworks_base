@@ -14,12 +14,11 @@
  * limitations under the License.
  */
 
-#include <memory>
-#include <vector>
-
+#include <android-base/unique_fd.h>
 #include <jni.h>
 
-#include <android-base/unique_fd.h>
+#include <memory>
+#include <vector>
 
 namespace android {
 namespace uhid {
@@ -31,7 +30,8 @@ public:
 
     void onDeviceOpen();
     void onDeviceGetReport(uint32_t requestId, uint8_t reportId);
-    void onDeviceOutput(const std::vector<uint8_t>& data);
+    void onDeviceSetReport(uint32_t id, uint8_t rType, const std::vector<uint8_t>& data);
+    void onDeviceOutput(uint8_t rType, const std::vector<uint8_t>& data);
     void onDeviceError();
 
 private:
@@ -42,16 +42,17 @@ private:
 
 class Device {
 public:
-    static std::unique_ptr<Device> open(int32_t id, const char* name, int32_t vid, int32_t pid,
-                                        uint16_t bus, const std::vector<uint8_t>& descriptor,
+    static std::unique_ptr<Device> open(int32_t id, const char* name, const char* uniq, int32_t vid,
+                                        int32_t pid, uint16_t bus,
+                                        const std::vector<uint8_t>& descriptor,
                                         std::unique_ptr<DeviceCallback> callback);
 
     ~Device();
 
     void sendReport(const std::vector<uint8_t>& report) const;
+    void sendSetReportReply(uint32_t id, bool success) const;
     void sendGetFeatureReportReply(uint32_t id, const std::vector<uint8_t>& report) const;
     void close();
-
     int handleEvents(int events);
 
 private:

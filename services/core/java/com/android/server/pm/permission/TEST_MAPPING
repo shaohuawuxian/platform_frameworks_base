@@ -1,21 +1,7 @@
 {
     "presubmit": [
         {
-            "name": "CtsPermissionTestCases",
-            "options": [
-                {
-                    "include-filter": "android.permission.cts.BackgroundPermissionsTest"
-                },
-                {
-                    "include-filter": "android.permission.cts.SplitPermissionTest"
-                },
-                {
-                    "include-filter": "android.permission.cts.PermissionFlagsTest"
-                },
-                {
-                    "include-filter": "android.permission.cts.SharedUidPermissionsTest"
-                }
-            ]
+            "name": "CtsPermissionTestCases_Platform"
         },
         {
             "name": "CtsAppSecurityHostTestCases",
@@ -26,10 +12,13 @@
             ]
         },
         {
-            "name": "CtsPermission2TestCases",
+            "name": "CtsPermissionPolicyTestCases",
             "options": [
                 {
-                    "include-filter": "android.permission2.cts.RestrictedPermissionsTest"
+                    "exclude-annotation": "androidx.test.filters.FlakyTest"
+                },
+                {
+                    "include-filter": "android.permissionpolicy.cts.RestrictedPermissionsTest"
                 },
                 {
                     "include-filter": "android.permission.cts.PermissionMaxSdkVersionTest"
@@ -59,6 +48,29 @@
             "options": [
                 {
                     "include-filter": "android.permission.cts.PermissionUpdateListenerTest"
+                },
+                {
+                    "include-filter": "android.permission.cts.BackgroundPermissionsTest"
+                },
+                {
+                    "include-filter": "android.permission.cts.SplitPermissionTest"
+                },
+                {
+                    "include-filter": "android.permission.cts.PermissionFlagsTest"
+                },
+                {
+                    "include-filter": "android.permission.cts.SharedUidPermissionsTest"
+                }
+            ]
+        },
+        {
+            "name": "CtsPermissionPolicyTestCases",
+            "options": [
+                {
+                    "include-filter": "android.permissionpolicy.cts.RestrictedPermissionsTest"
+                },
+                {
+                    "include-filter": "android.permission.cts.PermissionMaxSdkVersionTest"
                 }
             ]
         }

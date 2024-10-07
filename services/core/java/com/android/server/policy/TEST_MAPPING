@@ -1,44 +1,53 @@
 {
   "presubmit": [
     {
-      "name": "FrameworksServicesTests",
+      "name": "FrameworksServicesTests_android_server_policy_Presubmit"
+    },
+    {
+      "name": "WmTests_server_policy_Presubmit"
+    },
+    {
+      "name": "CtsPermissionPolicyTestCases",
       "options": [
         {
-          "include-filter": "com.android.server.policy."
-        },
-        {
-          "include-annotation": "android.platform.test.annotations.Presubmit"
-        },
-        {
           "exclude-annotation": "androidx.test.filters.FlakyTest"
+        },
+        {
+          "include-filter": "android.permissionpolicy.cts.RestrictedPermissionsTest"
+        },
+        {
+          "include-filter": "android.permissionpolicy.cts.RestrictedStoragePermissionSharedUidTest"
+        },
+        {
+          "include-filter": "android.permissionpolicy.cts.RestrictedStoragePermissionTest"
         }
       ]
     },
     {
-      "name": "WmTests",
-      "options": [
-        {
-          "include-filter": "com.android.server.policy."
-        },
-        {
-          "include-annotation": "android.platform.test.annotations.Presubmit"
-        },
-        {
-          "exclude-annotation": "androidx.test.filters.FlakyTest"
-        }
-      ]
+      "name": "CtsPermissionTestCases_Platform"
     },
     {
-      "name": "CtsPermission2TestCases",
+      "name": "CtsBackupTestCases_cts_permissiontest"
+    }
+  ],
+  "postsubmit": [
+    {
+      "name": "FrameworksServicesTests_android_server_policy"
+    },
+    {
+      "name": "WmTests_server_policy"
+    },
+    {
+      "name": "CtsPermissionPolicyTestCases",
       "options": [
         {
-          "include-filter": "android.permission2.cts.RestrictedPermissionsTest"
+          "include-filter": "android.permissionpolicy.cts.RestrictedPermissionsTest"
         },
         {
-          "include-filter": "android.permission2.cts.RestrictedStoragePermissionSharedUidTest"
+          "include-filter": "android.permissionpolicy.cts.RestrictedStoragePermissionSharedUidTest"
         },
         {
-          "include-filter": "android.permission2.cts.RestrictedStoragePermissionTest"
+          "include-filter": "android.permissionpolicy.cts.RestrictedStoragePermissionTest"
         }
       ]
     },
@@ -50,32 +59,6 @@
         },
         {
           "include-filter": "android.permission.cts.BackgroundPermissionsTest"
-        }
-      ]
-    },
-    {
-      "name": "CtsBackupTestCases",
-      "options": [
-        {
-          "include-filter": "android.backup.cts.PermissionTest"
-        }
-      ]
-    }
-  ],
-  "postsubmit": [
-    {
-      "name": "FrameworksServicesTests",
-      "options": [
-        {
-          "include-filter": "com.android.server.policy."
-        }
-      ]
-    },
-    {
-      "name": "WmTests",
-      "options": [
-        {
-          "include-filter": "com.android.server.policy."
         }
       ]
     }

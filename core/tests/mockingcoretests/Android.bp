@@ -38,15 +38,15 @@ android_test {
         "androidx.test.ext.junit",
         "mockito-target-extended-minus-junit4",
         "platform-test-annotations",
-        "truth-prebuilt",
+        "truth",
         "testables",
-        "ub-uiautomator",
+        "flag-junit",
     ],
 
     libs: [
-        "android.test.base",
-        "android.test.mock",
-        "android.test.runner",
+        "android.test.base.stubs.system",
+        "android.test.mock.stubs.system",
+        "android.test.runner.stubs.system",
     ],
 
     // These are not normally accessible from apps so they must be explicitly included.
@@ -56,7 +56,20 @@ android_test {
     ],
 
     platform_apis: true,
-    test_suites: ["device-tests"],
+    test_suites: [
+        "device-tests",
+        "automotive-tests",
+    ],
 
     certificate: "platform",
+}
+
+test_module_config {
+    name: "FrameworksMockingCoreTests_os_bundlerecyclingtest",
+    base: "FrameworksMockingCoreTests",
+    test_suites: [
+        "automotive-tests",
+        "device-tests",
+    ],
+    include_filters: ["android.os.BundleRecyclingTest"],
 }

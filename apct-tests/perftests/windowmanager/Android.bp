@@ -13,6 +13,7 @@
 // limitations under the License.
 
 package {
+    default_team: "trendy_team_input_framework",
     // See: http://go/android-license-faq
     // A large-scale-change added 'default_applicable_licenses' to import
     // all of the 'license_kinds' from "frameworks_base_license"
@@ -28,8 +29,14 @@ android_test {
         "androidx.test.rules",
         "androidx.annotation_annotation",
         "apct-perftests-utils",
+        "collector-device-lib",
+        "platform-test-annotations",
     ],
-    test_suites: ["device-tests"],
+    test_suites: [
+        "device-tests",
+        "automotive-tests",
+    ],
+    data: [":perfetto_artifacts"],
     platform_apis: true,
     certificate: "platform",
 }

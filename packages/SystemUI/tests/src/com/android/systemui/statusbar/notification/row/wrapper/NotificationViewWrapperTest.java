@@ -17,15 +17,14 @@
 package com.android.systemui.statusbar.notification.row.wrapper;
 
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 import android.content.Context;
-import android.testing.AndroidTestingRunner;
-import android.testing.TestableLooper;
-import android.testing.TestableLooper.RunWithLooper;
 import android.view.View;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
+import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.filters.SmallTest;
 
 import com.android.systemui.SysuiTestCase;
@@ -36,9 +35,8 @@ import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
-@RunWith(AndroidTestingRunner.class)
+@RunWith(AndroidJUnit4.class)
 @SmallTest
-@RunWithLooper
 public class NotificationViewWrapperTest extends SysuiTestCase {
 
     private View mView;
@@ -47,12 +45,9 @@ public class NotificationViewWrapperTest extends SysuiTestCase {
 
     @Before
     public void setup() throws Exception {
-        allowTestableLooperAsMainThread();
         mView = mock(View.class);
-        NotificationTestHelper helper = new NotificationTestHelper(
-                mContext,
-                mDependency,
-                TestableLooper.get(this));
+        when(mView.getContext()).thenReturn(mContext);
+        NotificationTestHelper helper = new NotificationTestHelper(mContext, mDependency);
         mRow = helper.createRow();
         mNotificationViewWrapper = new TestableNotificationViewWrapper(mContext, mView, mRow);
     }

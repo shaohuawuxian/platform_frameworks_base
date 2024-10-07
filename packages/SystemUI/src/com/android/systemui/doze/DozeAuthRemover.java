@@ -16,28 +16,34 @@
 
 package com.android.systemui.doze;
 
-import android.content.Context;
-
 import com.android.keyguard.KeyguardUpdateMonitor;
-import com.android.systemui.Dependency;
+import com.android.systemui.doze.dagger.DozeScope;
+import com.android.systemui.user.domain.interactor.SelectedUserInteractor;
+
+import javax.inject.Inject;
 
 /**
  * Controls removing Keyguard authorization when the phone goes to sleep.
  */
+@DozeScope
 public class DozeAuthRemover implements DozeMachine.Part {
 
     private final KeyguardUpdateMonitor mKeyguardUpdateMonitor;
+    private final SelectedUserInteractor mSelectedUserInteractor;
 
-    public DozeAuthRemover(Context context) {
-        mKeyguardUpdateMonitor = Dependency.get(KeyguardUpdateMonitor.class);
+    @Inject
+    public DozeAuthRemover(KeyguardUpdateMonitor keyguardUpdateMonitor,
+            SelectedUserInteractor selectedUserInteractor) {
+        mKeyguardUpdateMonitor = keyguardUpdateMonitor;
+        mSelectedUserInteractor = selectedUserInteractor;
     }
 
     @Override
     public void transitionTo(DozeMachine.State oldState, DozeMachine.State newState) {
         if (newState == DozeMachine.State.DOZE || newState == DozeMachine.State.DOZE_AOD) {
-            int currentUser = KeyguardUpdateMonitor.getCurrentUser();
+            int currentUser = mSelectedUserInteractor.getSelectedUserId();
             if (mKeyguardUpdateMonitor.getUserUnlockedWithBiometric(currentUser)) {
-                mKeyguardUpdateMonitor.clearBiometricRecognized();
+                mKeyguardUpdateMonitor.clearFingerprintRecognized();
             }
         }
     }

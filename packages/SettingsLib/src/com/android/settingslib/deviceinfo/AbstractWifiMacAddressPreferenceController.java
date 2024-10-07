@@ -19,6 +19,7 @@ package com.android.settingslib.deviceinfo;
 import android.annotation.SuppressLint;
 import android.content.Context;
 import android.net.ConnectivityManager;
+import android.net.wifi.WifiInfo;
 import android.net.wifi.WifiManager;
 import android.text.TextUtils;
 
@@ -58,7 +59,7 @@ public abstract class AbstractWifiMacAddressPreferenceController
 
     @Override
     public boolean isAvailable() {
-        return true;
+        return mWifiManager != null;
     }
 
     @Override
@@ -69,10 +70,8 @@ public abstract class AbstractWifiMacAddressPreferenceController
     @Override
     public void displayPreference(PreferenceScreen screen) {
         super.displayPreference(screen);
-        if (isAvailable()) {
-            mWifiMacAddress = screen.findPreference(KEY_WIFI_MAC_ADDRESS);
-            updateConnectivity();
-        }
+        mWifiMacAddress = screen.findPreference(KEY_WIFI_MAC_ADDRESS);
+        updateConnectivity();
     }
 
     @Override
@@ -83,13 +82,17 @@ public abstract class AbstractWifiMacAddressPreferenceController
     @SuppressLint("HardwareIds")
     @Override
     protected void updateConnectivity() {
+        if (mWifiManager == null || mWifiMacAddress == null) {
+            return;
+        }
+
         final String[] macAddresses = mWifiManager.getFactoryMacAddresses();
         String macAddress = null;
         if (macAddresses != null && macAddresses.length > 0) {
             macAddress = macAddresses[0];
         }
 
-        if (TextUtils.isEmpty(macAddress)) {
+        if (TextUtils.isEmpty(macAddress) || macAddress.equals(WifiInfo.DEFAULT_MAC_ADDRESS)) {
             mWifiMacAddress.setSummary(R.string.status_unavailable);
         } else {
             mWifiMacAddress.setSummary(macAddress);

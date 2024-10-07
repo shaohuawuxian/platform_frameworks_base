@@ -15,6 +15,8 @@
  */
 package com.android.server.tv.tunerresourcemanager;
 
+import android.media.tv.tunerresourcemanager.TunerResourceManager;
+
 import java.util.HashSet;
 import java.util.Set;
 
@@ -63,24 +65,47 @@ public final class ClientProfile {
     private int mNiceValue;
 
     /**
-     * List of the frontend ids that are used by the current client.
+     * The handle of the primary frontend resource
      */
-    private Set<Integer> mUsingFrontendIds = new HashSet<>();
+    private int mPrimaryUsingFrontendHandle = TunerResourceManager.INVALID_RESOURCE_HANDLE;
+
+    /**
+     * List of the frontend handles that are used by the current client.
+     */
+    private Set<Integer> mUsingFrontendHandles = new HashSet<>();
 
     /**
      * List of the client ids that share frontend with the current client.
      */
     private Set<Integer> mShareFeClientIds = new HashSet<>();
 
+    private Set<Integer> mUsingDemuxHandles = new HashSet<>();
+
     /**
-     * List of the Lnb ids that are used by the current client.
+     * Client id sharee that has shared frontend with the current client.
      */
-    private Set<Integer> mUsingLnbIds = new HashSet<>();
+    private Integer mShareeFeClientId = INVALID_RESOURCE_ID;
+
+    /**
+     * List of the Lnb handles that are used by the current client.
+     */
+    private Set<Integer> mUsingLnbHandles = new HashSet<>();
 
     /**
      * List of the Cas system ids that are used by the current client.
      */
     private int mUsingCasSystemId = INVALID_RESOURCE_ID;
+
+    /**
+     * CiCam id that is used by the client.
+     */
+    private int mUsingCiCamId = INVALID_RESOURCE_ID;
+
+    /**
+     * If the priority is overwritten through
+     * {@link TunerResourceManagerService#setPriority(int, int)}.
+     */
+    private boolean mIsPriorityOverwritten = false;
 
     /**
      * Optional arbitrary priority value given by the client.
@@ -113,6 +138,13 @@ public final class ClientProfile {
         return mProcessId;
     }
 
+    /**
+     * If the client priority is overwrttien.
+     */
+    public boolean isPriorityOverwritten() {
+        return mIsPriorityOverwritten;
+    }
+
     public int getGroupId() {
         return mGroupId;
     }
@@ -126,6 +158,20 @@ public final class ClientProfile {
     }
 
     public void setPriority(int priority) {
+        if (priority < 0) {
+            return;
+        }
+        mPriority = priority;
+    }
+
+    /**
+     * Overwrite the client priority.
+     */
+    public void overwritePriority(int priority) {
+        if (priority < 0) {
+            return;
+        }
+        mIsPriorityOverwritten = true;
         mPriority = priority;
     }
 
@@ -136,10 +182,26 @@ public final class ClientProfile {
     /**
      * Set when the client starts to use a frontend.
      *
-     * @param frontendId being used.
+     * @param frontendHandle being used.
      */
-    public void useFrontend(int frontendId) {
-        mUsingFrontendIds.add(frontendId);
+    public void useFrontend(int frontendHandle) {
+        mUsingFrontendHandles.add(frontendHandle);
+    }
+
+    /**
+     * Set the primary frontend used by the client
+     *
+     * @param frontendHandle being used.
+     */
+    public void setPrimaryFrontend(int frontendHandle) {
+        mPrimaryUsingFrontendHandle = frontendHandle;
+    }
+
+    /**
+     * Get the primary frontend used by the client
+     */
+    public int getPrimaryFrontend() {
+        return mPrimaryUsingFrontendHandle;
     }
 
     /**
@@ -160,42 +222,77 @@ public final class ClientProfile {
         mShareFeClientIds.remove(clientId);
     }
 
-    public Set<Integer> getInUseFrontendIds() {
-        return mUsingFrontendIds;
+    public Set<Integer> getInUseFrontendHandles() {
+        return mUsingFrontendHandles;
     }
 
     public Set<Integer> getShareFeClientIds() {
         return mShareFeClientIds;
     }
 
+    public Integer getShareeFeClientId() {
+        return mShareeFeClientId;
+    }
+
+    public void setShareeFeClientId(Integer shareeFeClientId) {
+        mShareeFeClientId = shareeFeClientId;
+    }
+
     /**
      * Called when the client released a frontend.
      */
     public void releaseFrontend() {
-        mUsingFrontendIds.clear();
+        mUsingFrontendHandles.clear();
         mShareFeClientIds.clear();
+        mShareeFeClientId = INVALID_RESOURCE_ID;
+        mPrimaryUsingFrontendHandle = TunerResourceManager.INVALID_RESOURCE_HANDLE;
+    }
+
+    /**
+     * Set when the client starts to use a Demux.
+     *
+     * @param demuxHandle the demux being used.
+     */
+    public void useDemux(int demuxHandle) {
+        mUsingDemuxHandles.add(demuxHandle);
+    }
+
+    /**
+     * Get the set of demux handles in use.
+     */
+    public Set<Integer> getInUseDemuxHandles() {
+        return mUsingDemuxHandles;
+    }
+
+    /**
+     * Called when the client released a Demux.
+     *
+     * @param demuxHandle the demux handl being released.
+     */
+    public void releaseDemux(int demuxHandle) {
+        mUsingDemuxHandles.remove(demuxHandle);
     }
 
     /**
      * Set when the client starts to use an Lnb.
      *
-     * @param lnbId being used.
+     * @param lnbHandle being used.
      */
-    public void useLnb(int lnbId) {
-        mUsingLnbIds.add(lnbId);
+    public void useLnb(int lnbHandle) {
+        mUsingLnbHandles.add(lnbHandle);
     }
 
-    public Set<Integer> getInUseLnbIds() {
-        return mUsingLnbIds;
+    public Set<Integer> getInUseLnbHandles() {
+        return mUsingLnbHandles;
     }
 
     /**
      * Called when the client released an lnb.
      *
-     * @param lnbId being released.
+     * @param lnbHandle being released.
      */
-    public void releaseLnb(int lnbId) {
-        mUsingLnbIds.remove(lnbId);
+    public void releaseLnb(int lnbHandle) {
+        mUsingLnbHandles.remove(lnbHandle);
     }
 
     /**
@@ -219,13 +316,35 @@ public final class ClientProfile {
     }
 
     /**
+     * Set when the client starts to connect to a CiCam.
+     *
+     * @param ciCamId ciCam being used.
+     */
+    public void useCiCam(int ciCamId) {
+        mUsingCiCamId = ciCamId;
+    }
+
+    public int getInUseCiCamId() {
+        return mUsingCiCamId;
+    }
+
+    /**
+     * Called when the client disconnect to a CiCam.
+     */
+    public void releaseCiCam() {
+        mUsingCiCamId = INVALID_RESOURCE_ID;
+    }
+
+    /**
      * Called to reclaim all the resources being used by the current client.
      */
     public void reclaimAllResources() {
-        mUsingFrontendIds.clear();
+        mUsingFrontendHandles.clear();
         mShareFeClientIds.clear();
-        mUsingLnbIds.clear();
+        mPrimaryUsingFrontendHandle = TunerResourceManager.INVALID_RESOURCE_HANDLE;
+        mUsingLnbHandles.clear();
         mUsingCasSystemId = INVALID_RESOURCE_ID;
+        mUsingCiCamId = INVALID_RESOURCE_ID;
     }
 
     @Override

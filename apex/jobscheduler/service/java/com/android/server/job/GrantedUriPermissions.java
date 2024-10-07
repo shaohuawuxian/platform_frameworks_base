@@ -26,6 +26,7 @@ import android.os.RemoteException;
 import android.os.UserHandle;
 import android.util.Slog;
 import android.util.proto.ProtoOutputStream;
+
 import com.android.server.LocalServices;
 import com.android.server.uri.UriGrantsManagerInternal;
 
@@ -37,6 +38,7 @@ public final class GrantedUriPermissions {
     private final int mSourceUserId;
     private final String mTag;
     private final IBinder mPermissionOwner;
+    private final UriGrantsManagerInternal mUriGrantsManagerInternal;
     private final ArrayList<Uri> mUris = new ArrayList<>();
 
     private GrantedUriPermissions(int grantFlags, int uid, String tag)
@@ -44,13 +46,13 @@ public final class GrantedUriPermissions {
         mGrantFlags = grantFlags;
         mSourceUserId = UserHandle.getUserId(uid);
         mTag = tag;
-        mPermissionOwner = LocalServices
-                .getService(UriGrantsManagerInternal.class).newUriPermissionOwner("job: " + tag);
+        mUriGrantsManagerInternal = LocalServices.getService(UriGrantsManagerInternal.class);
+        mPermissionOwner = mUriGrantsManagerInternal.newUriPermissionOwner("job: " + tag);
     }
 
     public void revoke() {
         for (int i = mUris.size()-1; i >= 0; i--) {
-            LocalServices.getService(UriGrantsManagerInternal.class).revokeUriPermissionFromOwner(
+            mUriGrantsManagerInternal.revokeUriPermissionFromOwner(
                     mPermissionOwner, mUris.get(i), mGrantFlags, mSourceUserId);
         }
         mUris.clear();
@@ -144,13 +146,13 @@ public final class GrantedUriPermissions {
     }
 
     // Dumpsys infrastructure
-    public void dump(PrintWriter pw, String prefix) {
-        pw.print(prefix); pw.print("mGrantFlags=0x"); pw.print(Integer.toHexString(mGrantFlags));
+    public void dump(PrintWriter pw) {
+        pw.print("mGrantFlags=0x"); pw.print(Integer.toHexString(mGrantFlags));
         pw.print(" mSourceUserId="); pw.println(mSourceUserId);
-        pw.print(prefix); pw.print("mTag="); pw.println(mTag);
-        pw.print(prefix); pw.print("mPermissionOwner="); pw.println(mPermissionOwner);
+        pw.print("mTag="); pw.println(mTag);
+        pw.print("mPermissionOwner="); pw.println(mPermissionOwner);
         for (int i = 0; i < mUris.size(); i++) {
-            pw.print(prefix); pw.print("#"); pw.print(i); pw.print(": ");
+            pw.print("#"); pw.print(i); pw.print(": ");
             pw.println(mUris.get(i));
         }
     }

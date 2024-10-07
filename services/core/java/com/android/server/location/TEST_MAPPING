@@ -1,7 +1,7 @@
 {
   "presubmit": [
     {
-      "name": "CtsLocationFineTestCases"
+      "name": "CtsLocationFineTestCases_android_server_location"
     },
     {
       "name": "CtsLocationCoarseTestCases"
@@ -10,10 +10,7 @@
       "name": "CtsLocationNoneTestCases"
     },
     {
-      "name": "FrameworksMockingServicesTests",
-      "options": [{
-        "include-filter": "com.android.server.location"
-      }]
+      "name": "FrameworksMockingServicesTests_location"
     }
   ]
 }

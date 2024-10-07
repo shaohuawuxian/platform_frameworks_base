@@ -16,6 +16,7 @@
 
 package android.media.tv;
 
+import android.annotation.FlaggedApi;
 import android.annotation.IntDef;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
@@ -29,6 +30,7 @@ import android.content.ContentResolver;
 import android.content.ContentUris;
 import android.content.Context;
 import android.content.Intent;
+import android.media.tv.flags.Flags;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.IBinder;
@@ -1658,6 +1660,25 @@ public final class TvContract {
          */
         String COLUMN_CONTENT_ID = "content_id";
 
+        /**
+         * The start time of this TV program, in milliseconds since the epoch.
+         *
+         * <p>Should be empty if this program is not live.
+         *
+         * <p>Type: INTEGER (long)
+         * @see #COLUMN_LIVE
+         */
+        String COLUMN_START_TIME_UTC_MILLIS = "start_time_utc_millis";
+
+        /**
+         * The end time of this TV program, in milliseconds since the epoch.
+         *
+         * <p>Should be empty if this program is not live.
+         *
+         * <p>Type: INTEGER (long)
+         * @see #COLUMN_LIVE
+         */
+        String COLUMN_END_TIME_UTC_MILLIS = "end_time_utc_millis";
     }
 
     /** Column definitions for the TV channels table. */
@@ -2515,6 +2536,67 @@ public final class TvContract {
          */
         public static final String COLUMN_BROADCAST_GENRE = Programs.COLUMN_BROADCAST_GENRE;
 
+        /**
+         * The broadcast visibility type of this TV channel.
+         *
+         * <p>This is used to indicate the broadcast visibility type defined in the underlying
+         * broadcast standard or country/operator profile, if applicable. For example,
+         * {@code visible_service_flag} and {@code numeric_selection_flag} of
+         * {@code service_attribute_descriptor} in D-Book, the specification for UK-based TV
+         * products, {@code visible_service_flag} and {@code selectable_service_flag} of
+         * {@code ciplus_service_descriptor} in the CI Plus 1.3 specification.
+         *
+         * <p>The value should match one of the following:
+         * {@link #BROADCAST_VISIBILITY_TYPE_VISIBLE},
+         * {@link #BROADCAST_VISIBILITY_TYPE_NUMERIC_SELECTABLE_ONLY}, and
+         * {@link #BROADCAST_VISIBILITY_TYPE_INVISIBLE}.
+         *
+         * <p>If not specified, this value is set to {@link #BROADCAST_VISIBILITY_TYPE_VISIBLE}
+         * by default.
+         *
+         * <p>Type: INTEGER
+         */
+        @FlaggedApi(Flags.FLAG_BROADCAST_VISIBILITY_TYPES)
+        public static final String COLUMN_BROADCAST_VISIBILITY_TYPE = "broadcast_visibility_type";
+
+        /** @hide */
+        @IntDef(prefix = { "BROADCAST_VISIBILITY_TYPE_" }, value = {
+                BROADCAST_VISIBILITY_TYPE_VISIBLE,
+                BROADCAST_VISIBILITY_TYPE_NUMERIC_SELECTABLE_ONLY,
+                BROADCAST_VISIBILITY_TYPE_INVISIBLE,
+        })
+        @Retention(RetentionPolicy.SOURCE)
+        public @interface BroadcastVisibilityType {}
+
+        /**
+         * The broadcast visibility type for visible services. Use this type when the service is
+         * visible from users and selectable by users via normal service navigation mechanisms.
+         *
+         * @see #COLUMN_BROADCAST_VISIBILITY_TYPE
+         */
+        @FlaggedApi(Flags.FLAG_BROADCAST_VISIBILITY_TYPES)
+        public static final int BROADCAST_VISIBILITY_TYPE_VISIBLE = 0;
+
+        /**
+         * The broadcast visibility type for numeric selectable only services. Use this type when
+         * the service is invisible from users but selectable by users only via direct entry of
+         * the logical channel number.
+         *
+         * @see #COLUMN_BROADCAST_VISIBILITY_TYPE
+         */
+        @FlaggedApi(Flags.FLAG_BROADCAST_VISIBILITY_TYPES)
+        public static final int BROADCAST_VISIBILITY_TYPE_NUMERIC_SELECTABLE_ONLY = 1;
+
+        /**
+         * The broadcast visibility type for invisible services. Use this type when the service
+         * is invisible from users and not able to be selected by users via any of the normal
+         * service navigation mechanisms.
+         *
+         * @see #COLUMN_BROADCAST_VISIBILITY_TYPE
+         */
+        @FlaggedApi(Flags.FLAG_BROADCAST_VISIBILITY_TYPES)
+        public static final int BROADCAST_VISIBILITY_TYPE_INVISIBLE = 2;
+
         private Channels() {}
 
         /**
@@ -2700,6 +2782,42 @@ public final class TvContract {
          * <p>Type: TEXT
          */
         public static final String COLUMN_GLOBAL_CONTENT_ID = "global_content_id";
+
+        /**
+         * The flag indicating whether this TV program is scrambled or not.
+         *
+         * <p>Use the same coding for scrambled in the underlying broadcast standard
+         * if {@code free_ca_mode} in EIT is defined there (e.g. ETSI EN 300 468).
+         *
+         * <p>Type: INTEGER (boolean)
+         */
+        public static final String COLUMN_SCRAMBLED = "scrambled";
+
+        /**
+         * The comma-separated series IDs of this TV program for episodic TV shows.
+         *
+         * <p>This is used to indicate the series IDs.
+         * Programs in the same series share a series ID.
+         * Use this instead of {@link #COLUMN_SERIES_ID} if more than one series IDs
+         * are assigned to the TV program.
+         *
+         * <p>Can be empty.
+         *
+         * <p>Type: TEXT
+         */
+        public static final String COLUMN_MULTI_SERIES_ID = "multi_series_id";
+
+        /**
+         * The internal ID used by individual TV input services.
+         *
+         * <p>This is internal to the provider that inserted it, and should not be decoded by other
+         * apps.
+         *
+         * <p>Can be empty.
+         *
+         * <p>Type: TEXT
+         */
+        public static final String COLUMN_INTERNAL_PROVIDER_ID = "internal_provider_id";
 
         private Programs() {}
 
@@ -3032,6 +3150,32 @@ public final class TvContract {
          */
         public static final String COLUMN_RECORDING_EXPIRE_TIME_UTC_MILLIS =
                 "recording_expire_time_utc_millis";
+
+        /**
+         * The comma-separated series IDs of this TV program for episodic TV shows.
+         *
+         * <p>This is used to indicate the series IDs.
+         * Programs in the same series share a series ID.
+         * Use this instead of {@link #COLUMN_SERIES_ID} if more than one series IDs
+         * are assigned to the TV program.
+         *
+         * <p>Can be empty.
+         *
+         * <p>Type: TEXT
+         */
+        public static final String COLUMN_MULTI_SERIES_ID = "multi_series_id";
+
+        /**
+         * The internal ID used by individual TV input services.
+         *
+         * <p>This is internal to the provider that inserted it, and should not be decoded by other
+         * apps.
+         *
+         * <p>Can be empty.
+         *
+         * <p>Type: TEXT
+         */
+        public static final String COLUMN_INTERNAL_PROVIDER_ID = "internal_provider_id";
 
         private RecordedPrograms() {}
     }

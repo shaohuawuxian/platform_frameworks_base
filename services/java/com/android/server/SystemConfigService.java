@@ -19,8 +19,14 @@ import static java.util.stream.Collectors.toList;
 import static java.util.stream.Collectors.toMap;
 
 import android.Manifest;
+import android.content.ComponentName;
 import android.content.Context;
+import android.content.pm.PackageManagerInternal;
+import android.content.pm.SignedPackage;
+import android.content.pm.SignedPackageParcel;
+import android.os.Binder;
 import android.os.ISystemConfig;
+import android.util.ArrayMap;
 import android.util.ArraySet;
 import android.util.SparseArray;
 
@@ -83,6 +89,57 @@ public class SystemConfigService extends SystemService {
                 }
             }
             return ArrayUtils.convertToIntArray(uids);
+        }
+
+        @Override
+        public List<ComponentName> getEnabledComponentOverrides(String packageName) {
+            ArrayMap<String, Boolean> systemComponents = SystemConfig.getInstance()
+                    .getComponentsEnabledStates(packageName);
+            List<ComponentName> enabledComponent = new ArrayList<>();
+            if (systemComponents != null) {
+                for (Map.Entry<String, Boolean> entry : systemComponents.entrySet()) {
+                    if (Boolean.TRUE.equals(entry.getValue())) {
+                        enabledComponent.add(new ComponentName(packageName, entry.getKey()));
+                    }
+                }
+            }
+            return enabledComponent;
+        }
+
+        @Override
+        public List<ComponentName> getDefaultVrComponents() {
+            getContext().enforceCallingOrSelfPermission(Manifest.permission.QUERY_ALL_PACKAGES,
+                    "Caller must hold " + Manifest.permission.QUERY_ALL_PACKAGES);
+            return new ArrayList<>(SystemConfig.getInstance().getDefaultVrComponents());
+        }
+
+        @Override
+        public List<String> getPreventUserDisablePackages() {
+            PackageManagerInternal pmi = LocalServices.getService(PackageManagerInternal.class);
+            return SystemConfig.getInstance().getPreventUserDisablePackages().stream()
+                    .filter(preventUserDisablePackage ->
+                            pmi.canQueryPackage(Binder.getCallingUid(), preventUserDisablePackage))
+                    .collect(toList());
+        }
+
+        @Override
+        public List<SignedPackageParcel> getEnhancedConfirmationTrustedPackages() {
+            getContext().enforceCallingOrSelfPermission(
+                    Manifest.permission.MANAGE_ENHANCED_CONFIRMATION_STATES,
+                    "Caller must hold " + Manifest.permission.MANAGE_ENHANCED_CONFIRMATION_STATES);
+
+            return SystemConfig.getInstance().getEnhancedConfirmationTrustedPackages().stream()
+                    .map(SignedPackage::getData).toList();
+        }
+
+        @Override
+        public List<SignedPackageParcel> getEnhancedConfirmationTrustedInstallers() {
+            getContext().enforceCallingOrSelfPermission(
+                    Manifest.permission.MANAGE_ENHANCED_CONFIRMATION_STATES,
+                    "Caller must hold " + Manifest.permission.MANAGE_ENHANCED_CONFIRMATION_STATES);
+
+            return SystemConfig.getInstance().getEnhancedConfirmationTrustedInstallers().stream()
+                    .map(SignedPackage::getData).toList();
         }
     };
 

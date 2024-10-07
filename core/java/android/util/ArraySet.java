@@ -20,14 +20,14 @@ import android.annotation.Nullable;
 import android.annotation.TestApi;
 import android.compat.annotation.UnsupportedAppUsage;
 
-import libcore.util.EmptyArray;
-
 import java.lang.reflect.Array;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.ConcurrentModificationException;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Consumer;
 import java.util.function.Predicate;
 
 /**
@@ -51,6 +51,7 @@ import java.util.function.Predicate;
  *
  * <p>This structure is <b>NOT</b> thread-safe.</p>
  */
+@android.ravenwood.annotation.RavenwoodKeepWholeClass
 public final class ArraySet<E> implements Collection<E>, Set<E> {
     private static final boolean DEBUG = false;
     private static final String TAG = "ArraySet";
@@ -193,8 +194,8 @@ public final class ArraySet<E> implements Collection<E>, Set<E> {
                             array[0] = array[1] = null;
                             sTwiceBaseCacheSize--;
                             if (DEBUG) {
-                                Log.d(TAG, "Retrieving 2x cache " + mHashes + " now have "
-                                        + sTwiceBaseCacheSize + " entries");
+                                Log.d(TAG, "Retrieving 2x cache " + Arrays.toString(mHashes)
+                                        + " now have " + sTwiceBaseCacheSize + " entries");
                             }
                             return;
                         }
@@ -220,8 +221,8 @@ public final class ArraySet<E> implements Collection<E>, Set<E> {
                             array[0] = array[1] = null;
                             sBaseCacheSize--;
                             if (DEBUG) {
-                                Log.d(TAG, "Retrieving 1x cache " + mHashes + " now have "
-                                        + sBaseCacheSize + " entries");
+                                Log.d(TAG, "Retrieving 1x cache " + Arrays.toString(mHashes)
+                                        + " now have " + sBaseCacheSize + " entries");
                             }
                             return;
                         }
@@ -258,8 +259,8 @@ public final class ArraySet<E> implements Collection<E>, Set<E> {
                     sTwiceBaseCache = array;
                     sTwiceBaseCacheSize++;
                     if (DEBUG) {
-                        Log.d(TAG, "Storing 2x cache " + array + " now have " + sTwiceBaseCacheSize
-                                + " entries");
+                        Log.d(TAG, "Storing 2x cache " + Arrays.toString(array) + " now have "
+                                + sTwiceBaseCacheSize + " entries");
                     }
                 }
             }
@@ -274,7 +275,7 @@ public final class ArraySet<E> implements Collection<E>, Set<E> {
                     sBaseCache = array;
                     sBaseCacheSize++;
                     if (DEBUG) {
-                        Log.d(TAG, "Storing 1x cache " + array + " now have "
+                        Log.d(TAG, "Storing 1x cache " + Arrays.toString(array) + " now have "
                                 + sBaseCacheSize + " entries");
                     }
                 }
@@ -747,6 +748,23 @@ public final class ArraySet<E> implements Collection<E>, Set<E> {
         return mSize;
     }
 
+    /**
+     * Performs the given action for all elements in the stored order. This implementation overrides
+     * the default implementation to avoid using the {@link #iterator()}.
+     *
+     * @param action The action to be performed for each element
+     */
+    @Override
+    public void forEach(Consumer<? super E> action) {
+        if (action == null) {
+            throw new NullPointerException("action must not be null");
+        }
+
+        for (int i = 0; i < mSize; ++i) {
+            action.accept(valueAt(i));
+        }
+    }
+
     @Override
     public Object[] toArray() {
         Object[] result = new Object[mSize];
@@ -778,7 +796,7 @@ public final class ArraySet<E> implements Collection<E>, Set<E> {
      * returns true.
      */
     @Override
-    public boolean equals(Object object) {
+    public boolean equals(@Nullable Object object) {
         if (this == object) {
             return true;
         }

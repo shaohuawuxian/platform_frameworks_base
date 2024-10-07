@@ -21,22 +21,20 @@
 #include <android/font.h>
 #include <android/font_matcher.h>
 #include <android/system_fonts.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <hwui/MinikinSkia.h>
+#include <libxml/parser.h>
+#include <log/log.h>
+#include <minikin/FontCollection.h>
+#include <minikin/LocaleList.h>
+#include <minikin/SystemFonts.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #include <memory>
 #include <string>
 #include <vector>
-
-#include <errno.h>
-#include <fcntl.h>
-#include <libxml/tree.h>
-#include <log/log.h>
-#include <sys/stat.h>
-#include <unistd.h>
-
-#include <hwui/MinikinSkia.h>
-#include <minikin/FontCollection.h>
-#include <minikin/LocaleList.h>
-#include <minikin/SystemFonts.h>
 
 struct XmlCharDeleter {
     void operator()(xmlChar* b) { xmlFree(b); }
@@ -54,21 +52,48 @@ struct ParserState {
     XmlCharUniquePtr mLocale;
 };
 
-struct ASystemFontIterator {
-    XmlDocUniquePtr mXmlDoc;
-    ParserState state;
-
-    // The OEM customization XML.
-    XmlDocUniquePtr mCustomizationXmlDoc;
-};
-
 struct AFont {
     std::string mFilePath;
-    std::unique_ptr<std::string> mLocale;
+    std::optional<std::string> mLocale;
     uint16_t mWeight;
     bool mItalic;
     uint32_t mCollectionIndex;
     std::vector<std::pair<uint32_t, float>> mAxes;
+
+    bool operator==(const AFont& o) const {
+        return mFilePath == o.mFilePath && mLocale == o.mLocale && mWeight == o.mWeight &&
+                mItalic == o.mItalic && mCollectionIndex == o.mCollectionIndex && mAxes == o.mAxes;
+    }
+};
+
+struct FontHasher {
+    std::size_t operator()(const AFont& font) const {
+        std::size_t r = std::hash<std::string>{}(font.mFilePath);
+        if (font.mLocale) {
+            r = combine(r, std::hash<std::string>{}(*font.mLocale));
+        }
+        r = combine(r, std::hash<uint16_t>{}(font.mWeight));
+        r = combine(r, std::hash<uint32_t>{}(font.mCollectionIndex));
+        for (const auto& [tag, value] : font.mAxes) {
+            r = combine(r, std::hash<uint32_t>{}(tag));
+            r = combine(r, std::hash<float>{}(value));
+        }
+        return r;
+    }
+
+    std::size_t combine(std::size_t l, std::size_t r) const { return l ^ (r << 1); }
+};
+
+struct ASystemFontIterator {
+    std::vector<AFont> fonts;
+    uint32_t index;
+
+    XmlDocUniquePtr mXmlDoc;
+
+    ParserState state;
+
+    // The OEM customization XML.
+    XmlDocUniquePtr mCustomizationXmlDoc;
 };
 
 struct AFontMatcher {
@@ -147,10 +172,9 @@ void copyFont(const XmlDocUniquePtr& xmlDoc, const ParserState& state, AFont* ou
     out->mCollectionIndex =  indexStr ?
             strtol(reinterpret_cast<const char*>(indexStr.get()), nullptr, 10) : 0;
 
-    out->mLocale.reset(
-            state.mLocale ?
-            new std::string(reinterpret_cast<const char*>(state.mLocale.get()))
-            : nullptr);
+    if (state.mLocale) {
+        out->mLocale.emplace(reinterpret_cast<const char*>(state.mLocale.get()));
+    }
 
     const xmlChar* TAG_ATTR_NAME = BAD_CAST("tag");
     const xmlChar* STYLEVALUE_ATTR_NAME = BAD_CAST("stylevalue");
@@ -214,8 +238,37 @@ bool findFirstFontNode(const XmlDocUniquePtr& doc, ParserState* state) {
 
 ASystemFontIterator* ASystemFontIterator_open() {
     std::unique_ptr<ASystemFontIterator> ite(new ASystemFontIterator());
-    ite->mXmlDoc.reset(xmlReadFile("/system/etc/fonts.xml", nullptr, 0));
-    ite->mCustomizationXmlDoc.reset(xmlReadFile("/product/etc/fonts_customization.xml", nullptr, 0));
+
+    std::unordered_set<AFont, FontHasher> fonts;
+    minikin::SystemFonts::getFontSet(
+            [&fonts](const std::vector<std::shared_ptr<minikin::Font>>& fontSet) {
+                for (const auto& font : fontSet) {
+                    std::optional<std::string> locale;
+                    uint32_t localeId = font->getLocaleListId();
+                    if (localeId != minikin::kEmptyLocaleListId) {
+                        locale.emplace(minikin::getLocaleString(localeId));
+                    }
+                    std::vector<std::pair<uint32_t, float>> axes;
+                    for (const auto& [tag, value] : font->baseTypeface()->GetAxes()) {
+                        axes.push_back(std::make_pair(tag, value));
+                    }
+
+                    fonts.insert({font->baseTypeface()->GetFontPath(), std::move(locale),
+                                  font->style().weight(),
+                                  font->style().slant() == minikin::FontStyle::Slant::ITALIC,
+                                  static_cast<uint32_t>(font->baseTypeface()->GetFontIndex()),
+                                  axes});
+                }
+            });
+
+    if (fonts.empty()) {
+        ite->mXmlDoc.reset(xmlReadFile("/system/etc/fonts.xml", nullptr, 0));
+        ite->mCustomizationXmlDoc.reset(
+                xmlReadFile("/product/etc/fonts_customization.xml", nullptr, 0));
+    } else {
+        ite->index = 0;
+        ite->fonts.assign(fonts.begin(), fonts.end());
+    }
     return ite.release();
 }
 
@@ -264,10 +317,12 @@ AFont* _Nonnull AFontMatcher_match(
                 static_cast<minikin::FamilyVariant>(matcher->mFamilyVariant),
                 1  /* maxRun */);
 
-    const minikin::Font* font = runs[0].fakedFont.font;
+    const std::shared_ptr<minikin::Font>& font =
+            fc->getBestFont(minikin::U16StringPiece(text, textLength), runs[0], matcher->mFontStyle)
+                    .font;
     std::unique_ptr<AFont> result = std::make_unique<AFont>();
     const android::MinikinFontSkia* minikinFontSkia =
-            reinterpret_cast<android::MinikinFontSkia*>(font->typeface().get());
+            reinterpret_cast<android::MinikinFontSkia*>(font->baseTypeface().get());
     result->mFilePath = minikinFontSkia->getFilePath();
     result->mWeight = font->style().weight();
     result->mItalic = font->style().slant() == minikin::FontStyle::Slant::ITALIC;
@@ -308,6 +363,13 @@ bool findNextFontNode(const XmlDocUniquePtr& xmlDoc, ParserState* state) {
 
 AFont* ASystemFontIterator_next(ASystemFontIterator* ite) {
     LOG_ALWAYS_FATAL_IF(ite == nullptr, "nullptr has passed as iterator argument");
+    if (!ite->fonts.empty()) {
+        if (ite->index >= ite->fonts.size()) {
+            return nullptr;
+        }
+        return new AFont(ite->fonts[ite->index++]);
+    }
+
     if (ite->mXmlDoc) {
         if (!findNextFontNode(ite->mXmlDoc, &ite->state)) {
             // Reached end of the XML file. Continue OEM customization.

@@ -16,20 +16,32 @@
 
 package com.android.server.wm;
 
+import static android.os.InputConstants.DEFAULT_DISPATCHING_TIMEOUT_MILLIS;
 import static android.view.SurfaceControl.HIDDEN;
+import static android.window.TaskConstants.TASK_CHILD_LAYER_LETTERBOX_BACKGROUND;
 
+import android.annotation.NonNull;
+import android.graphics.Color;
 import android.graphics.Point;
 import android.graphics.Rect;
+import android.os.Handler;
 import android.os.IBinder;
-import android.os.Process;
+import android.os.InputConfig;
+import android.view.GestureDetector;
 import android.view.InputChannel;
+import android.view.InputEvent;
 import android.view.InputEventReceiver;
 import android.view.InputWindowHandle;
+import android.view.MotionEvent;
 import android.view.SurfaceControl;
 import android.view.WindowManager;
 
 import com.android.server.UiThread;
 
+import java.util.function.BooleanSupplier;
+import java.util.function.DoubleSupplier;
+import java.util.function.IntConsumer;
+import java.util.function.IntSupplier;
 import java.util.function.Supplier;
 
 /**
@@ -38,18 +50,35 @@ import java.util.function.Supplier;
  */
 public class Letterbox {
 
-    private static final Rect EMPTY_RECT = new Rect();
+    static final Rect EMPTY_RECT = new Rect();
     private static final Point ZERO_POINT = new Point(0, 0);
 
     private final Supplier<SurfaceControl.Builder> mSurfaceControlFactory;
     private final Supplier<SurfaceControl.Transaction> mTransactionFactory;
+    private final BooleanSupplier mAreCornersRounded;
+    private final Supplier<Color> mColorSupplier;
+    // Parameters for "blurred wallpaper" letterbox background.
+    private final BooleanSupplier mHasWallpaperBackgroundSupplier;
+    private final IntSupplier mBlurRadiusSupplier;
+    private final DoubleSupplier mDarkScrimAlphaSupplier;
+    private final Supplier<SurfaceControl> mParentSurfaceSupplier;
+
     private final Rect mOuter = new Rect();
     private final Rect mInner = new Rect();
     private final LetterboxSurface mTop = new LetterboxSurface("top");
     private final LetterboxSurface mLeft = new LetterboxSurface("left");
     private final LetterboxSurface mBottom = new LetterboxSurface("bottom");
     private final LetterboxSurface mRight = new LetterboxSurface("right");
+    // One surface that fills the whole window is used over multiple surfaces to:
+    // - Prevents wallpaper from peeking through near rounded corners.
+    // - For "blurred wallpaper" background, to avoid having visible border between surfaces.
+    // One surface approach isn't always preferred over multiple surfaces due to rendering cost
+    // for overlaping an app window and letterbox surfaces.
+    private final LetterboxSurface mFullWindowSurface = new LetterboxSurface("fullWindow");
     private final LetterboxSurface[] mSurfaces = { mLeft, mTop, mRight, mBottom };
+    // Reachability gestures.
+    private final IntConsumer mDoubleTapCallbackX;
+    private final IntConsumer mDoubleTapCallbackY;
 
     /**
      * Constructs a Letterbox.
@@ -57,9 +86,25 @@ public class Letterbox {
      * @param surfaceControlFactory a factory for creating the managed {@link SurfaceControl}s
      */
     public Letterbox(Supplier<SurfaceControl.Builder> surfaceControlFactory,
-            Supplier<SurfaceControl.Transaction> transactionFactory) {
+            Supplier<SurfaceControl.Transaction> transactionFactory,
+            BooleanSupplier areCornersRounded,
+            Supplier<Color> colorSupplier,
+            BooleanSupplier hasWallpaperBackgroundSupplier,
+            IntSupplier blurRadiusSupplier,
+            DoubleSupplier darkScrimAlphaSupplier,
+            IntConsumer doubleTapCallbackX,
+            IntConsumer doubleTapCallbackY,
+            Supplier<SurfaceControl> parentSurface) {
         mSurfaceControlFactory = surfaceControlFactory;
         mTransactionFactory = transactionFactory;
+        mAreCornersRounded = areCornersRounded;
+        mColorSupplier = colorSupplier;
+        mHasWallpaperBackgroundSupplier = hasWallpaperBackgroundSupplier;
+        mBlurRadiusSupplier = blurRadiusSupplier;
+        mDarkScrimAlphaSupplier = darkScrimAlphaSupplier;
+        mDoubleTapCallbackX = doubleTapCallbackX;
+        mDoubleTapCallbackY = doubleTapCallbackY;
+        mParentSurfaceSupplier = parentSurface;
     }
 
     /**
@@ -81,8 +126,8 @@ public class Letterbox {
         mLeft.layout(outer.left, outer.top, inner.left, outer.bottom, surfaceOrigin);
         mBottom.layout(outer.left, inner.bottom, outer.right, outer.bottom, surfaceOrigin);
         mRight.layout(inner.right, outer.top, outer.right, outer.bottom, surfaceOrigin);
+        mFullWindowSurface.layout(outer.left, outer.top, outer.right, outer.bottom, surfaceOrigin);
     }
-
 
     /**
      * Gets the insets between the outer and inner rects.
@@ -98,6 +143,11 @@ public class Letterbox {
     /** @return The frame that used to place the content. */
     Rect getInnerFrame() {
         return mInner;
+    }
+
+    /** @return The frame that contains the inner frame and the insets. */
+    Rect getOuterFrame() {
+        return mOuter;
     }
 
     /**
@@ -126,18 +176,6 @@ public class Letterbox {
     }
 
     /**
-     * Returns true if any part of the letterbox overlaps with the given {@code rect}.
-     */
-    public boolean isOverlappingWith(Rect rect) {
-        for (LetterboxSurface surface : mSurfaces) {
-            if (surface.isOverlappingWith(rect)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    /**
      * Hides the letterbox.
      *
      * The caller must use {@link #applySurfaceChanges} to apply the new layout to the surface.
@@ -156,10 +194,14 @@ public class Letterbox {
         for (LetterboxSurface surface : mSurfaces) {
             surface.remove();
         }
+        mFullWindowSurface.remove();
     }
 
     /** Returns whether a call to {@link #applySurfaceChanges} would change the surface. */
     public boolean needsApplySurfaceChanges() {
+        if (useFullWindowSurface()) {
+            return mFullWindowSurface.needsApplySurfaceChanges();
+        }
         for (LetterboxSurface surface : mSurfaces) {
             if (surface.needsApplySurfaceChanges()) {
                 return true;
@@ -168,16 +210,32 @@ public class Letterbox {
         return false;
     }
 
-    public void applySurfaceChanges(SurfaceControl.Transaction t) {
-        for (LetterboxSurface surface : mSurfaces) {
-            surface.applySurfaceChanges(t);
+    /** Applies surface changes such as colour, window crop, position and input info. */
+    public void applySurfaceChanges(@NonNull SurfaceControl.Transaction t,
+            @NonNull SurfaceControl.Transaction inputT) {
+        if (useFullWindowSurface()) {
+            mFullWindowSurface.applySurfaceChanges(t, inputT);
+
+            for (LetterboxSurface surface : mSurfaces) {
+                surface.remove();
+            }
+        } else {
+            for (LetterboxSurface surface : mSurfaces) {
+                surface.applySurfaceChanges(t, inputT);
+            }
+
+            mFullWindowSurface.remove();
         }
     }
 
     /** Enables touches to slide into other neighboring surfaces. */
     void attachInput(WindowState win) {
-        for (LetterboxSurface surface : mSurfaces) {
-            surface.attachInput(win);
+        if (useFullWindowSurface()) {
+            mFullWindowSurface.attachInput(win);
+        } else {
+            for (LetterboxSurface surface : mSurfaces) {
+                surface.attachInput(win);
+            }
         }
     }
 
@@ -187,42 +245,88 @@ public class Letterbox {
                 surface.mInputInterceptor.mWindowHandle.displayId = displayId;
             }
         }
+        if (mFullWindowSurface.mInputInterceptor != null) {
+            mFullWindowSurface.mInputInterceptor.mWindowHandle.displayId = displayId;
+        }
     }
 
-    private static class InputInterceptor {
-        final InputChannel mServerChannel;
-        final InputChannel mClientChannel;
-        final InputWindowHandle mWindowHandle;
-        final InputEventReceiver mInputEventReceiver;
-        final WindowManagerService mWmService;
-        final IBinder mToken;
+    /**
+     * Returns {@code true} when using {@link #mFullWindowSurface} instead of {@link mSurfaces}.
+     */
+    private boolean useFullWindowSurface() {
+        return mAreCornersRounded.getAsBoolean() || mHasWallpaperBackgroundSupplier.getAsBoolean();
+    }
+
+    private final class TapEventReceiver extends InputEventReceiver {
+
+        private final GestureDetector mDoubleTapDetector;
+        private final DoubleTapListener mDoubleTapListener;
+
+        TapEventReceiver(InputChannel inputChannel, WindowManagerService wmService,
+                Handler uiHandler) {
+            super(inputChannel, uiHandler.getLooper());
+            mDoubleTapListener = new DoubleTapListener(wmService);
+            mDoubleTapDetector = new GestureDetector(wmService.mContext, mDoubleTapListener,
+                    uiHandler);
+        }
+
+        @Override
+        public void onInputEvent(InputEvent event) {
+            final MotionEvent motionEvent = (MotionEvent) event;
+            finishInputEvent(event, mDoubleTapDetector.onTouchEvent(motionEvent));
+        }
+    }
+
+    private class DoubleTapListener extends GestureDetector.SimpleOnGestureListener {
+        private final WindowManagerService mWmService;
+
+        private DoubleTapListener(WindowManagerService wmService) {
+            mWmService = wmService;
+        }
+
+        @Override
+        public boolean onDoubleTapEvent(MotionEvent e) {
+            synchronized (mWmService.mGlobalLock) {
+                // This check prevents late events to be handled in case the Letterbox has been
+                // already destroyed and so mOuter.isEmpty() is true.
+                if (!mOuter.isEmpty() && e.getAction() == MotionEvent.ACTION_UP) {
+                    mDoubleTapCallbackX.accept((int) e.getRawX());
+                    mDoubleTapCallbackY.accept((int) e.getRawY());
+                    return true;
+                }
+                return false;
+            }
+        }
+    }
+
+    private final class InputInterceptor implements Runnable {
+
+        private final InputChannel mClientChannel;
+        private final InputWindowHandle mWindowHandle;
+        private final InputEventReceiver mInputEventReceiver;
+        private final WindowManagerService mWmService;
+        private final IBinder mToken;
+        private final Handler mHandler;
 
         InputInterceptor(String namePrefix, WindowState win) {
             mWmService = win.mWmService;
+            mHandler = UiThread.getHandler();
             final String name = namePrefix + (win.mActivityRecord != null ? win.mActivityRecord : win);
-            final InputChannel[] channels = InputChannel.openInputChannelPair(name);
-            mServerChannel = channels[0];
-            mClientChannel = channels[1];
-            mInputEventReceiver = new SimpleInputReceiver(mClientChannel);
+            mClientChannel = mWmService.mInputManager.createInputChannel(name);
+            mInputEventReceiver = new TapEventReceiver(mClientChannel, mWmService, mHandler);
 
-            mWmService.mInputManager.registerInputChannel(mServerChannel);
-            mToken = mServerChannel.getToken();
+            mToken = mClientChannel.getToken();
 
             mWindowHandle = new InputWindowHandle(null /* inputApplicationHandle */,
                     win.getDisplayId());
             mWindowHandle.name = name;
             mWindowHandle.token = mToken;
-            mWindowHandle.layoutParamsFlags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-                    | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
-                    | WindowManager.LayoutParams.FLAG_SPLIT_TOUCH
-                    | WindowManager.LayoutParams.FLAG_SLIPPERY;
             mWindowHandle.layoutParamsType = WindowManager.LayoutParams.TYPE_INPUT_CONSUMER;
-            mWindowHandle.dispatchingTimeoutNanos =
-                    WindowManagerService.DEFAULT_INPUT_DISPATCHING_TIMEOUT_NANOS;
-            mWindowHandle.visible = true;
-            mWindowHandle.ownerPid = Process.myPid();
-            mWindowHandle.ownerUid = Process.myUid();
+            mWindowHandle.dispatchingTimeoutMillis = DEFAULT_DISPATCHING_TIMEOUT_MILLIS;
+            mWindowHandle.ownerPid = WindowManagerService.MY_PID;
+            mWindowHandle.ownerUid = WindowManagerService.MY_UID;
             mWindowHandle.scaleFactor = 1.0f;
+            mWindowHandle.inputConfig = InputConfig.NOT_FOCUSABLE | InputConfig.SLIPPERY;
         }
 
         void updateTouchableRegion(Rect frame) {
@@ -238,17 +342,16 @@ public class Letterbox {
             mWindowHandle.touchableRegion.translate(-frame.left, -frame.top);
         }
 
-        void dispose() {
-            mWmService.mInputManager.unregisterInputChannel(mServerChannel);
+        @Override
+        public void run() {
             mInputEventReceiver.dispose();
-            mServerChannel.dispose();
             mClientChannel.dispose();
         }
 
-        private static class SimpleInputReceiver extends InputEventReceiver {
-            SimpleInputReceiver(InputChannel inputChannel) {
-                super(inputChannel, UiThread.getHandler().getLooper());
-            }
+        void dispose() {
+            mWmService.mInputManager.removeInputChannel(mToken);
+            // Perform dispose on the same thread that dispatches input event
+            mHandler.post(this);
         }
     }
 
@@ -256,6 +359,9 @@ public class Letterbox {
 
         private final String mType;
         private SurfaceControl mSurface;
+        private Color mColor;
+        private boolean mHasWallpaperBackground;
+        private SurfaceControl mParentSurface;
 
         private final Rect mSurfaceFrameRelative = new Rect();
         private final Rect mLayoutFrameGlobal = new Rect();
@@ -280,8 +386,8 @@ public class Letterbox {
                     .setColorLayer()
                     .setCallsite("LetterboxSurface.createSurface")
                     .build();
-            t.setLayer(mSurface, -1)
-                    .setColor(mSurface, new float[]{0, 0, 0})
+
+            t.setLayer(mSurface, TASK_CHILD_LAYER_LETTERBOX_BACKGROUND)
                     .setColorSpaceAgnostic(mSurface, true);
         }
 
@@ -290,6 +396,10 @@ public class Letterbox {
                 mInputInterceptor.dispose();
             }
             mInputInterceptor = new InputInterceptor("Letterbox_" + mType + "_", win);
+        }
+
+        boolean isRemoved() {
+            return mSurface != null || mInputInterceptor != null;
         }
 
         public void remove() {
@@ -311,19 +421,9 @@ public class Letterbox {
             return Math.max(0, mLayoutFrameGlobal.height());
         }
 
-        /**
-         * Returns if the given {@code rect} overlaps with this letterbox piece.
-         * @param rect the area to check for overlap in global coordinates
-         */
-        public boolean isOverlappingWith(Rect rect) {
-            if (mLayoutFrameGlobal.isEmpty()) {
-                return false;
-            }
-            return Rect.intersects(rect, mLayoutFrameGlobal);
-        }
-
-        public void applySurfaceChanges(SurfaceControl.Transaction t) {
-            if (mSurfaceFrameRelative.equals(mLayoutFrameRelative)) {
+        public void applySurfaceChanges(@NonNull SurfaceControl.Transaction t,
+                @NonNull SurfaceControl.Transaction inputT) {
+            if (!needsApplySurfaceChanges()) {
                 // Nothing changed.
                 return;
             }
@@ -332,21 +432,66 @@ public class Letterbox {
                 if (mSurface == null) {
                     createSurface(t);
                 }
+
+                mColor = mColorSupplier.get();
+                mParentSurface = mParentSurfaceSupplier.get();
+                t.setColor(mSurface, getRgbColorArray());
                 t.setPosition(mSurface, mSurfaceFrameRelative.left, mSurfaceFrameRelative.top);
                 t.setWindowCrop(mSurface, mSurfaceFrameRelative.width(),
                         mSurfaceFrameRelative.height());
+                t.reparent(mSurface, mParentSurface);
+
+                mHasWallpaperBackground = mHasWallpaperBackgroundSupplier.getAsBoolean();
+                updateAlphaAndBlur(t);
+
                 t.show(mSurface);
             } else if (mSurface != null) {
                 t.hide(mSurface);
             }
             if (mSurface != null && mInputInterceptor != null) {
                 mInputInterceptor.updateTouchableRegion(mSurfaceFrameRelative);
-                t.setInputWindowInfo(mSurface, mInputInterceptor.mWindowHandle);
+                inputT.setInputWindowInfo(mSurface, mInputInterceptor.mWindowHandle);
             }
         }
 
+        private void updateAlphaAndBlur(SurfaceControl.Transaction t) {
+            if (!mHasWallpaperBackground) {
+                // Opaque
+                t.setAlpha(mSurface, 1.0f);
+                // Removing pre-exesting blur
+                t.setBackgroundBlurRadius(mSurface, 0);
+                return;
+            }
+            final float alpha = (float) mDarkScrimAlphaSupplier.getAsDouble();
+            t.setAlpha(mSurface, alpha);
+
+            // Translucent dark scrim can be shown without blur.
+            if (mBlurRadiusSupplier.getAsInt() <= 0) {
+                // Removing pre-exesting blur
+                t.setBackgroundBlurRadius(mSurface, 0);
+                return;
+            }
+
+            t.setBackgroundBlurRadius(mSurface, mBlurRadiusSupplier.getAsInt());
+        }
+
+        private float[] getRgbColorArray() {
+            final float[] rgbTmpFloat = new float[3];
+            rgbTmpFloat[0] = mColor.red();
+            rgbTmpFloat[1] = mColor.green();
+            rgbTmpFloat[2] = mColor.blue();
+            return rgbTmpFloat;
+        }
+
         public boolean needsApplySurfaceChanges() {
-            return !mSurfaceFrameRelative.equals(mLayoutFrameRelative);
+            return !mSurfaceFrameRelative.equals(mLayoutFrameRelative)
+                    // If mSurfaceFrameRelative is empty then mHasWallpaperBackground, mColor,
+                    // and mParentSurface may never be updated in applySurfaceChanges but this
+                    // doesn't mean that update is needed.
+                    || !mSurfaceFrameRelative.isEmpty()
+                    && (mHasWallpaperBackgroundSupplier.getAsBoolean() != mHasWallpaperBackground
+                    || !mColorSupplier.get().equals(mColor)
+                    || mParentSurfaceSupplier.get() != mParentSurface);
         }
     }
 }

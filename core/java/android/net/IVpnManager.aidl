@@ -17,6 +17,7 @@
 package android.net;
 
 import android.net.Network;
+import android.net.VpnProfileState;
 
 import com.android.internal.net.LegacyVpnInfo;
 import com.android.internal.net.VpnConfig;
@@ -38,8 +39,11 @@ interface IVpnManager {
     /** VpnManager APIs */
     boolean provisionVpnProfile(in VpnProfile profile, String packageName);
     void deleteVpnProfile(String packageName);
-    void startVpnProfile(String packageName);
+    String startVpnProfile(String packageName);
     void stopVpnProfile(String packageName);
+    VpnProfileState getProvisionedVpnProfileState(String packageName);
+    boolean setAppExclusionList(int userId, String vpnPackage, in List<String> excludedApps);
+    List<String> getAppExclusionList(int userId, String vpnPackage);
 
     /** Always-on VPN APIs */
     boolean isAlwaysOnVpnPackageSupported(int userId, String packageName);
@@ -55,6 +59,12 @@ interface IVpnManager {
     void startLegacyVpn(in VpnProfile profile);
     LegacyVpnInfo getLegacyVpnInfo(int userId);
     boolean updateLockdownVpn();
+
+    /** Profile store APIs */
+    byte[] getFromVpnProfileStore(String name);
+    boolean putIntoVpnProfileStore(String name, in byte[] blob);
+    boolean removeFromVpnProfileStore(String name);
+    String[] listFromVpnProfileStore(String prefix);
 
     /** General system APIs */
     VpnConfig getVpnConfig(int userId);

@@ -29,13 +29,11 @@ import android.widget.CheckBox;
 import com.android.internal.R;
 import com.android.server.utils.AppInstallerUtil;
 
-public class UnsupportedCompileSdkDialog {
-    private final AlertDialog mDialog;
-    private final String mPackageName;
+class UnsupportedCompileSdkDialog extends AppWarnings.BaseDialog {
 
-    public UnsupportedCompileSdkDialog(final AppWarnings manager, Context context,
-            ApplicationInfo appInfo) {
-        mPackageName = appInfo.packageName;
+    UnsupportedCompileSdkDialog(final AppWarnings manager, Context context,
+            ApplicationInfo appInfo, int userId) {
+        super(manager, context, appInfo.packageName, userId);
 
         final PackageManager pm = context.getPackageManager();
         final CharSequence label = appInfo.loadSafeLabel(pm,
@@ -70,18 +68,6 @@ public class UnsupportedCompileSdkDialog {
         final CheckBox alwaysShow = mDialog.findViewById(R.id.ask_checkbox);
         alwaysShow.setChecked(true);
         alwaysShow.setOnCheckedChangeListener((buttonView, isChecked) -> manager.setPackageFlag(
-                mPackageName, AppWarnings.FLAG_HIDE_COMPILE_SDK, !isChecked));
-    }
-
-    public String getPackageName() {
-        return mPackageName;
-    }
-
-    public void show() {
-        mDialog.show();
-    }
-
-    public void dismiss() {
-        mDialog.dismiss();
+                mUserId, mPackageName, AppWarnings.FLAG_HIDE_COMPILE_SDK, !isChecked));
     }
 }

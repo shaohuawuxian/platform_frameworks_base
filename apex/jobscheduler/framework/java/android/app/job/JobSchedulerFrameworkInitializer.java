@@ -22,6 +22,7 @@ import android.app.SystemServiceRegistry;
 import android.content.Context;
 import android.os.DeviceIdleManager;
 import android.os.IDeviceIdleController;
+import android.os.PowerExemptionManager;
 import android.os.PowerWhitelistManager;
 
 /**
@@ -42,9 +43,9 @@ public class JobSchedulerFrameworkInitializer {
      * <p>If this is called from other places, it throws a {@link IllegalStateException).
      */
     public static void registerServiceWrappers() {
-        SystemServiceRegistry.registerStaticService(
+        SystemServiceRegistry.registerContextAwareService(
                 Context.JOB_SCHEDULER_SERVICE, JobScheduler.class,
-                (b) -> new JobSchedulerImpl(IJobScheduler.Stub.asInterface(b)));
+                (context, b) -> new JobSchedulerImpl(context, IJobScheduler.Stub.asInterface(b)));
         SystemServiceRegistry.registerContextAwareService(
                 Context.DEVICE_IDLE_CONTROLLER, DeviceIdleManager.class,
                 (context, b) -> new DeviceIdleManager(
@@ -52,5 +53,8 @@ public class JobSchedulerFrameworkInitializer {
         SystemServiceRegistry.registerContextAwareService(
                 Context.POWER_WHITELIST_MANAGER, PowerWhitelistManager.class,
                 PowerWhitelistManager::new);
+        SystemServiceRegistry.registerContextAwareService(
+                Context.POWER_EXEMPTION_SERVICE, PowerExemptionManager.class,
+                PowerExemptionManager::new);
     }
 }

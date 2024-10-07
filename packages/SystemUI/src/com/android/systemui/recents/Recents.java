@@ -19,25 +19,28 @@ package com.android.systemui.recents;
 import android.content.ContentResolver;
 import android.content.Context;
 import android.content.res.Configuration;
-import android.graphics.Rect;
 import android.provider.Settings;
 
-import com.android.systemui.SystemUI;
+import com.android.systemui.CoreStartable;
 import com.android.systemui.statusbar.CommandQueue;
+import com.android.systemui.statusbar.policy.ConfigurationController;
 
-import java.io.FileDescriptor;
 import java.io.PrintWriter;
 
 /**
  * A proxy to a Recents implementation.
  */
-public class Recents extends SystemUI implements CommandQueue.Callbacks {
+public class Recents implements
+        CoreStartable,
+        ConfigurationController.ConfigurationListener,
+        CommandQueue.Callbacks {
 
+    private final Context mContext;
     private final RecentsImplementation mImpl;
     private final CommandQueue mCommandQueue;
 
     public Recents(Context context, RecentsImplementation impl, CommandQueue commandQueue) {
-        super(context);
+        mContext = context;
         mImpl = impl;
         mCommandQueue = commandQueue;
     }
@@ -54,7 +57,7 @@ public class Recents extends SystemUI implements CommandQueue.Callbacks {
     }
 
     @Override
-    public void onConfigurationChanged(Configuration newConfig) {
+    public void onConfigChanged(Configuration newConfig) {
         mImpl.onConfigurationChanged(newConfig);
     }
 
@@ -63,10 +66,6 @@ public class Recents extends SystemUI implements CommandQueue.Callbacks {
         if (mContext.getDisplayId() == displayId) {
             mImpl.onAppTransitionFinished();
         }
-    }
-
-    public void growRecents() {
-        mImpl.growRecents();
     }
 
     @Override
@@ -124,17 +123,6 @@ public class Recents extends SystemUI implements CommandQueue.Callbacks {
         mImpl.cancelPreloadRecentApps();
     }
 
-    public boolean splitPrimaryTask(int stackCreateMode, Rect initialBounds,
-            int metricsDockAction) {
-        // Ensure the device has been provisioned before allowing the user to interact with
-        // recents
-        if (!isUserSetup()) {
-            return false;
-        }
-
-        return mImpl.splitPrimaryTask(stackCreateMode, initialBounds, metricsDockAction);
-    }
-
     /**
      * @return whether this device is provisioned and the current user is set up.
      */
@@ -145,7 +133,7 @@ public class Recents extends SystemUI implements CommandQueue.Callbacks {
     }
 
     @Override
-    public void dump(FileDescriptor fd, PrintWriter pw, String[] args) {
+    public void dump(PrintWriter pw, String[] args) {
         mImpl.dump(pw);
     }
 }

@@ -21,6 +21,7 @@ import static android.text.TextUtils.SAFE_STRING_FLAG_SINGLE_LINE;
 import static android.text.TextUtils.SAFE_STRING_FLAG_TRIM;
 import static android.text.TextUtils.makeSafeForPresentation;
 
+import android.annotation.FlaggedApi;
 import android.annotation.FloatRange;
 import android.annotation.NonNull;
 import android.annotation.SystemApi;
@@ -48,6 +49,7 @@ import java.util.Objects;
  * itself implement Parcelable, but does provide convenience methods to assist
  * in the implementation of Parcelable in subclasses.
  */
+@android.ravenwood.annotation.RavenwoodKeepWholeClass
 public class PackageItemInfo {
 
     /**
@@ -61,7 +63,7 @@ public class PackageItemInfo {
     public static final int MAX_SAFE_LABEL_LENGTH = 1000;
 
     /** @hide */
-    public static final float DEFAULT_MAX_LABEL_SIZE_PX = 500f;
+    public static final float DEFAULT_MAX_LABEL_SIZE_PX = 1000f;
 
     /**
      * Remove {@link Character#isWhitespace(int) whitespace} and non-breaking spaces from the edges
@@ -173,6 +175,16 @@ public class PackageItemInfo {
      */
     public int showUserIcon;
 
+    /**
+     * Whether the package is currently in an archived state.
+     *
+     * <p>Packages can be archived through {@link PackageInstaller#requestArchive} and do not have
+     * any APKs stored on the device, but do keep the data directory.
+     *
+     */
+    @FlaggedApi(Flags.FLAG_ARCHIVING)
+    public boolean isArchived;
+
     public PackageItemInfo() {
         showUserIcon = UserHandle.USER_NULL;
     }
@@ -189,6 +201,7 @@ public class PackageItemInfo {
         logo = orig.logo;
         metaData = orig.metaData;
         showUserIcon = orig.showUserIcon;
+        isArchived = orig.isArchived;
     }
 
     /**
@@ -202,16 +215,20 @@ public class PackageItemInfo {
      * @return Returns a CharSequence containing the item's label.  If the
      * item does not have a label, its name is returned.
      */
+    @android.ravenwood.annotation.RavenwoodThrow(blockedBy = android.content.res.Resources.class)
     public @NonNull CharSequence loadLabel(@NonNull PackageManager pm) {
         if (sForceSafeLabels && !Objects.equals(packageName, ActivityThread.currentPackageName())) {
             return loadSafeLabel(pm, DEFAULT_MAX_LABEL_SIZE_PX, SAFE_STRING_FLAG_TRIM
                     | SAFE_STRING_FLAG_FIRST_LINE);
         } else {
-            return loadUnsafeLabel(pm);
+            // Trims the label string to the MAX_SAFE_LABEL_LENGTH. This is to prevent that the
+            // system is overwhelmed by an enormous string returned by the application.
+            return TextUtils.trimToSize(loadUnsafeLabel(pm), MAX_SAFE_LABEL_LENGTH);
         }
     }
 
     /** {@hide} */
+    @android.ravenwood.annotation.RavenwoodThrow(blockedBy = android.content.res.Resources.class)
     public CharSequence loadUnsafeLabel(PackageManager pm) {
         if (nonLocalizedLabel != null) {
             return nonLocalizedLabel;
@@ -234,6 +251,7 @@ public class PackageItemInfo {
      */
     @SystemApi
     @Deprecated
+    @android.ravenwood.annotation.RavenwoodThrow(blockedBy = android.content.res.Resources.class)
     public @NonNull CharSequence loadSafeLabel(@NonNull PackageManager pm) {
         return loadSafeLabel(pm, DEFAULT_MAX_LABEL_SIZE_PX, SAFE_STRING_FLAG_TRIM
                 | SAFE_STRING_FLAG_FIRST_LINE);
@@ -247,6 +265,7 @@ public class PackageItemInfo {
      * @hide
     */
     @SystemApi
+    @android.ravenwood.annotation.RavenwoodThrow(blockedBy = android.content.res.Resources.class)
     public @NonNull CharSequence loadSafeLabel(@NonNull PackageManager pm,
             @FloatRange(from = 0) float ellipsizeDip, @TextUtils.SafeStringFlags int flags) {
         Objects.requireNonNull(pm);
@@ -267,6 +286,7 @@ public class PackageItemInfo {
      * item does not have an icon, the item's default icon is returned
      * such as the default activity icon.
      */
+    @android.ravenwood.annotation.RavenwoodThrow(blockedBy = android.content.res.Resources.class)
     public Drawable loadIcon(PackageManager pm) {
         return pm.loadItemIcon(this, getApplicationInfo());
     }
@@ -284,6 +304,7 @@ public class PackageItemInfo {
      * item does not have an icon, the item's default icon is returned
      * such as the default activity icon.
      */
+    @android.ravenwood.annotation.RavenwoodThrow(blockedBy = android.content.res.Resources.class)
     public Drawable loadUnbadgedIcon(PackageManager pm) {
         return pm.loadUnbadgedItemIcon(this, getApplicationInfo());
     }
@@ -299,6 +320,7 @@ public class PackageItemInfo {
      * @return Returns a Drawable containing the item's banner.  If the item
      * does not have a banner, this method will return null.
      */
+    @android.ravenwood.annotation.RavenwoodThrow(blockedBy = android.content.res.Resources.class)
     public Drawable loadBanner(PackageManager pm) {
         if (banner != 0) {
             Drawable dr = pm.getDrawable(packageName, banner, getApplicationInfo());
@@ -320,6 +342,7 @@ public class PackageItemInfo {
      *
      * @hide
      */
+    @android.ravenwood.annotation.RavenwoodThrow(blockedBy = android.content.res.Resources.class)
     public Drawable loadDefaultIcon(PackageManager pm) {
         return pm.getDefaultActivityIcon();
     }
@@ -335,6 +358,7 @@ public class PackageItemInfo {
      *
      * @hide
      */
+    @android.ravenwood.annotation.RavenwoodThrow(blockedBy = android.content.res.Resources.class)
     protected Drawable loadDefaultBanner(PackageManager pm) {
         return null;
     }
@@ -350,6 +374,7 @@ public class PackageItemInfo {
      * @return Returns a Drawable containing the item's logo. If the item
      * does not have a logo, this method will return null.
      */
+    @android.ravenwood.annotation.RavenwoodThrow(blockedBy = android.content.res.Resources.class)
     public Drawable loadLogo(PackageManager pm) {
         if (logo != 0) {
             Drawable d = pm.getDrawable(packageName, logo, getApplicationInfo());
@@ -371,6 +396,7 @@ public class PackageItemInfo {
      *
      * @hide
      */
+    @android.ravenwood.annotation.RavenwoodThrow(blockedBy = android.content.res.Resources.class)
     protected Drawable loadDefaultLogo(PackageManager pm) {
         return null;
     }
@@ -388,6 +414,7 @@ public class PackageItemInfo {
      * assigned as the given meta-data.  If the meta-data name is not defined
      * or the XML resource could not be found, null is returned.
      */
+    @android.ravenwood.annotation.RavenwoodThrow(blockedBy = android.content.res.Resources.class)
     public XmlResourceParser loadXmlMetaData(PackageManager pm, String name) {
         if (metaData != null) {
             int resid = metaData.getInt(name);
@@ -440,6 +467,7 @@ public class PackageItemInfo {
         dest.writeBundle(metaData);
         dest.writeInt(banner);
         dest.writeInt(showUserIcon);
+        dest.writeBoolean(isArchived);
     }
 
     /**
@@ -457,6 +485,7 @@ public class PackageItemInfo {
         }
         proto.write(PackageItemInfoProto.ICON, icon);
         proto.write(PackageItemInfoProto.BANNER, banner);
+        proto.write(PackageItemInfoProto.IS_ARCHIVED, isArchived);
         proto.end(token);
     }
 
@@ -471,6 +500,7 @@ public class PackageItemInfo {
         metaData = source.readBundle();
         banner = source.readInt();
         showUserIcon = source.readInt();
+        isArchived = source.readBoolean();
     }
 
     /**
@@ -481,7 +511,7 @@ public class PackageItemInfo {
      *
      * @hide
      */
-    protected ApplicationInfo getApplicationInfo() {
+    public ApplicationInfo getApplicationInfo() {
         return null;
     }
 
@@ -500,6 +530,6 @@ public class PackageItemInfo {
         }
 
         private final Collator   sCollator = Collator.getInstance();
-        private PackageManager   mPM;
+        private final PackageManager mPM;
     }
 }

@@ -18,6 +18,10 @@ package android.app.servertransaction;
 
 import static android.os.Trace.TRACE_TAG_ACTIVITY_MANAGER;
 
+import android.annotation.NonNull;
+import android.annotation.Nullable;
+import android.app.ActivityOptions.SceneTransitionInfo;
+import android.app.ActivityThread.ActivityClientRecord;
 import android.app.ClientTransactionHandler;
 import android.os.IBinder;
 import android.os.Parcel;
@@ -31,11 +35,13 @@ public class StartActivityItem extends ActivityLifecycleItem {
 
     private static final String TAG = "StartActivityItem";
 
+    private SceneTransitionInfo mSceneTransitionInfo;
+
     @Override
-    public void execute(ClientTransactionHandler client, IBinder token,
-            PendingTransactionActions pendingActions) {
+    public void execute(@NonNull ClientTransactionHandler client, @NonNull ActivityClientRecord r,
+            @NonNull PendingTransactionActions pendingActions) {
         Trace.traceBegin(TRACE_TAG_ACTIVITY_MANAGER, "startActivityItem");
-        client.handleStartActivity(token, pendingActions);
+        client.handleStartActivity(r, pendingActions, mSceneTransitionInfo);
         Trace.traceEnd(TRACE_TAG_ACTIVITY_MANAGER);
     }
 
@@ -44,17 +50,20 @@ public class StartActivityItem extends ActivityLifecycleItem {
         return ON_START;
     }
 
-
     // ObjectPoolItem implementation
 
     private StartActivityItem() {}
 
     /** Obtain an instance initialized with provided params. */
-    public static StartActivityItem obtain() {
+    @NonNull
+    public static StartActivityItem obtain(@NonNull IBinder activityToken,
+            @Nullable SceneTransitionInfo sceneTransitionInfo) {
         StartActivityItem instance = ObjectPool.obtain(StartActivityItem.class);
         if (instance == null) {
             instance = new StartActivityItem();
         }
+        instance.setActivityToken(activityToken);
+        instance.mSceneTransitionInfo = sceneTransitionInfo;
 
         return instance;
     }
@@ -62,53 +71,59 @@ public class StartActivityItem extends ActivityLifecycleItem {
     @Override
     public void recycle() {
         super.recycle();
+        mSceneTransitionInfo = null;
         ObjectPool.recycle(this);
     }
-
 
     // Parcelable implementation
 
     /** Write to Parcel. */
     @Override
-    public void writeToParcel(Parcel dest, int flags) {
-        // Empty
+    public void writeToParcel(@NonNull Parcel dest, int flags) {
+        super.writeToParcel(dest, flags);
+        dest.writeTypedObject(mSceneTransitionInfo, flags);
     }
 
     /** Read from Parcel. */
-    private StartActivityItem(Parcel in) {
-        // Empty
+    private StartActivityItem(@NonNull Parcel in) {
+        super(in);
+        mSceneTransitionInfo = in.readTypedObject(SceneTransitionInfo.CREATOR);
     }
 
-    public static final @android.annotation.NonNull Creator<StartActivityItem> CREATOR =
-            new Creator<StartActivityItem>() {
-                public StartActivityItem createFromParcel(Parcel in) {
-                    return new StartActivityItem(in);
-                }
+    public static final @NonNull Creator<StartActivityItem> CREATOR = new Creator<>() {
+        public StartActivityItem createFromParcel(@NonNull Parcel in) {
+            return new StartActivityItem(in);
+        }
 
-                public StartActivityItem[] newArray(int size) {
-                    return new StartActivityItem[size];
-                }
-            };
+        public StartActivityItem[] newArray(int size) {
+            return new StartActivityItem[size];
+        }
+    };
 
     @Override
-    public boolean equals(Object o) {
+    public boolean equals(@Nullable Object o) {
         if (this == o) {
             return true;
         }
-        if (o == null || getClass() != o.getClass()) {
+        if (!super.equals(o)) {
             return false;
         }
-        return true;
+        final StartActivityItem other = (StartActivityItem) o;
+        return (mSceneTransitionInfo == null) == (other.mSceneTransitionInfo == null);
     }
 
     @Override
     public int hashCode() {
-        return 17;
+        int result = 17;
+        result = 31 * result + super.hashCode();
+        result = 31 * result + (mSceneTransitionInfo != null ? 1 : 0);
+        return result;
     }
 
     @Override
     public String toString() {
-        return "StartActivityItem{}";
+        return "StartActivityItem{" + super.toString()
+                + ",sceneTransitionInfo=" + mSceneTransitionInfo + "}";
     }
 }
 

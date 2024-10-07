@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020 The Android Open Source Project
+ * Copyright (C) 2024 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -13,114 +13,117 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package androidx.window.sidecar;
 
-import static android.view.Display.INVALID_DISPLAY;
-import static android.view.Surface.ROTATION_0;
-import static android.view.Surface.ROTATION_180;
-import static android.view.Surface.ROTATION_270;
-import static android.view.Surface.ROTATION_90;
+import static android.view.Display.DEFAULT_DISPLAY;
 
+import static androidx.window.util.ExtensionHelper.rotateRectToDisplayRotation;
+import static androidx.window.util.ExtensionHelper.transformToWindowSpaceRect;
+
+import android.annotation.NonNull;
 import android.app.Activity;
 import android.app.ActivityThread;
 import android.graphics.Rect;
-import android.hardware.display.DisplayManagerGlobal;
 import android.os.IBinder;
-import android.view.DisplayInfo;
-import android.view.Surface;
 
-import androidx.annotation.Nullable;
+import androidx.window.common.CommonFoldingFeature;
 
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+
+/**
+ * A utility class for transforming between Sidecar and Extensions features.
+ */
 class SidecarHelper {
-    /**
-     * Rotate the input rectangle specified in default display orientation to the current display
-     * rotation.
-     */
-    static void rotateRectToDisplayRotation(Rect inOutRect, int displayId) {
-        DisplayManagerGlobal dmGlobal = DisplayManagerGlobal.getInstance();
-        DisplayInfo displayInfo = dmGlobal.getDisplayInfo(displayId);
-        int rotation = displayInfo.rotation;
 
-        boolean isSideRotation = rotation == ROTATION_90 || rotation == ROTATION_270;
-        int displayWidth = isSideRotation ? displayInfo.logicalHeight : displayInfo.logicalWidth;
-        int displayHeight = isSideRotation ? displayInfo.logicalWidth : displayInfo.logicalHeight;
-
-        inOutRect.intersect(0, 0, displayWidth, displayHeight);
-
-        rotateBounds(inOutRect, displayWidth, displayHeight, rotation);
-    }
+    private SidecarHelper() {}
 
     /**
-     * Rotate the input rectangle within parent bounds for a given delta.
+     * Returns the {@link SidecarDeviceState} posture that is calculated for the first fold in
+     * the feature list. Sidecar devices only have one fold so we only pick the first one to
+     * determine the state.
+     * @param featureList the {@link CommonFoldingFeature} that are currently active.
+     * @return the {@link SidecarDeviceState} calculated from the {@link List} of
+     * {@link CommonFoldingFeature}.
      */
-    private static void rotateBounds(Rect inOutRect, int parentWidth, int parentHeight,
-            @Surface.Rotation int delta) {
-        int origLeft = inOutRect.left;
-        switch (delta) {
-            case ROTATION_0:
-                return;
-            case ROTATION_90:
-                inOutRect.left = inOutRect.top;
-                inOutRect.top = parentWidth - inOutRect.right;
-                inOutRect.right = inOutRect.bottom;
-                inOutRect.bottom = parentWidth - origLeft;
-                return;
-            case ROTATION_180:
-                inOutRect.left = parentWidth - inOutRect.right;
-                inOutRect.right = parentWidth - origLeft;
-                return;
-            case ROTATION_270:
-                inOutRect.left = parentHeight - inOutRect.bottom;
-                inOutRect.bottom = inOutRect.right;
-                inOutRect.right = parentHeight - inOutRect.top;
-                inOutRect.top = origLeft;
-                return;
+    @SuppressWarnings("deprecation")
+    private static int deviceStateFromFeatureList(@NonNull List<CommonFoldingFeature> featureList) {
+        for (int i = 0; i < featureList.size(); i++) {
+            final CommonFoldingFeature feature = featureList.get(i);
+            final int state = feature.getState();
+            switch (state) {
+                case CommonFoldingFeature.COMMON_STATE_FLAT:
+                    return SidecarDeviceState.POSTURE_OPENED;
+                case CommonFoldingFeature.COMMON_STATE_HALF_OPENED:
+                    return SidecarDeviceState.POSTURE_HALF_OPENED;
+                case CommonFoldingFeature.COMMON_STATE_UNKNOWN:
+                    return SidecarDeviceState.POSTURE_UNKNOWN;
+                case CommonFoldingFeature.COMMON_STATE_NO_FOLDING_FEATURES:
+                    return SidecarDeviceState.POSTURE_UNKNOWN;
+                case CommonFoldingFeature.COMMON_STATE_USE_BASE_STATE:
+                    return SidecarDeviceState.POSTURE_UNKNOWN;
+            }
         }
+        return SidecarDeviceState.POSTURE_UNKNOWN;
     }
 
-    /** Transform rectangle from absolute coordinate space to the window coordinate space. */
-    static void transformToWindowSpaceRect(Rect inOutRect, IBinder windowToken) {
-        Rect windowRect = getWindowBounds(windowToken);
-        if (windowRect == null) {
-            inOutRect.setEmpty();
-            return;
+    /**
+     * Returns a {@link SidecarDeviceState} calculated from a {@link List} of
+     * {@link CommonFoldingFeature}s.
+     */
+    @SuppressWarnings("deprecation")
+    static SidecarDeviceState calculateDeviceState(
+            @NonNull List<CommonFoldingFeature> featureList) {
+        final SidecarDeviceState deviceState = new SidecarDeviceState();
+        deviceState.posture = deviceStateFromFeatureList(featureList);
+        return deviceState;
+    }
+
+    @SuppressWarnings("deprecation")
+    private static List<SidecarDisplayFeature> calculateDisplayFeatures(
+            @NonNull Activity activity,
+            @NonNull List<CommonFoldingFeature> featureList
+    ) {
+        final int displayId = activity.getDisplay().getDisplayId();
+        if (displayId != DEFAULT_DISPLAY) {
+            return Collections.emptyList();
         }
-        if (!Rect.intersects(inOutRect, windowRect)) {
-            inOutRect.setEmpty();
-            return;
+
+        if (activity.isInMultiWindowMode()) {
+            // It is recommended not to report any display features in multi-window mode, since it
+            // won't be possible to synchronize the display feature positions with window movement.
+            return Collections.emptyList();
         }
-        inOutRect.intersect(windowRect);
-        inOutRect.offset(-windowRect.left, -windowRect.top);
+
+        final List<SidecarDisplayFeature> features = new ArrayList<>();
+        final int rotation = activity.getResources().getConfiguration().windowConfiguration
+                .getDisplayRotation();
+        for (CommonFoldingFeature baseFeature : featureList) {
+            final SidecarDisplayFeature feature = new SidecarDisplayFeature();
+            final Rect featureRect = baseFeature.getRect();
+            rotateRectToDisplayRotation(displayId, rotation, featureRect);
+            transformToWindowSpaceRect(activity, featureRect);
+            feature.setRect(featureRect);
+            feature.setType(baseFeature.getType());
+            features.add(feature);
+        }
+        return Collections.unmodifiableList(features);
     }
 
     /**
-     * Get the current window bounds in absolute coordinates.
-     * NOTE: Only works with Activity windows.
+     * Returns a {@link SidecarWindowLayoutInfo} calculated from the {@link List} of
+     * {@link CommonFoldingFeature}.
      */
-    @Nullable
-    private static Rect getWindowBounds(IBinder windowToken) {
-        Activity activity = ActivityThread.currentActivityThread().getActivity(windowToken);
-        return activity != null
-                ? activity.getWindowManager().getCurrentWindowMetrics().getBounds()
-                : null;
-    }
-
-    /**
-     * Check if this window is an Activity window that is in multi-window mode.
-     */
-    static boolean isInMultiWindow(IBinder windowToken) {
-        Activity activity = ActivityThread.currentActivityThread().getActivity(windowToken);
-        return activity != null && activity.isInMultiWindowMode();
-    }
-
-    /**
-     * Get the id of the parent display for the window.
-     * NOTE: Only works with Activity windows.
-     */
-    static int getWindowDisplay(IBinder windowToken) {
-        Activity activity = ActivityThread.currentActivityThread().getActivity(windowToken);
-        return activity != null
-                ? activity.getWindowManager().getDefaultDisplay().getDisplayId() : INVALID_DISPLAY;
+    @SuppressWarnings("deprecation")
+    static SidecarWindowLayoutInfo calculateWindowLayoutInfo(@NonNull IBinder windowToken,
+            @NonNull List<CommonFoldingFeature> featureList) {
+        final Activity activity = ActivityThread.currentActivityThread().getActivity(windowToken);
+        final SidecarWindowLayoutInfo windowLayoutInfo = new SidecarWindowLayoutInfo();
+        if (activity == null) {
+            return windowLayoutInfo;
+        }
+        windowLayoutInfo.displayFeatures = calculateDisplayFeatures(activity, featureList);
+        return windowLayoutInfo;
     }
 }

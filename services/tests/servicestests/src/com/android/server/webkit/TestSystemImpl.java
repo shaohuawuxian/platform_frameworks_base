@@ -17,6 +17,7 @@
 package com.android.server.webkit;
 
 import android.content.Context;
+import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager.NameNotFoundException;
 import android.content.pm.UserInfo;
@@ -34,7 +35,6 @@ public class TestSystemImpl implements SystemInterface {
     List<Integer> mUsers = new ArrayList<>();
     // Package -> [user, package]
     Map<String, Map<Integer, PackageInfo>> mPackages = new HashMap();
-    private boolean mFallbackLogicEnabled;
     private final int mNumRelros;
     private final boolean mIsDebuggable;
     private int mMultiProcessSetting;
@@ -42,10 +42,9 @@ public class TestSystemImpl implements SystemInterface {
 
     public static final int PRIMARY_USER_ID = 0;
 
-    public TestSystemImpl(WebViewProviderInfo[] packageConfigs, boolean fallbackLogicEnabled,
-            int numRelros, boolean isDebuggable, boolean multiProcessDefault) {
+    public TestSystemImpl(WebViewProviderInfo[] packageConfigs, int numRelros, boolean isDebuggable,
+            boolean multiProcessDefault) {
         mPackageConfigs = packageConfigs;
-        mFallbackLogicEnabled = fallbackLogicEnabled;
         mNumRelros = numRelros;
         mIsDebuggable = isDebuggable;
         mUsers.add(PRIMARY_USER_ID);
@@ -78,29 +77,43 @@ public class TestSystemImpl implements SystemInterface {
     public void killPackageDependents(String packageName) {}
 
     @Override
-    public boolean isFallbackLogicEnabled() {
-        return mFallbackLogicEnabled;
-    }
-
-    @Override
-    public void enableFallbackLogic(boolean enable) {
-        mFallbackLogicEnabled = enable;
-    }
-
-    @Override
     public void enablePackageForAllUsers(Context context, String packageName, boolean enable) {
         for(int userId : mUsers) {
             enablePackageForUser(packageName, enable, userId);
         }
     }
 
+    @Override
+    public void installExistingPackageForAllUsers(Context context, String packageName) {
+        for (int userId : mUsers) {
+            installPackageForUser(packageName, userId);
+        }
+    }
+
     private void enablePackageForUser(String packageName, boolean enable, int userId) {
         Map<Integer, PackageInfo> userPackages = mPackages.get(packageName);
         if (userPackages == null) {
-            throw new IllegalArgumentException("There is no package called " + packageName);
+            return;
         }
         PackageInfo packageInfo = userPackages.get(userId);
+        if (packageInfo == null) {
+            return;
+        }
         packageInfo.applicationInfo.enabled = enable;
+        setPackageInfoForUser(userId, packageInfo);
+    }
+
+    private void installPackageForUser(String packageName, int userId) {
+        Map<Integer, PackageInfo> userPackages = mPackages.get(packageName);
+        if (userPackages == null) {
+            return;
+        }
+        PackageInfo packageInfo = userPackages.get(userId);
+        if (packageInfo == null) {
+            return;
+        }
+        packageInfo.applicationInfo.flags |= ApplicationInfo.FLAG_INSTALLED;
+        packageInfo.applicationInfo.privateFlags &= (~ApplicationInfo.PRIVATE_FLAG_HIDDEN);
         setPackageInfoForUser(userId, packageInfo);
     }
 
@@ -191,4 +204,7 @@ public class TestSystemImpl implements SystemInterface {
     public boolean isMultiProcessDefaultEnabled() {
         return mMultiProcessDefault;
     }
+
+    @Override
+    public void pinWebviewIfRequired(ApplicationInfo appInfo) {}
 }

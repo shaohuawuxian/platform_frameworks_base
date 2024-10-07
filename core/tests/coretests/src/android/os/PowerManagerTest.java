@@ -16,27 +16,47 @@
 
 package android.os;
 
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.timeout;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 import android.content.Context;
-import android.support.test.uiautomator.UiDevice;
-import android.test.AndroidTestCase;
+import android.platform.test.annotations.IgnoreUnderRavenwood;
+import android.platform.test.annotations.RequiresFlagsEnabled;
+import android.platform.test.flag.junit.CheckFlagsRule;
+import android.platform.test.flag.junit.DeviceFlagsValueProvider;
+import android.platform.test.flag.junit.RavenwoodFlagsValueProvider;
+import android.platform.test.ravenwood.RavenwoodRule;
 
 import androidx.test.InstrumentationRegistry;
 import androidx.test.filters.SmallTest;
+import androidx.test.runner.AndroidJUnit4;
+import androidx.test.uiautomator.UiDevice;
 
 import org.junit.After;
+import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
+import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 
 import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
 
-public class PowerManagerTest extends AndroidTestCase {
+@RunWith(AndroidJUnit4.class)
+@IgnoreUnderRavenwood(blockedBy = PowerManager.class)
+public class PowerManagerTest {
 
+    private static final String TAG = "PowerManagerTest";
+    private Context mContext;
     private PowerManager mPm;
     private UiDevice mUiDevice;
     private Executor mExec = Executors.newSingleThreadExecutor();
@@ -45,15 +65,40 @@ public class PowerManagerTest extends AndroidTestCase {
     @Mock
     private PowerManager.OnThermalStatusChangedListener mListener2;
     private static final long CALLBACK_TIMEOUT_MILLI_SEC = 5000;
+    private native Parcel nativeObtainPowerSaveStateParcel(boolean batterySaverEnabled,
+            boolean globalBatterySaverEnabled, int locationMode, int soundTriggerMode,
+            float brightnessFactor);
+    private native void nativeUnparcelAndVerifyPowerSaveState(Parcel parcel,
+            boolean batterySaverEnabled, boolean globalBatterySaverEnabled,
+            int locationMode, int soundTriggerMode, float brightnessFactor);
+    private native Parcel nativeObtainBSPConfigParcel(BatterySaverPolicyConfig bs,
+            String[] keys, String[] values);
+    private native void nativeUnparcelAndVerifyBSPConfig(Parcel parcel, BatterySaverPolicyConfig bs,
+            String[] keys, String[] values);
+
+    static {
+        if (!RavenwoodRule.isUnderRavenwood()) {
+            System.loadLibrary("powermanagertest_jni");
+        }
+    }
+
+    @Rule
+    public final RavenwoodRule mRavenwood = new RavenwoodRule();
+
+    // Required for RequiresFlagsEnabled and RequiresFlagsDisabled annotations to take effect.
+    @Rule
+    public final CheckFlagsRule mCheckFlagsRule = RavenwoodRule.isOnRavenwood()
+            ? RavenwoodFlagsValueProvider.createAllOnCheckFlagsRule()
+            : DeviceFlagsValueProvider.createCheckFlagsRule();
 
     /**
      * Setup any common data for the upcoming tests.
      */
-    @Override
+    @Before
     public void setUp() throws Exception {
-        super.setUp();
         MockitoAnnotations.initMocks(this);
         mUiDevice = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation());
+        mContext = InstrumentationRegistry.getInstrumentation().getTargetContext();
         mPm = (PowerManager) mContext.getSystemService(Context.POWER_SERVICE);
         mUiDevice.executeShellCommand("cmd thermalservice override-status 0");
     }
@@ -71,6 +116,7 @@ public class PowerManagerTest extends AndroidTestCase {
      *
      * @throws Exception
      */
+    @Test
     @SmallTest
     public void testPreconditions() throws Exception {
         assertNotNull(mPm);
@@ -81,6 +127,7 @@ public class PowerManagerTest extends AndroidTestCase {
      *
      * @throws Exception
      */
+    @Test
     @SmallTest
     public void testNewWakeLock() throws Exception {
         PowerManager.WakeLock wl = mPm.newWakeLock(PowerManager.FULL_WAKE_LOCK, "FULL_WAKE_LOCK");
@@ -104,6 +151,7 @@ public class PowerManagerTest extends AndroidTestCase {
      *
      * @throws Exception
      */
+    @Test
     @SmallTest
     public void testBadNewWakeLock() throws Exception {
         final int badFlags = PowerManager.SCREEN_BRIGHT_WAKE_LOCK
@@ -123,6 +171,7 @@ public class PowerManagerTest extends AndroidTestCase {
      *
      * @throws Exception
      */
+    @Test
     @SmallTest
     public void testWakeLockWithWorkChains() throws Exception {
         PowerManager.WakeLock wakeLock = mPm.newWakeLock(
@@ -276,5 +325,187 @@ public class PowerManagerTest extends AndroidTestCase {
             fail("UnsupportedOperationException not thrown");
         } catch (UnsupportedOperationException expected) {
         }
+    }
+
+    /**
+     * Helper function to obtain a PowerSaveState as parcel from native, with
+     * specified parameters, and verify the PowerSaveState object created from the parcel.
+     */
+    private void unparcelPowerSaveStateFromNativeAndVerify(boolean batterySaverEnabled,
+            boolean globalBatterySaverEnabled, int locationMode, int soundTriggerMode,
+            float brightnessFactor) {
+        // Obtain PowerSaveState as parcel from native, with parameters.
+        Parcel psParcel = nativeObtainPowerSaveStateParcel(batterySaverEnabled,
+                 globalBatterySaverEnabled, locationMode, soundTriggerMode, brightnessFactor);
+        // Verify the parcel.
+        PowerSaveState ps = PowerSaveState.CREATOR.createFromParcel(psParcel);
+        assertEquals(ps.batterySaverEnabled, batterySaverEnabled);
+        assertEquals(ps.globalBatterySaverEnabled, globalBatterySaverEnabled);
+        assertEquals(ps.locationMode, locationMode);
+        assertEquals(ps.soundTriggerMode, soundTriggerMode);
+        assertEquals(ps.brightnessFactor, brightnessFactor, 0.01f);
+    }
+
+    /**
+     * Helper function to send a PowerSaveState as parcel to native, with
+     * specified parameters. Native will verify the PowerSaveState in native is expected.
+     */
+    private void parcelPowerSaveStateToNativeAndVerify(boolean batterySaverEnabled,
+            boolean globalBatterySaverEnabled, int locationMode, int soundTriggerMode,
+            float brightnessFactor) {
+        Parcel psParcel = Parcel.obtain();
+        // PowerSaveState API blocks Builder.build(), generate a parcel instead of object.
+        PowerSaveState ps = new PowerSaveState.Builder()
+                .setBatterySaverEnabled(batterySaverEnabled)
+                .setGlobalBatterySaverEnabled(globalBatterySaverEnabled)
+                .setLocationMode(locationMode)
+                .setBrightnessFactor(brightnessFactor).build();
+        ps.writeToParcel(psParcel, 0 /* flags */);
+        psParcel.setDataPosition(0);
+        //Set the PowerSaveState as parcel to native and verify in native space.
+        nativeUnparcelAndVerifyPowerSaveState(psParcel, batterySaverEnabled,
+                globalBatterySaverEnabled, locationMode, soundTriggerMode, brightnessFactor);
+    }
+
+    /**
+     * Helper function to obtain a BatterySaverPolicyConfig as parcel from native, with
+     * specified parameters, and verify the BatterySaverPolicyConfig object created from the parcel.
+     */
+    private void unparcelBatterySaverPolicyFromNativeAndVerify(BatterySaverPolicyConfig bsIn) {
+        // Obtain BatterySaverPolicyConfig as parcel from native, with parameters.
+        String[] keys = bsIn.getDeviceSpecificSettings().keySet().toArray(
+                    new String[bsIn.getDeviceSpecificSettings().keySet().size()]);
+        String[] values = bsIn.getDeviceSpecificSettings().values().toArray(
+                    new String[bsIn.getDeviceSpecificSettings().values().size()]);
+        Parcel bsParcel = nativeObtainBSPConfigParcel(bsIn, keys, values);
+        BatterySaverPolicyConfig bsOut =
+                BatterySaverPolicyConfig.CREATOR.createFromParcel(bsParcel);
+        assertEquals(bsIn.toString(), bsOut.toString());
+    }
+
+    /**
+     * Helper function to send a BatterySaverPolicyConfig as parcel to native, with
+     * specified parameters.
+     * Native will verify BatterySaverPolicyConfig from native is expected.
+     */
+    private void parcelBatterySaverPolicyConfigToNativeAndVerify(BatterySaverPolicyConfig bsIn) {
+        Parcel bsParcel = Parcel.obtain();
+        bsIn.writeToParcel(bsParcel, 0 /* flags */);
+        bsParcel.setDataPosition(0);
+        // Set the BatterySaverPolicyConfig as parcel to native.
+        String[] keys = bsIn.getDeviceSpecificSettings().keySet().toArray(
+                    new String[bsIn.getDeviceSpecificSettings().keySet().size()]);
+        String[] values = bsIn.getDeviceSpecificSettings().values().toArray(
+                    new String[bsIn.getDeviceSpecificSettings().values().size()]);
+        // Set the BatterySaverPolicyConfig as parcel to native and verify in native space.
+        nativeUnparcelAndVerifyBSPConfig(bsParcel, bsIn, keys, values);
+    }
+
+    /**
+     * Confirm that we can pass PowerSaveState from native to Java.
+     *
+     * @throws Exception
+     */
+    @Test
+    public void testPowerSaveStateNativeToJava() {
+        unparcelPowerSaveStateFromNativeAndVerify(false /* batterySaverEnabled */,
+                false /* globalBatterySaverEnabled */,
+                PowerManager.LOCATION_MODE_FOREGROUND_ONLY,
+                PowerManager.SOUND_TRIGGER_MODE_CRITICAL_ONLY,
+                0.3f /* brightnessFactor */);
+        unparcelPowerSaveStateFromNativeAndVerify(true /* batterySaverEnabled */,
+                true  /* globalBatterySaverEnabled */,
+                PowerManager.LOCATION_MODE_GPS_DISABLED_WHEN_SCREEN_OFF,
+                PowerManager.SOUND_TRIGGER_MODE_ALL_DISABLED,
+                0.5f /* brightnessFactor */);
+    }
+
+    /**
+     * Confirm that we can pass PowerSaveState from Java to native.
+     *
+     * @throws Exception
+     */
+    @Test
+    public void testSetPowerSaveStateJavaToNative() {
+        parcelPowerSaveStateToNativeAndVerify(false /* batterySaverEnabled */,
+                false /* globalBatterySaverEnabled */,
+                PowerManager.LOCATION_MODE_FOREGROUND_ONLY,
+                PowerManager.SOUND_TRIGGER_MODE_CRITICAL_ONLY,
+                0.3f /* brightnessFactor */);
+        parcelPowerSaveStateToNativeAndVerify(true /* batterySaverEnabled */,
+                true  /* globalBatterySaverEnabled */,
+                PowerManager.LOCATION_MODE_GPS_DISABLED_WHEN_SCREEN_OFF,
+                PowerManager.SOUND_TRIGGER_MODE_ALL_DISABLED,
+                0.5f /* brightnessFactor */);
+    }
+
+    /**
+     * Confirm that we can pass BatterySaverPolicyConfig from native to Java.
+     *
+     * @throws Exception
+     */
+    @Test
+    public void testBatterySaverPolicyConfigNativeToJava() {
+        BatterySaverPolicyConfig bs1 = new BatterySaverPolicyConfig.Builder()
+                .setAdjustBrightnessFactor(0.55f)
+                .setAdvertiseIsEnabled(true)
+                .setDeferFullBackup(true)
+                .setForceBackgroundCheck(true)
+                .setLocationMode(PowerManager.LOCATION_MODE_FOREGROUND_ONLY).build();
+        BatterySaverPolicyConfig bs2 = new BatterySaverPolicyConfig.Builder()
+                .setAdjustBrightnessFactor(0.55f)
+                .setAdvertiseIsEnabled(true)
+                .setLocationMode(PowerManager.LOCATION_MODE_FOREGROUND_ONLY)
+                .addDeviceSpecificSetting("Key1" /* key */, "Value1" /* value */)
+                .addDeviceSpecificSetting("Key2" /* key */, "Value2" /* value */)
+                .setDeferFullBackup(true).build();
+
+        unparcelBatterySaverPolicyFromNativeAndVerify(bs1);
+        unparcelBatterySaverPolicyFromNativeAndVerify(bs2);
+    }
+
+    /**
+     * Confirm that we can pass BatterySaverPolicyConfig from Java to native.
+     *
+     * @throws Exception
+     */
+    @Test
+    public void testBatterySaverPolicyConfigFromJavaToNative() {
+        BatterySaverPolicyConfig bs1 = new BatterySaverPolicyConfig.Builder()
+                .setAdjustBrightnessFactor(0.55f)
+                .setAdvertiseIsEnabled(true)
+                .setDeferFullBackup(true).build();
+        BatterySaverPolicyConfig bs2 = new BatterySaverPolicyConfig.Builder()
+                .setAdjustBrightnessFactor(0.55f)
+                .setAdvertiseIsEnabled(true)
+                .addDeviceSpecificSetting("Key1" /* key */, "Value1" /* value */)
+                .addDeviceSpecificSetting("Key2" /* key */, "Value2" /* value */)
+                .setDeferFullBackup(true).build();
+        parcelBatterySaverPolicyConfigToNativeAndVerify(bs1);
+        parcelBatterySaverPolicyConfigToNativeAndVerify(bs2);
+    }
+
+    @Test
+    @RequiresFlagsEnabled(Flags.FLAG_BATTERY_SAVER_SUPPORTED_CHECK_API)
+    public void testBatterySaverSupported_isSupported() throws RemoteException {
+        IPowerManager powerManager = mock(IPowerManager.class);
+        PowerManager pm = new PowerManager(mContext, powerManager,
+                mock(IThermalService.class),
+                Handler.createAsync(Looper.getMainLooper()));
+        when(powerManager.isBatterySaverSupported()).thenReturn(true);
+
+        assertTrue(pm.isBatterySaverSupported());
+    }
+
+    @Test
+    @RequiresFlagsEnabled(Flags.FLAG_BATTERY_SAVER_SUPPORTED_CHECK_API)
+    public void testBatterySaverSupported_isNotSupported() throws RemoteException {
+        IPowerManager powerManager = mock(IPowerManager.class);
+        PowerManager pm = new PowerManager(mContext, powerManager,
+                mock(IThermalService.class),
+                Handler.createAsync(Looper.getMainLooper()));
+        when(powerManager.isBatterySaverSupported()).thenReturn(false);
+
+        assertFalse(pm.isBatterySaverSupported());
     }
 }

@@ -21,6 +21,7 @@ import android.util.ArrayMap;
 import android.util.Slog;
 
 import java.io.PrintWriter;
+import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 
 /**
@@ -51,6 +52,7 @@ import java.util.function.Consumer;
  * additional work in this situation, you can create a subclass that
  * implements the {@link #onCallbackDied} method.
  */
+@android.ravenwood.annotation.RavenwoodKeepWholeClass
 public class RemoteCallbackList<E extends IInterface> {
     private static final String TAG = "RemoteCallbackList";
 
@@ -272,7 +274,7 @@ public class RemoteCallbackList<E extends IInterface> {
      * handle such an exception by simply ignoring it.
      *
      * @param index Which of the registered callbacks you would like to
-     * retrieve.  Ranges from 0 to 1-{@link #beginBroadcast}.
+     * retrieve.  Ranges from 0 to {@link #beginBroadcast}-1, inclusive.
      *
      * @return Returns the callback interface that you can call.  This will
      * always be non-null.
@@ -347,6 +349,23 @@ public class RemoteCallbackList<E extends IInterface> {
         try {
             for (int i = 0; i < itemCount; i++) {
                 action.accept((C) getBroadcastCookie(i));
+            }
+        } finally {
+            finishBroadcast();
+        }
+    }
+
+    /**
+     * Performs {@code action} on each callback and associated cookie, calling {@link
+     * #beginBroadcast()}/{@link #finishBroadcast()} before/after looping.
+     *
+     * @hide
+     */
+    public <C> void broadcast(BiConsumer<E, C> action) {
+        int itemCount = beginBroadcast();
+        try {
+            for (int i = 0; i < itemCount; i++) {
+                action.accept(getBroadcastItem(i), (C) getBroadcastCookie(i));
             }
         } finally {
             finishBroadcast();

@@ -15,6 +15,7 @@
  */
 package android.app;
 
+import android.app.ActivityOptions.SceneTransitionInfo;
 import android.content.Intent;
 import android.os.Bundle;
 import android.os.ResultReceiver;
@@ -81,9 +82,9 @@ class ActivityTransitionState {
     private EnterTransitionCoordinator mEnterTransitionCoordinator;
 
     /**
-     * ActivityOptions used on entering this Activity.
+     * {@link SceneTransitionInfo} used on entering this Activity.
      */
-    private ActivityOptions mEnterActivityOptions;
+    private SceneTransitionInfo mEnterSceneTransitionInfo;
 
     /**
      * Has an exit transition been started? If so, we don't want to double-exit.
@@ -119,7 +120,7 @@ class ActivityTransitionState {
         for (int i = mExitTransitionCoordinators.size() - 1; i >= 0; i--) {
             WeakReference<ExitTransitionCoordinator> oldRef
                     = mExitTransitionCoordinators.valueAt(i);
-            if (oldRef.get() == null) {
+            if (oldRef.refersTo(null)) {
                 mExitTransitionCoordinators.removeAt(i);
             }
         }
@@ -145,7 +146,10 @@ class ActivityTransitionState {
      * that it is preserved through activty destroy and restore.
      */
     private ArrayList<String> getPendingExitNames() {
-        if (mPendingExitNames == null && mEnterTransitionCoordinator != null) {
+        if (mPendingExitNames == null
+                && mEnterTransitionCoordinator != null
+                && !mEnterTransitionCoordinator.isReturning()
+        ) {
             mPendingExitNames = mEnterTransitionCoordinator.getPendingExitSharedElementNames();
         }
         return mPendingExitNames;
@@ -162,7 +166,7 @@ class ActivityTransitionState {
         }
     }
 
-    public void setEnterActivityOptions(Activity activity, ActivityOptions options) {
+    public void setEnterSceneTransitionInfo(Activity activity, SceneTransitionInfo info) {
         final Window window = activity.getWindow();
         if (window == null) {
             return;
@@ -170,16 +174,15 @@ class ActivityTransitionState {
         // ensure Decor View has been created so that the window features are activated
         window.getDecorView();
         if (window.hasFeature(Window.FEATURE_ACTIVITY_TRANSITIONS)
-                && options != null && mEnterActivityOptions == null
-                && mEnterTransitionCoordinator == null
-                && options.getAnimationType() == ActivityOptions.ANIM_SCENE_TRANSITION) {
-            mEnterActivityOptions = options;
+                && info != null && mEnterSceneTransitionInfo == null
+                && mEnterTransitionCoordinator == null) {
+            mEnterSceneTransitionInfo = info;
             mIsEnterTriggered = false;
-            if (mEnterActivityOptions.isReturning()) {
+            if (mEnterSceneTransitionInfo.isReturning()) {
                 restoreExitedViews();
-                int result = mEnterActivityOptions.getResultCode();
+                int result = mEnterSceneTransitionInfo.getResultCode();
                 if (result != 0) {
-                    Intent intent = mEnterActivityOptions.getResultData();
+                    Intent intent = mEnterSceneTransitionInfo.getResultData();
                     if (intent != null) {
                         intent.setExtrasClassLoader(activity.getClassLoader());
                     }
@@ -190,24 +193,26 @@ class ActivityTransitionState {
     }
 
     public void enterReady(Activity activity) {
-        if (mEnterActivityOptions == null || mIsEnterTriggered) {
+        if (mEnterSceneTransitionInfo == null || mIsEnterTriggered) {
             return;
         }
         mIsEnterTriggered = true;
         mHasExited = false;
-        ArrayList<String> sharedElementNames = mEnterActivityOptions.getSharedElementNames();
-        ResultReceiver resultReceiver = mEnterActivityOptions.getResultReceiver();
-        final boolean isReturning = mEnterActivityOptions.isReturning();
+        final ArrayList<String> sharedElementNames =
+                mEnterSceneTransitionInfo.getSharedElementNames();
+        ResultReceiver resultReceiver = mEnterSceneTransitionInfo.getResultReceiver();
+        final boolean isReturning = mEnterSceneTransitionInfo.isReturning();
         if (isReturning) {
             restoreExitedViews();
             activity.getWindow().getDecorView().setVisibility(View.VISIBLE);
         }
+        getPendingExitNames(); // Set mPendingExitNames before resetting mEnterTransitionCoordinator
         mEnterTransitionCoordinator = new EnterTransitionCoordinator(activity,
-                resultReceiver, sharedElementNames, mEnterActivityOptions.isReturning(),
-                mEnterActivityOptions.isCrossTask());
-        if (mEnterActivityOptions.isCrossTask()) {
-            mExitingFrom = new ArrayList<>(mEnterActivityOptions.getSharedElementNames());
-            mExitingTo = new ArrayList<>(mEnterActivityOptions.getSharedElementNames());
+                resultReceiver, sharedElementNames, mEnterSceneTransitionInfo.isReturning(),
+                mEnterSceneTransitionInfo.isCrossTask());
+        if (mEnterSceneTransitionInfo.isCrossTask() && sharedElementNames != null) {
+            mExitingFrom = new ArrayList<>(sharedElementNames);
+            mExitingTo = new ArrayList<>(sharedElementNames);
         }
 
         if (!mIsEnterPostponed) {
@@ -244,17 +249,18 @@ class ActivityTransitionState {
         mExitingFrom = null;
         mExitingTo = null;
         mExitingToView = null;
-        mEnterActivityOptions = null;
+        mEnterSceneTransitionInfo = null;
     }
 
-    public void onStop() {
+    public void onStop(Activity activity) {
         restoreExitedViews();
         if (mEnterTransitionCoordinator != null) {
+            getPendingExitNames(); // Set mPendingExitNames before clearing
             mEnterTransitionCoordinator.stop();
             mEnterTransitionCoordinator = null;
         }
         if (mReturnExitCoordinator != null) {
-            mReturnExitCoordinator.stop();
+            mReturnExitCoordinator.stop(activity);
             mReturnExitCoordinator = null;
         }
     }
@@ -275,6 +281,7 @@ class ActivityTransitionState {
                         restoreReenteringViews();
                     } else if (mEnterTransitionCoordinator.isReturning()) {
                         mEnterTransitionCoordinator.runAfterTransitionsComplete(() -> {
+                            getPendingExitNames(); // Set mPendingExitNames before clearing
                             mEnterTransitionCoordinator = null;
                         });
                     }
@@ -290,7 +297,7 @@ class ActivityTransitionState {
         mExitingToView = null;
         mCalledExitCoordinator = null;
         mEnterTransitionCoordinator = null;
-        mEnterActivityOptions = null;
+        mEnterSceneTransitionInfo = null;
         mExitTransitionCoordinators = null;
     }
 
@@ -331,7 +338,8 @@ class ActivityTransitionState {
                     }
                 }
 
-                mReturnExitCoordinator = new ExitTransitionCoordinator(activity,
+                mReturnExitCoordinator = new ExitTransitionCoordinator(
+                        new ExitTransitionCoordinator.ActivityExitTransitionCallbacks(activity),
                         activity.getWindow(), activity.mEnterTransitionListener, pendingExitNames,
                         null, null, true);
                 if (enterViewsTransition != null && decor != null) {
@@ -341,12 +349,11 @@ class ActivityTransitionState {
                     final ViewGroup finalDecor = decor;
                     OneShotPreDrawListener.add(decor, () -> {
                         if (mReturnExitCoordinator != null) {
-                            mReturnExitCoordinator.startExit(activity.mResultCode,
-                                    activity.mResultData);
+                            mReturnExitCoordinator.startExit(activity);
                         }
                     });
                 } else {
-                    mReturnExitCoordinator.startExit(activity.mResultCode, activity.mResultData);
+                    mReturnExitCoordinator.startExit(activity);
                 }
             }
             return true;
@@ -374,14 +381,16 @@ class ActivityTransitionState {
     }
 
     public void startExitOutTransition(Activity activity, Bundle options) {
+        getPendingExitNames(); // Set mPendingExitNames before clearing mEnterTransitionCoordinator
         mEnterTransitionCoordinator = null;
         if (!activity.getWindow().hasFeature(Window.FEATURE_ACTIVITY_TRANSITIONS) ||
                 mExitTransitionCoordinators == null) {
             return;
         }
-        ActivityOptions activityOptions = new ActivityOptions(options);
-        if (activityOptions.getAnimationType() == ActivityOptions.ANIM_SCENE_TRANSITION) {
-            int key = activityOptions.getExitCoordinatorKey();
+        final ActivityOptions activityOptions = new ActivityOptions(options);
+        final SceneTransitionInfo info = activityOptions.getSceneTransitionInfo();
+        if (info != null) {
+            int key = info.getExitCoordinatorKey();
             int index = mExitTransitionCoordinators.indexOfKey(key);
             if (index >= 0) {
                 mCalledExitCoordinator = mExitTransitionCoordinators.valueAt(index).get();

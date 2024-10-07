@@ -17,18 +17,26 @@
 package com.android.server.wm;
 
 
+import static com.android.internal.protolog.ProtoLogGroup.WM_DEBUG_EMBEDDED_WINDOWS;
+import static com.android.server.wm.IdentifierProto.HASH_CODE;
+import static com.android.server.wm.IdentifierProto.TITLE;
 import static com.android.server.wm.WindowManagerDebugConfig.TAG_WITH_CLASS_NAME;
 import static com.android.server.wm.WindowManagerDebugConfig.TAG_WM;
+import static com.android.server.wm.WindowStateProto.IDENTIFIER;
 
+import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.os.IBinder;
 import android.os.RemoteException;
-import android.os.UserHandle;
 import android.util.ArrayMap;
 import android.util.Slog;
-import android.view.IWindow;
+import android.util.proto.ProtoOutputStream;
 import android.view.InputApplicationHandle;
 import android.view.InputChannel;
+import android.window.InputTransferToken;
+
+import com.android.internal.protolog.common.ProtoLog;
+import com.android.server.input.InputManagerService;
 
 /**
  * Keeps track of embedded windows.
@@ -41,12 +49,20 @@ class EmbeddedWindowController {
     private static final String TAG = TAG_WITH_CLASS_NAME ? "EmbeddedWindowController" : TAG_WM;
     /* maps input token to an embedded window */
     private ArrayMap<IBinder /*input token */, EmbeddedWindow> mWindows = new ArrayMap<>();
+    private ArrayMap<InputTransferToken /*input transfer token */, EmbeddedWindow>
+            mWindowsByInputTransferToken = new ArrayMap<>();
+    private ArrayMap<IBinder /*window token*/, EmbeddedWindow> mWindowsByWindowToken =
+        new ArrayMap<>();
     private final Object mGlobalLock;
     private final ActivityTaskManagerService mAtmService;
 
-    EmbeddedWindowController(ActivityTaskManagerService atmService) {
+    private final InputManagerService mInputManagerService;
+
+    EmbeddedWindowController(ActivityTaskManagerService atmService,
+            InputManagerService inputManagerService) {
         mAtmService = atmService;
         mGlobalLock = atmService.getGlobalLock();
+        mInputManagerService = inputManagerService;
     }
 
     /**
@@ -59,10 +75,16 @@ class EmbeddedWindowController {
     void add(IBinder inputToken, EmbeddedWindow window) {
         try {
             mWindows.put(inputToken, window);
+            final InputTransferToken inputTransferToken = window.getInputTransferToken();
+            mWindowsByInputTransferToken.put(inputTransferToken, window);
+            final IBinder windowToken = window.getWindowToken();
+            mWindowsByWindowToken.put(windowToken, window);
             updateProcessController(window);
-            window.mClient.asBinder().linkToDeath(()-> {
+            window.mClient.linkToDeath(()-> {
                 synchronized (mGlobalLock) {
                     mWindows.remove(inputToken);
+                    mWindowsByInputTransferToken.remove(inputTransferToken);
+                    mWindowsByWindowToken.remove(windowToken);
                 }
             }, 0);
         } catch (RemoteException e) {
@@ -88,15 +110,13 @@ class EmbeddedWindowController {
         }
     }
 
-    WindowState getHostWindow(IBinder inputToken) {
-        EmbeddedWindow embeddedWindow = mWindows.get(inputToken);
-        return embeddedWindow != null ? embeddedWindow.mHostWindowState : null;
-    }
-
-    void remove(IWindow client) {
+    void remove(IBinder client) {
         for (int i = mWindows.size() - 1; i >= 0; i--) {
-            if (mWindows.valueAt(i).mClient.asBinder() == client.asBinder()) {
+            EmbeddedWindow ew = mWindows.valueAt(i);
+            if (ew.mClient == client) {
                 mWindows.removeAt(i).onRemoved();
+                mWindowsByInputTransferToken.remove(ew.getInputTransferToken());
+                mWindowsByWindowToken.remove(ew.getWindowToken());
                 return;
             }
         }
@@ -104,8 +124,11 @@ class EmbeddedWindowController {
 
     void onWindowRemoved(WindowState host) {
         for (int i = mWindows.size() - 1; i >= 0; i--) {
-            if (mWindows.valueAt(i).mHostWindowState == host) {
+            EmbeddedWindow ew = mWindows.valueAt(i);
+            if (ew.mHostWindowState == host) {
                 mWindows.removeAt(i).onRemoved();
+                mWindowsByInputTransferToken.remove(ew.getInputTransferToken());
+                mWindowsByWindowToken.remove(ew.getWindowToken());
             }
         }
     }
@@ -114,30 +137,93 @@ class EmbeddedWindowController {
         return mWindows.get(inputToken);
     }
 
-    void onActivityRemoved(ActivityRecord activityRecord) {
-        for (int i = mWindows.size() - 1; i >= 0; i--) {
-            final EmbeddedWindow window = mWindows.valueAt(i);
-            if (window.mHostActivityRecord == activityRecord) {
-                final WindowProcessController processController =
-                        mAtmService.getProcessController(window.mOwnerPid, window.mOwnerUid);
-                if (processController != null) {
-                    processController.removeHostActivity(activityRecord);
-                }
-            }
-        }
+    EmbeddedWindow getByInputTransferToken(InputTransferToken inputTransferToken) {
+        return mWindowsByInputTransferToken.get(inputTransferToken);
     }
 
-    static class EmbeddedWindow {
-        final IWindow mClient;
+    EmbeddedWindow getByWindowToken(IBinder windowToken) {
+        return mWindowsByWindowToken.get(windowToken);
+    }
+
+    private boolean isValidTouchGestureParams(WindowState hostWindowState,
+            EmbeddedWindow embeddedWindow) {
+        if (embeddedWindow == null) {
+            ProtoLog.w(WM_DEBUG_EMBEDDED_WINDOWS,
+                    "Attempt to transfer touch gesture with non-existent embedded window");
+            return false;
+        }
+        final WindowState wsAssociatedWithEmbedded = embeddedWindow.getWindowState();
+        if (wsAssociatedWithEmbedded == null) {
+            ProtoLog.w(WM_DEBUG_EMBEDDED_WINDOWS,
+                    "Attempt to transfer touch gesture using embedded window with no associated "
+                            + "host");
+            return false;
+        }
+        if (wsAssociatedWithEmbedded.mClient.asBinder() != hostWindowState.mClient.asBinder()) {
+            ProtoLog.w(WM_DEBUG_EMBEDDED_WINDOWS,
+                    "Attempt to transfer touch gesture with host window not associated with "
+                            + "embedded window");
+            return false;
+        }
+
+        if (embeddedWindow.getInputChannelToken() == null) {
+            ProtoLog.w(WM_DEBUG_EMBEDDED_WINDOWS,
+                    "Attempt to transfer touch gesture using embedded window that has no input "
+                            + "channel");
+            return false;
+        }
+        if (hostWindowState.mInputChannelToken == null) {
+            ProtoLog.w(WM_DEBUG_EMBEDDED_WINDOWS,
+                    "Attempt to transfer touch gesture using a host window with no input channel");
+            return false;
+        }
+        return true;
+    }
+
+    boolean transferToHost(@NonNull InputTransferToken embeddedWindowToken,
+            @NonNull WindowState transferToHostWindowState) {
+        EmbeddedWindow ew = getByInputTransferToken(embeddedWindowToken);
+        if (!isValidTouchGestureParams(transferToHostWindowState, ew)) {
+            return false;
+        }
+        return mInputManagerService.transferTouchGesture(ew.getInputChannelToken(),
+                transferToHostWindowState.mInputChannelToken);
+    }
+
+    boolean transferToEmbedded(WindowState hostWindowState,
+            @NonNull InputTransferToken transferToToken) {
+        final EmbeddedWindowController.EmbeddedWindow ew = getByInputTransferToken(transferToToken);
+        if (!isValidTouchGestureParams(hostWindowState, ew)) {
+            return false;
+        }
+        return mInputManagerService.transferTouchGesture(hostWindowState.mInputChannelToken,
+                ew.getInputChannelToken());
+    }
+
+    static class EmbeddedWindow implements InputTarget {
+        final IBinder mClient;
         @Nullable final WindowState mHostWindowState;
         @Nullable final ActivityRecord mHostActivityRecord;
+        final String mName;
         final int mOwnerUid;
         final int mOwnerPid;
         final WindowManagerService mWmService;
+        final int mDisplayId;
+        public Session mSession;
         InputChannel mInputChannel;
         final int mWindowType;
 
         /**
+         * A unique token associated with the embedded window that can be used by the host window
+         * to request focus transfer and gesture transfer to the embedded. This is not the input
+         * token since we don't want to give clients access to each others input token.
+         */
+        private final InputTransferToken mInputTransferToken;
+
+        private boolean mIsFocusable;
+
+        /**
+         * @param session  calling session to check ownership of the window
          * @param clientToken client token used to clean up the map if the embedding process dies
          * @param hostWindowState input channel token belonging to the host window. This is needed
          *                        to handle input callbacks to wm. It's used when raising ANR and
@@ -145,9 +231,14 @@ class EmbeddedWindowController {
          *                        can be null if there is no host window.
          * @param ownerUid  calling uid
          * @param ownerPid  calling pid used for anr blaming
+         * @param windowType to forward to input
+         * @param displayId used for focus requests
          */
-        EmbeddedWindow(WindowManagerService service, IWindow clientToken,
-                WindowState hostWindowState, int ownerUid, int ownerPid, int windowType) {
+        EmbeddedWindow(Session session, WindowManagerService service, IBinder clientToken,
+                       WindowState hostWindowState, int ownerUid, int ownerPid, int windowType,
+                       int displayId, InputTransferToken inputTransferToken, String inputHandleName,
+                       boolean isFocusable) {
+            mSession = session;
             mWmService = service;
             mClient = clientToken;
             mHostWindowState = hostWindowState;
@@ -156,46 +247,170 @@ class EmbeddedWindowController {
             mOwnerUid = ownerUid;
             mOwnerPid = ownerPid;
             mWindowType = windowType;
+            mDisplayId = displayId;
+            mInputTransferToken = inputTransferToken;
+            final String hostWindowName =
+                    (mHostWindowState != null) ? "-" + mHostWindowState.getWindowTag().toString()
+                            : "";
+            mIsFocusable = isFocusable;
+            mName = "Embedded{" + inputHandleName + hostWindowName + "}";
         }
 
-        String getName() {
-            final String hostWindowName = (mHostWindowState != null)
-                    ? mHostWindowState.getWindowTag().toString() : "Internal";
-            return "EmbeddedWindow{ u" + UserHandle.getUserId(mOwnerUid) + " " + hostWindowName
-                    + "}";
+        @Override
+        public String toString() {
+            return mName;
         }
 
         InputApplicationHandle getApplicationHandle() {
             if (mHostWindowState == null
-                    || mHostWindowState.mInputWindowHandle.inputApplicationHandle == null) {
+                    || mHostWindowState.mInputWindowHandle.getInputApplicationHandle() == null) {
                 return null;
             }
             return new InputApplicationHandle(
-                    mHostWindowState.mInputWindowHandle.inputApplicationHandle);
+                    mHostWindowState.mInputWindowHandle.getInputApplicationHandle());
         }
 
-        InputChannel openInputChannel() {
-            final String name = getName();
-
-            final InputChannel[] inputChannels = InputChannel.openInputChannelPair(name);
-            mInputChannel = inputChannels[0];
-            final InputChannel clientChannel = inputChannels[1];
-            mWmService.mInputManager.registerInputChannel(mInputChannel);
-
-            if (mInputChannel.getToken() != clientChannel.getToken()) {
-                throw new IllegalStateException("Client and Server tokens are expected to"
-                        + "be the same");
-            }
-
-            return clientChannel;
+        void openInputChannel(@NonNull InputChannel outInputChannel) {
+            final String name = toString();
+            mInputChannel = mWmService.mInputManager.createInputChannel(name);
+            mInputChannel.copyTo(outInputChannel);
         }
 
         void onRemoved() {
             if (mInputChannel != null) {
-                mWmService.mInputManager.unregisterInputChannel(mInputChannel);
+                mWmService.mInputManager.removeInputChannel(mInputChannel.getToken());
                 mInputChannel.dispose();
                 mInputChannel = null;
             }
+            if (mHostActivityRecord != null) {
+                final WindowProcessController wpc =
+                        mWmService.mAtmService.getProcessController(mOwnerPid, mOwnerUid);
+                if (wpc != null) {
+                    wpc.removeHostActivity(mHostActivityRecord);
+                }
+            }
+        }
+
+        @Override
+        public WindowState getWindowState() {
+            return mHostWindowState;
+        }
+
+        @Override
+        public int getDisplayId() {
+            return mDisplayId;
+        }
+
+        @Override
+        public DisplayContent getDisplayContent() {
+            return mWmService.mRoot.getDisplayContent(getDisplayId());
+        }
+
+        public IBinder getWindowToken() {
+            return mClient;
+        }
+
+        @Override
+        public int getPid() {
+            return mOwnerPid;
+        }
+
+        @Override
+        public int getUid() {
+            return mOwnerUid;
+        }
+
+        InputTransferToken getInputTransferToken() {
+            return mInputTransferToken;
+        }
+
+        IBinder getInputChannelToken() {
+            if (mInputChannel != null) {
+                return mInputChannel.getToken();
+            }
+            return null;
+        }
+
+        void setIsFocusable(boolean isFocusable) {
+            mIsFocusable = isFocusable;
+        }
+
+        /**
+         * When an embedded window is touched when it's not currently focus, we need to switch
+         * focus to that embedded window unless the embedded window was marked as not focusable.
+         */
+        @Override
+        public boolean receiveFocusFromTapOutside() {
+            return mIsFocusable;
+        }
+
+        private void handleTap(boolean grantFocus) {
+            if (mInputChannel != null) {
+                if (mHostWindowState != null) {
+                    // Use null session since this is being granted by system server and doesn't
+                    // require the host session to be passed in
+                    mWmService.grantEmbeddedWindowFocus(null, mHostWindowState.mClient,
+                            mInputTransferToken, grantFocus);
+                    if (grantFocus) {
+                        // If granting focus to the embedded when tapped, we need to ensure the host
+                        // gains focus as well or the transfer won't take effect since it requires
+                        // the host to transfer the focus to the embedded.
+                        mHostWindowState.handleTapOutsideFocusInsideSelf();
+                    }
+                } else {
+                    mWmService.grantEmbeddedWindowFocus(mSession, mInputTransferToken, grantFocus);
+                }
+            }
+        }
+
+        @Override
+        public void handleTapOutsideFocusOutsideSelf() {
+            handleTap(false);
+        }
+
+        @Override
+        public void handleTapOutsideFocusInsideSelf() {
+            handleTap(true);
+        }
+
+        @Override
+        public boolean shouldControlIme() {
+            return mHostWindowState != null;
+        }
+
+        @Override
+        public boolean canScreenshotIme() {
+            return true;
+        }
+
+        @Override
+        public InsetsControlTarget getImeControlTarget() {
+            if (mHostWindowState != null) {
+                return mHostWindowState.getImeControlTarget();
+            }
+            return mWmService.getDefaultDisplayContentLocked().mRemoteInsetsControlTarget;
+        }
+
+        @Override
+        public boolean isInputMethodClientFocus(int uid, int pid) {
+            return uid == mOwnerUid && pid == mOwnerPid;
+        }
+
+        @Override
+        public ActivityRecord getActivityRecord() {
+            return mHostActivityRecord;
+        }
+
+        @Override
+        public void dumpProto(ProtoOutputStream proto, long fieldId,
+                              @WindowTraceLogLevel int logLevel) {
+            final long token = proto.start(fieldId);
+
+            final long token2 = proto.start(IDENTIFIER);
+            proto.write(HASH_CODE, System.identityHashCode(this));
+            proto.write(TITLE, "EmbeddedWindow");
+            proto.end(token2);
+            proto.end(token);
         }
     }
 }

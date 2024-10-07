@@ -3,7 +3,7 @@
     xmlns:xliff="urn:oasis:names:tc:xliff:document:1.2">
     <string name="app_label" msgid="8016145283189546017">"Sisendseadmed"</string>
     <string name="keyboard_layouts_label" msgid="6688773268302087545">"Androidi klaviatuur"</string>
-    <string name="keyboard_layout_english_uk_label" msgid="6664258463319999632">"Inglise (Ühendkuningriik)"</string>
+    <string name="keyboard_layout_english_uk_label" msgid="6664258463319999632">"Inglise (ÜK)"</string>
     <string name="keyboard_layout_english_us_label" msgid="8994890249649106291">"Inglise (USA)"</string>
     <string name="keyboard_layout_english_us_intl" msgid="3705168594034233583">"Inglise (USA), rahvusvaheline stiil"</string>
     <string name="keyboard_layout_english_us_colemak_label" msgid="4194969610343455380">"Inglise (USA), Colemaki stiil"</string>
@@ -19,6 +19,7 @@
     <string name="keyboard_layout_swiss_german_label" msgid="2305520941993314258">"Šveitsisaksa"</string>
     <string name="keyboard_layout_belgian" msgid="2011984572838651558">"Belgia"</string>
     <string name="keyboard_layout_bulgarian" msgid="8951224309972028398">"Bulgaaria"</string>
+    <string name="keyboard_layout_bulgarian_phonetic" msgid="7568914730360106653">"Bulgaaria, foneetiline"</string>
     <string name="keyboard_layout_italian" msgid="6497079660449781213">"Itaalia"</string>
     <string name="keyboard_layout_danish" msgid="8036432066627127851">"Taani"</string>
     <string name="keyboard_layout_norwegian" msgid="9090097917011040937">"Norra"</string>
@@ -49,4 +50,10 @@
     <string name="keyboard_layout_belarusian" msgid="7619281752698687588">"valgevene"</string>
     <string name="keyboard_layout_mongolian" msgid="7678483495823936626">"mongoli"</string>
     <string name="keyboard_layout_georgian" msgid="4596185456863747454">"gruusia"</string>
+    <string name="keyboard_layout_thai_kedmanee" msgid="6637147314580760938">"tai (Kedmanee)"</string>
+    <string name="keyboard_layout_thai_pattachote" msgid="2547992342794252205">"Tai (Pattachote)"</string>
+    <string name="keyboard_layout_serbian_latin" msgid="3128791759390046571">"Serbia (ladina)"</string>
+    <string name="keyboard_layout_montenegrin_latin" msgid="1467832503378949945">"Montenegro (ladina)"</string>
+    <string name="keyboard_layout_serbian_cyrillic" msgid="7013541044323542196">"serbia (kirillitsa)"</string>
+    <string name="keyboard_layout_montenegrin_cyrillic" msgid="2391253952894077421">"montenegro (kirillitsa)"</string>
 </resources>

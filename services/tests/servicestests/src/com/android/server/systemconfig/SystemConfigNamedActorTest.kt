@@ -17,12 +17,14 @@
 package com.android.server.systemconfig
 
 import android.content.Context
-import androidx.test.InstrumentationRegistry
+import android.util.Xml
+import androidx.test.platform.app.InstrumentationRegistry
 import com.android.server.SystemConfig
 import com.google.common.truth.Truth.assertThat
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertThrows
 import org.junit.Rule
 import org.junit.Test
-import org.junit.rules.ExpectedException
 import org.junit.rules.TemporaryFolder
 
 class SystemConfigNamedActorTest {
@@ -36,13 +38,10 @@ class SystemConfigNamedActorTest {
         private const val PACKAGE_TWO = "com.test.actor.two"
     }
 
-    private val context: Context = InstrumentationRegistry.getContext()
+    private val context: Context = InstrumentationRegistry.getInstrumentation().context
 
     @get:Rule
     val tempFolder = TemporaryFolder(context.filesDir)
-
-    @get:Rule
-    val expected = ExpectedException.none()
 
     private var uniqueCounter = 0
 
@@ -192,11 +191,9 @@ class SystemConfigNamedActorTest {
             </config>
         """.write()
 
-        expected.expect(IllegalStateException::class.java)
-        expected.expectMessage("Defining $ACTOR_ONE as $PACKAGE_ONE " +
+        val exc = assertThrows(IllegalStateException::class.java) { assertPermissions() }
+        assertEquals(exc.message, "Defining $ACTOR_ONE as $PACKAGE_ONE " +
                 "for the android namespace is not allowed")
-
-        assertPermissions()
     }
 
     @Test
@@ -216,17 +213,16 @@ class SystemConfigNamedActorTest {
             </config>
         """.write()
 
-        expected.expect(IllegalStateException::class.java)
-        expected.expectMessage("Duplicate actor definition for $NAMESPACE_TEST/$ACTOR_ONE;" +
+        val exc = assertThrows(IllegalStateException::class.java) { assertPermissions() }
+        assertEquals(exc.message, "Duplicate actor definition for $NAMESPACE_TEST/$ACTOR_ONE;" +
                 " defined as both $PACKAGE_ONE and $PACKAGE_TWO")
-
-        assertPermissions()
     }
 
     private fun String.write() = tempFolder.root.resolve("${uniqueCounter++}.xml")
             .writeText(this.trimIndent())
 
     private fun assertPermissions() = SystemConfig(false).apply {
-        readPermissions(tempFolder.root, 0)
-    }. let { assertThat(it.namedActors) }
+        val parser = Xml.newPullParser()
+        readPermissions(parser, tempFolder.root, 0)
+    }.let { assertThat(it.namedActors) }
 }

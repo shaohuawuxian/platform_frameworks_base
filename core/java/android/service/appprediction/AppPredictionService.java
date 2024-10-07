@@ -18,6 +18,7 @@ package android.service.appprediction;
 import static com.android.internal.util.function.pooled.PooledLambda.obtainMessage;
 
 import android.annotation.CallSuper;
+import android.annotation.FlaggedApi;
 import android.annotation.MainThread;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
@@ -31,12 +32,15 @@ import android.app.prediction.AppTargetId;
 import android.app.prediction.IPredictionCallback;
 import android.content.Intent;
 import android.content.pm.ParceledListSlice;
+import android.os.Bundle;
 import android.os.CancellationSignal;
 import android.os.Handler;
 import android.os.IBinder;
+import android.os.IRemoteCallback;
 import android.os.Looper;
 import android.os.RemoteException;
 import android.service.appprediction.IPredictionService.Stub;
+import android.service.appprediction.flags.Flags;
 import android.util.ArrayMap;
 import android.util.Log;
 import android.util.Slog;
@@ -134,6 +138,16 @@ public abstract class AppPredictionService extends Service {
                     obtainMessage(AppPredictionService::doDestroyPredictionSession,
                             AppPredictionService.this, sessionId));
         }
+
+        @FlaggedApi(Flags.FLAG_SERVICE_FEATURES_API)
+        @Override
+        public void requestServiceFeatures(AppPredictionSessionId sessionId,
+                IRemoteCallback callback) {
+            mHandler.sendMessage(
+                    obtainMessage(AppPredictionService::onRequestServiceFeatures,
+                            AppPredictionService.this, sessionId,
+                            new RemoteCallbackWrapper(callback, null)));
+        }
     };
 
     @CallSuper
@@ -224,17 +238,16 @@ public abstract class AppPredictionService extends Service {
         }
 
         final CallbackWrapper wrapper = findCallbackWrapper(callbacks, callback);
-        if (wrapper != null) {
-            removeCallbackWrapper(callbacks, wrapper);
-        }
+        removeCallbackWrapper(callbacks, wrapper);
     }
 
-    private void removeCallbackWrapper(
-                ArrayList<CallbackWrapper> callbacks, CallbackWrapper wrapper) {
-        if (callbacks == null) {
+    private void removeCallbackWrapper(@Nullable ArrayList<CallbackWrapper> callbacks,
+            @Nullable CallbackWrapper wrapper) {
+        if (callbacks == null || wrapper == null) {
             return;
         }
         callbacks.remove(wrapper);
+        wrapper.destroy();
         if (callbacks.isEmpty()) {
             onStopPredictionUpdates();
         }
@@ -264,7 +277,8 @@ public abstract class AppPredictionService extends Service {
     public abstract void onRequestPredictionUpdate(@NonNull AppPredictionSessionId sessionId);
 
     private void doDestroyPredictionSession(@NonNull AppPredictionSessionId sessionId) {
-        mSessionCallbacks.remove(sessionId);
+        final ArrayList<CallbackWrapper> callbacks = mSessionCallbacks.remove(sessionId);
+        if (callbacks != null) callbacks.forEach(CallbackWrapper::destroy);
         onDestroyPredictionSession(sessionId);
     }
 
@@ -275,6 +289,18 @@ public abstract class AppPredictionService extends Service {
      */
     @MainThread
     public void onDestroyPredictionSession(@NonNull AppPredictionSessionId sessionId) {}
+
+    /**
+     * Called by the client app to request {@link AppPredictionService} features info.
+     *
+     * @param sessionId the session's Id. It is @NonNull.
+     * @param callback the callback to return the Bundle which includes service features info. It
+     *                is @NonNull.
+     */
+    @FlaggedApi(Flags.FLAG_SERVICE_FEATURES_API)
+    @MainThread
+    public void onRequestServiceFeatures(@NonNull AppPredictionSessionId sessionId,
+            @NonNull Consumer<Bundle> callback) {}
 
     /**
      * Used by the prediction factory to send back results the client app. The can be called
@@ -314,10 +340,12 @@ public abstract class AppPredictionService extends Service {
                 @Nullable Consumer<CallbackWrapper> onBinderDied) {
             mCallback = callback;
             mOnBinderDied = onBinderDied;
-            try {
-                mCallback.asBinder().linkToDeath(this, 0);
-            } catch (RemoteException e) {
-                Slog.e(TAG, "Failed to link to death: " + e);
+            if (mOnBinderDied != null) {
+                try {
+                    mCallback.asBinder().linkToDeath(this, 0);
+                } catch (RemoteException e) {
+                    Slog.e(TAG, "Failed to link to death: " + e);
+                }
             }
         }
 
@@ -326,7 +354,13 @@ public abstract class AppPredictionService extends Service {
                 Slog.e(TAG, "Callback is null, likely the binder has died.");
                 return false;
             }
-            return mCallback.equals(callback);
+            return mCallback.asBinder().equals(callback.asBinder());
+        }
+
+        public void destroy() {
+            if (mCallback != null && mOnBinderDied != null) {
+                mCallback.asBinder().unlinkToDeath(this, 0);
+            }
         }
 
         @Override
@@ -342,6 +376,53 @@ public abstract class AppPredictionService extends Service {
 
         @Override
         public void binderDied() {
+            destroy();
+            mCallback = null;
+            if (mOnBinderDied != null) {
+                mOnBinderDied.accept(this);
+            }
+        }
+    }
+
+    private static final class RemoteCallbackWrapper implements Consumer<Bundle>,
+            IBinder.DeathRecipient {
+
+        private IRemoteCallback mCallback;
+        private final Consumer<RemoteCallbackWrapper> mOnBinderDied;
+
+        RemoteCallbackWrapper(IRemoteCallback callback,
+                @Nullable Consumer<RemoteCallbackWrapper> onBinderDied) {
+            mCallback = callback;
+            mOnBinderDied = onBinderDied;
+            if (mOnBinderDied != null) {
+                try {
+                    mCallback.asBinder().linkToDeath(this, 0);
+                } catch (RemoteException e) {
+                    Slog.e(TAG, "Failed to link to death: " + e);
+                }
+            }
+        }
+
+        public void destroy() {
+            if (mCallback != null && mOnBinderDied != null) {
+                mCallback.asBinder().unlinkToDeath(this, 0);
+            }
+        }
+
+        @Override
+        public void accept(Bundle bundle) {
+            try {
+                if (mCallback != null) {
+                    mCallback.sendResult(bundle);
+                }
+            } catch (RemoteException e) {
+                Slog.e(TAG, "Error sending result:" + e);
+            }
+        }
+
+        @Override
+        public void binderDied() {
+            destroy();
             mCallback = null;
             if (mOnBinderDied != null) {
                 mOnBinderDied.accept(this);

@@ -22,7 +22,10 @@ import static android.os.ParcelFileDescriptor.MODE_READ_ONLY;
 import static android.os.ParcelFileDescriptor.MODE_READ_WRITE;
 import static android.os.ParcelFileDescriptor.MODE_TRUNCATE;
 import static android.os.ParcelFileDescriptor.MODE_WRITE_ONLY;
+import static android.system.OsConstants.EINVAL;
+import static android.system.OsConstants.ENOSYS;
 import static android.system.OsConstants.F_OK;
+import static android.system.OsConstants.EIO;
 import static android.system.OsConstants.O_ACCMODE;
 import static android.system.OsConstants.O_APPEND;
 import static android.system.OsConstants.O_CREAT;
@@ -35,18 +38,26 @@ import static android.system.OsConstants.SPLICE_F_MORE;
 import static android.system.OsConstants.SPLICE_F_MOVE;
 import static android.system.OsConstants.S_ISFIFO;
 import static android.system.OsConstants.S_ISREG;
+import static android.system.OsConstants.S_ISSOCK;
 import static android.system.OsConstants.W_OK;
 
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.annotation.TestApi;
+import android.app.AppGlobals;
 import android.compat.annotation.UnsupportedAppUsage;
 import android.content.ContentResolver;
+import android.content.Context;
+import android.content.pm.PackageManager;
+import android.content.pm.ProviderInfo;
 import android.provider.DocumentsContract.Document;
+import android.provider.MediaStore;
 import android.system.ErrnoException;
 import android.system.Os;
 import android.system.StructStat;
 import android.text.TextUtils;
+import android.util.DataUnit;
+import android.util.EmptyArray;
 import android.util.Log;
 import android.util.Slog;
 import android.webkit.MimeTypeMap;
@@ -56,7 +67,6 @@ import com.android.internal.util.ArrayUtils;
 import com.android.internal.util.SizedInputStream;
 
 import libcore.io.IoUtils;
-import libcore.util.EmptyArray;
 
 import java.io.BufferedInputStream;
 import java.io.ByteArrayOutputStream;
@@ -86,6 +96,7 @@ import java.util.zip.CheckedInputStream;
 /**
  * Utility methods useful for working with files.
  */
+@android.ravenwood.annotation.RavenwoodKeepWholeClass
 public final class FileUtils {
     private static final String TAG = "FileUtils";
 
@@ -118,8 +129,24 @@ public final class FileUtils {
 
     // non-final so it can be toggled by Robolectric's ShadowFileUtils
     private static boolean sEnableCopyOptimizations = true;
+    private static volatile int sMediaProviderAppId = -1;
 
     private static final long COPY_CHECKPOINT_BYTES = 524288;
+
+    static {
+        sEnableCopyOptimizations = shouldEnableCopyOptimizations();
+    }
+
+    @android.ravenwood.annotation.RavenwoodReplace
+    private static boolean shouldEnableCopyOptimizations() {
+        // Advanced copy operations enabled by default
+        return true;
+    }
+
+    private static boolean shouldEnableCopyOptimizations$ravenwood() {
+        // Disabled under Ravenwood due to missing kernel support
+        return false;
+    }
 
     /**
      * Listener that is called periodically as progress is made.
@@ -138,6 +165,7 @@ public final class FileUtils {
      * @hide
      */
     @UnsupportedAppUsage
+    @android.ravenwood.annotation.RavenwoodThrow(reason = "Requires kernel support")
     public static int setPermissions(File path, int mode, int uid, int gid) {
         return setPermissions(path.getAbsolutePath(), mode, uid, gid);
     }
@@ -152,6 +180,7 @@ public final class FileUtils {
      * @hide
      */
     @UnsupportedAppUsage
+    @android.ravenwood.annotation.RavenwoodThrow(reason = "Requires kernel support")
     public static int setPermissions(String path, int mode, int uid, int gid) {
         try {
             Os.chmod(path, mode);
@@ -182,6 +211,7 @@ public final class FileUtils {
      * @hide
      */
     @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
+    @android.ravenwood.annotation.RavenwoodThrow(reason = "Requires kernel support")
     public static int setPermissions(FileDescriptor fd, int mode, int uid, int gid) {
         try {
             Os.fchmod(fd, mode);
@@ -209,6 +239,7 @@ public final class FileUtils {
      * @param to File where attributes should be copied to.
      * @hide
      */
+    @android.ravenwood.annotation.RavenwoodThrow(reason = "Requires kernel support")
     public static void copyPermissions(@NonNull File from, @NonNull File to) throws IOException {
         try {
             final StructStat stat = Os.stat(from.getAbsolutePath());
@@ -224,6 +255,7 @@ public final class FileUtils {
      * @hide
      */
     @Deprecated
+    @android.ravenwood.annotation.RavenwoodThrow(reason = "Requires kernel support")
     public static int getUid(String path) {
         try {
             return Os.stat(path).st_uid;
@@ -302,11 +334,7 @@ public final class FileUtils {
         }
         try (FileOutputStream out = new FileOutputStream(destFile)) {
             copy(in, out);
-            try {
-                Os.fsync(out.getFD());
-            } catch (ErrnoException e) {
-                throw e.rethrowAsIOException();
-            }
+            sync(out);
         }
     }
 
@@ -432,9 +460,23 @@ public final class FileUtils {
                 final StructStat st_in = Os.fstat(in);
                 final StructStat st_out = Os.fstat(out);
                 if (S_ISREG(st_in.st_mode) && S_ISREG(st_out.st_mode)) {
-                    return copyInternalSendfile(in, out, count, signal, executor, listener);
+                    try {
+                        return copyInternalSendfile(in, out, count, signal, executor, listener);
+                    } catch (ErrnoException e) {
+                        if (e.errno == EINVAL || e.errno == ENOSYS) {
+                            // sendfile(2) will fail in at least any of the following conditions:
+                            // 1. |in| doesn't support mmap(2)
+                            // 2. |out| was opened with O_APPEND
+                            // We fallback to userspace copy if that fails
+                            return copyInternalUserspace(in, out, count, signal, executor,
+                                    listener);
+                        }
+                        throw e;
+                    }
                 } else if (S_ISFIFO(st_in.st_mode) || S_ISFIFO(st_out.st_mode)) {
                     return copyInternalSplice(in, out, count, signal, executor, listener);
+                } else if (S_ISSOCK(st_in.st_mode) || S_ISSOCK(st_out.st_mode)) {
+                    return copyInternalSpliceSocket(in, out, count, signal, executor, listener);
                 }
             } catch (ErrnoException e) {
                 throw e.rethrowAsIOException();
@@ -451,6 +493,7 @@ public final class FileUtils {
      * @hide
      */
     @VisibleForTesting
+    @android.ravenwood.annotation.RavenwoodThrow(reason = "Requires kernel support")
     public static long copyInternalSplice(FileDescriptor in, FileDescriptor out, long count,
             CancellationSignal signal, Executor executor, ProgressListener listener)
             throws ErrnoException {
@@ -485,6 +528,90 @@ public final class FileUtils {
         }
         return progress;
     }
+    /**
+     * Requires one of input or output to be a socket file.
+     *
+     * @hide
+     */
+    @VisibleForTesting
+    public static long copyInternalSpliceSocket(FileDescriptor in, FileDescriptor out, long count,
+            CancellationSignal signal, Executor executor, ProgressListener listener)
+            throws ErrnoException {
+        long progress = 0;
+        long checkpoint = 0;
+        long countToRead = count;
+        long countInPipe = 0;
+        long t;
+
+        FileDescriptor[] pipes = Os.pipe();
+
+        while (countToRead > 0 || countInPipe > 0) {
+            if (countToRead > 0) {
+                t = Os.splice(in, null, pipes[1], null, Math.min(countToRead, COPY_CHECKPOINT_BYTES),
+                              SPLICE_F_MOVE | SPLICE_F_MORE);
+                if (t < 0) {
+                    // splice error
+                    Slog.e(TAG, "splice error, fdIn --> pipe, copy size:" + count +
+                           ", copied:" + progress +
+                           ", read:" + (count - countToRead) +
+                           ", in pipe:" + countInPipe);
+                    break;
+                } else if (t == 0) {
+                    // end of input, input count larger than real size
+                    Slog.w(TAG, "Reached the end of the input file. The size to be copied exceeds the actual size, copy size:" + count +
+                           ", copied:" + progress +
+                           ", read:" + (count - countToRead) +
+                           ", in pipe:" + countInPipe);
+                    countToRead = 0;
+                } else {
+                    countInPipe += t;
+                    countToRead -= t;
+                }
+            }
+
+            if (countInPipe > 0) {
+                t = Os.splice(pipes[0], null, out, null, Math.min(countInPipe, COPY_CHECKPOINT_BYTES),
+                              SPLICE_F_MOVE | SPLICE_F_MORE);
+                // The data is already in the pipeline, so the return value will not be zero.
+                // If it is 0, it means an error has occurred. So here use t<=0.
+                if (t <= 0) {
+                    Slog.e(TAG, "splice error, pipe --> fdOut, copy size:" + count +
+                           ", copied:" + progress +
+                           ", read:" + (count - countToRead) +
+                           ", in pipe: " + countInPipe);
+                    Os.close(pipes[0]);
+                    Os.close(pipes[1]);
+                    throw new ErrnoException("splice, pipe --> fdOut", EIO);
+                } else {
+                    progress += t;
+                    checkpoint += t;
+                    countInPipe -= t;
+                }
+            }
+
+            if (checkpoint >= COPY_CHECKPOINT_BYTES) {
+                if (signal != null) {
+                    signal.throwIfCanceled();
+                }
+                if (executor != null && listener != null) {
+                    final long progressSnapshot = progress;
+                    executor.execute(() -> {
+                        listener.onProgress(progressSnapshot);
+                    });
+                }
+                checkpoint = 0;
+            }
+        }
+        if (executor != null && listener != null) {
+            final long progressSnapshot = progress;
+            executor.execute(() -> {
+                listener.onProgress(progressSnapshot);
+            });
+        }
+        Os.close(pipes[0]);
+        Os.close(pipes[1]);
+        return progress;
+    }
 
     /**
      * Requires both input and output to be a regular file.
@@ -492,6 +619,7 @@ public final class FileUtils {
      * @hide
      */
     @VisibleForTesting
+    @android.ravenwood.annotation.RavenwoodThrow(reason = "Requires kernel support")
     public static long copyInternalSendfile(FileDescriptor in, FileDescriptor out, long count,
             CancellationSignal signal, Executor executor, ProgressListener listener)
             throws ErrnoException {
@@ -1152,6 +1280,7 @@ public final class FileUtils {
      *
      * @hide
      */
+    @android.ravenwood.annotation.RavenwoodThrow(blockedBy = MimeTypeMap.class)
     public static String[] splitFileName(String mimeType, String displayName) {
         String name;
         String ext;
@@ -1270,6 +1399,14 @@ public final class FileUtils {
      * Round the given size of a storage device to a nice round power-of-two
      * value, such as 256MB or 32GB. This avoids showing weird values like
      * "29.5GB" in UI.
+     * Round ranges:
+     * ...
+     * (128 GB; 256 GB]   -> 256 GB
+     * (256 GB; 512 GB]   -> 512 GB
+     * (512 GB; 1000 GB]  -> 1000 GB
+     * (1000 GB; 2000 GB] -> 2000 GB
+     * ...
+     * etc
      *
      * @hide
      */
@@ -1283,7 +1420,88 @@ public final class FileUtils {
                 pow *= 1000;
             }
         }
+
+        Log.d(TAG, String.format("Rounded bytes from %d to %d", size, val * pow));
         return val * pow;
+    }
+
+    private static long toBytes(long value, String unit) {
+        unit = unit.toUpperCase();
+
+        if ("B".equals(unit)) {
+            return value;
+        }
+
+        if ("K".equals(unit) || "KB".equals(unit)) {
+            return DataUnit.KILOBYTES.toBytes(value);
+        }
+
+        if ("M".equals(unit) || "MB".equals(unit)) {
+            return DataUnit.MEGABYTES.toBytes(value);
+        }
+
+        if ("G".equals(unit) || "GB".equals(unit)) {
+            return DataUnit.GIGABYTES.toBytes(value);
+        }
+
+        if ("KI".equals(unit) || "KIB".equals(unit)) {
+            return DataUnit.KIBIBYTES.toBytes(value);
+        }
+
+        if ("MI".equals(unit) || "MIB".equals(unit)) {
+            return DataUnit.MEBIBYTES.toBytes(value);
+        }
+
+        if ("GI".equals(unit) || "GIB".equals(unit)) {
+            return DataUnit.GIBIBYTES.toBytes(value);
+        }
+
+        return Long.MIN_VALUE;
+    }
+
+    /**
+     * @param fmtSize The string that contains the size to be parsed. The
+     *   expected format is:
+     *
+     *   <p>"^((\\s*[-+]?[0-9]+)\\s*(B|K|KB|M|MB|G|GB|Ki|KiB|Mi|MiB|Gi|GiB)\\s*)$"
+     *
+     *   <p>For example: 10Kb, 500GiB, 100mb. The unit is not case sensitive.
+     *
+     * @return the size in bytes. If {@code fmtSize} has invalid format, it
+     *   returns {@link Long#MIN_VALUE}.
+     * @hide
+     */
+    public static long parseSize(@Nullable String fmtSize) {
+        if (fmtSize == null || fmtSize.isBlank()) {
+            return Long.MIN_VALUE;
+        }
+
+        int sign = 1;
+        fmtSize = fmtSize.trim();
+        char first = fmtSize.charAt(0);
+        if (first == '-' ||  first == '+') {
+            if (first == '-') {
+                sign = -1;
+            }
+
+            fmtSize = fmtSize.substring(1);
+        }
+
+        int index = 0;
+        // Find the last index of the value in fmtSize.
+        while (index < fmtSize.length() && Character.isDigit(fmtSize.charAt(index))) {
+            index++;
+        }
+
+        // Check if number and units are present.
+        if (index == 0 || index == fmtSize.length()) {
+            return Long.MIN_VALUE;
+        }
+
+        long value = sign * Long.valueOf(fmtSize.substring(0, index));
+        String unit = fmtSize.substring(index).trim();
+
+        return toBytes(value, unit);
     }
 
     /**
@@ -1310,6 +1528,7 @@ public final class FileUtils {
      *   indicate a failure to flush bytes to the underlying resource.
      */
     @Deprecated
+    @android.ravenwood.annotation.RavenwoodThrow(reason = "Requires ART support")
     public static void closeQuietly(@Nullable FileDescriptor fd) {
         IoUtils.closeQuietly(fd);
     }
@@ -1436,6 +1655,44 @@ public final class FileUtils {
 
     /** {@hide} */
     @VisibleForTesting
+    @android.ravenwood.annotation.RavenwoodThrow(reason = "Requires kernel support")
+    public static ParcelFileDescriptor convertToModernFd(FileDescriptor fd) {
+        Context context = AppGlobals.getInitialApplication();
+        if (UserHandle.getAppId(Process.myUid()) == getMediaProviderAppId(context)) {
+            // Never convert modern fd for MediaProvider, because this requires
+            // MediaStore#scanFile and can cause infinite loops when MediaProvider scans
+            return null;
+        }
+
+        try (ParcelFileDescriptor dupFd = ParcelFileDescriptor.dup(fd)) {
+            return MediaStore.getOriginalMediaFormatFileDescriptor(context, dupFd);
+        } catch (Exception e) {
+            // Ignore error
+            return null;
+        }
+    }
+
+    @android.ravenwood.annotation.RavenwoodThrow(reason = "Requires kernel support")
+    private static int getMediaProviderAppId(Context context) {
+        if (sMediaProviderAppId != -1) {
+            return sMediaProviderAppId;
+        }
+
+        PackageManager pm = context.getPackageManager();
+        ProviderInfo provider = context.getPackageManager().resolveContentProvider(
+                MediaStore.AUTHORITY, PackageManager.MATCH_DIRECT_BOOT_AWARE
+                | PackageManager.MATCH_DIRECT_BOOT_UNAWARE
+                | PackageManager.MATCH_SYSTEM_ONLY);
+        if (provider == null) {
+            return -1;
+        }
+
+        sMediaProviderAppId = UserHandle.getAppId(provider.applicationInfo.uid);
+        return sMediaProviderAppId;
+    }
+
+    /** {@hide} */
+    @VisibleForTesting
     public static class MemoryPipe extends Thread implements AutoCloseable {
         private final FileDescriptor[] pipe;
         private final byte[] data;
@@ -1456,10 +1713,12 @@ public final class FileUtils {
             return this;
         }
 
+        @android.ravenwood.annotation.RavenwoodThrow(reason = "Requires kernel support")
         public static MemoryPipe createSource(byte[] data) throws IOException {
             return new MemoryPipe(data, false).startInternal();
         }
 
+        @android.ravenwood.annotation.RavenwoodThrow(reason = "Requires kernel support")
         public static MemoryPipe createSink(byte[] data) throws IOException {
             return new MemoryPipe(data, true).startInternal();
         }

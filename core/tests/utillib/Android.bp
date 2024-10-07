@@ -23,9 +23,10 @@ package {
 
 java_library {
     name: "frameworks-core-util-lib",
+    defaults: ["framework-connectivity-test-defaults"],
 
     srcs: ["**/*.java"],
 
     static_libs: ["junit"],
-    libs: ["android.test.base"],
+    libs: ["android.test.base.stubs"],
 }

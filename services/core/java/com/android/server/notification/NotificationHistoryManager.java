@@ -38,12 +38,12 @@ import android.util.SparseBooleanArray;
 
 import com.android.internal.annotations.GuardedBy;
 import com.android.internal.annotations.VisibleForTesting;
-import com.android.internal.util.FunctionalUtils;
 import com.android.server.IoThread;
 
 import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 
 /**
  * Keeps track of per-user notification histories.
@@ -84,6 +84,11 @@ public class NotificationHistoryManager {
     }
 
     void onBootPhaseAppsCanStart() {
+        try {
+            NotificationHistoryJobService.scheduleJob(mContext);
+        } catch (Throwable e) {
+            Slog.e(TAG, "Failed to schedule cleanup job", e);
+        }
         mSettingsObserver.observe();
     }
 
@@ -103,7 +108,7 @@ public class NotificationHistoryManager {
                 for (int i = 0; i < pendingPackageRemovals.size(); i++) {
                     userHistory.onPackageRemoved(pendingPackageRemovals.get(i));
                 }
-                mUserPendingPackageRemovals.put(userId, null);
+                mUserPendingPackageRemovals.remove(userId);
             }
 
             // delete history if it was disabled when the user was locked
@@ -111,6 +116,10 @@ public class NotificationHistoryManager {
                 disableHistory(userHistory, userId);
             }
         }
+    }
+
+    public void onUserAdded(@UserIdInt int userId) {
+        mSettingsObserver.update(null, userId);
     }
 
     public void onUserStopped(@UserIdInt int userId) {
@@ -124,7 +133,7 @@ public class NotificationHistoryManager {
         synchronized (mLock) {
             // Actual data deletion is handled by other parts of the system (the entire directory is
             // removed) - we just need clean up our internal state for GC
-            mUserPendingPackageRemovals.put(userId, null);
+            mUserPendingPackageRemovals.remove(userId);
             mHistoryEnabled.put(userId, false);
             mUserPendingHistoryDisables.put(userId, false);
             onUserStopped(userId);
@@ -151,6 +160,24 @@ public class NotificationHistoryManager {
         }
     }
 
+    public void cleanupHistoryFiles() {
+        synchronized (mLock) {
+            int n = mUserUnlockedStates.size();
+            for (int i = 0;  i < n; i++) {
+                // cleanup old files for currently unlocked users. User are additionally cleaned
+                // on unlock in NotificationHistoryDatabase.init().
+                if (mUserUnlockedStates.valueAt(i)) {
+                    final NotificationHistoryDatabase userHistory =
+                            mUserState.get(mUserUnlockedStates.keyAt(i));
+                    if (userHistory == null) {
+                        continue;
+                    }
+                    userHistory.prune();
+                }
+            }
+        }
+    }
+
     public void deleteNotificationHistoryItem(String pkg, int uid, long postedTime) {
         synchronized (mLock) {
             int userId = UserHandle.getUserId(uid);
@@ -167,7 +194,7 @@ public class NotificationHistoryManager {
         }
     }
 
-    public void deleteConversation(String pkg, int uid, String conversationId) {
+    public void deleteConversations(String pkg, int uid, Set<String> conversationIds) {
         synchronized (mLock) {
             int userId = UserHandle.getUserId(uid);
             final NotificationHistoryDatabase userHistory =
@@ -179,7 +206,23 @@ public class NotificationHistoryManager {
                         + userId);
                 return;
             }
-            userHistory.deleteConversation(pkg, conversationId);
+            userHistory.deleteConversations(pkg, conversationIds);
+        }
+    }
+
+    public void deleteNotificationChannel(String pkg, int uid, String channelId) {
+        synchronized (mLock) {
+            int userId = UserHandle.getUserId(uid);
+            final NotificationHistoryDatabase userHistory =
+                    getUserHistoryAndInitializeIfNeededLocked(userId);
+            // TODO: it shouldn't be possible to delete a notification entry while the user is
+            // locked but we should handle it
+            if (userHistory == null) {
+                Slog.w(TAG, "Attempted to remove channel for locked/gone/disabled user "
+                        + userId);
+                return;
+            }
+            userHistory.deleteNotificationChannel(pkg, channelId);
         }
     }
 
@@ -362,9 +405,7 @@ public class NotificationHistoryManager {
                     false, this, UserHandle.USER_ALL);
             synchronized (mLock) {
                 for (UserInfo userInfo : mUserManager.getUsers()) {
-                    if (!userInfo.isProfile()) {
-                        update(null, userInfo.id);
-                    }
+                    update(null, userInfo.id);
                 }
             }
         }
@@ -385,10 +426,7 @@ public class NotificationHistoryManager {
                 boolean historyEnabled = Settings.Secure.getIntForUser(resolver,
                         Settings.Secure.NOTIFICATION_HISTORY_ENABLED, 0, userId)
                         != 0;
-                int[] profiles = mUserManager.getProfileIds(userId, true);
-                for (int profileId : profiles) {
-                    onHistoryEnabledChanged(profileId, historyEnabled);
-                }
+                onHistoryEnabledChanged(userId, historyEnabled);
             }
         }
     }

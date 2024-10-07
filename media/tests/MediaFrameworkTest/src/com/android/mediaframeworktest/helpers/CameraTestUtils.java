@@ -1709,7 +1709,7 @@ public class CameraTestUtils extends Assert {
      * <p>
      * Two images are strongly equal if and only if the data, formats, sizes,
      * and timestamps are same. For {@link ImageFormat#PRIVATE PRIVATE} format
-     * images, the image data is not not accessible thus the data comparison is
+     * images, the image data is not accessible thus the data comparison is
      * effectively skipped as the number of planes is zero.
      * </p>
      * <p>
@@ -1810,7 +1810,7 @@ public class CameraTestUtils extends Assert {
     /**
      * Simple validation of JPEG image size and format.
      * <p>
-     * Only validate the image object sanity. It is fast, but doesn't actually
+     * Only validate the image object consistency. It is fast, but doesn't actually
      * check the buffer data. Assert is used here as it make no sense to
      * continue the test if the jpeg image captured has some serious failures.
      * </p>
@@ -2049,7 +2049,7 @@ public class CameraTestUtils extends Assert {
                     }
                 } else {
                     // Case 2.
-                    collector.expectEquals("Exif orientaiton should match requested orientation",
+                    collector.expectEquals("Exif orientation should match requested orientation",
                             requestedOrientation, getExifOrientationInDegree(exifOrientation,
                             collector));
                 }

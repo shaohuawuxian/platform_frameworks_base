@@ -81,6 +81,7 @@ public final class WallpaperInfo implements Parcelable {
     final int mContextDescriptionResource;
     final boolean mShowMetadataInPreview;
     final boolean mSupportsAmbientMode;
+    final boolean mShouldUseDefaultUnfoldTransition;
     final String mSettingsSliceUri;
     final boolean mSupportMultipleDisplays;
 
@@ -95,31 +96,30 @@ public final class WallpaperInfo implements Parcelable {
             throws XmlPullParserException, IOException {
         mService = service;
         ServiceInfo si = service.serviceInfo;
-        
+
         final PackageManager pm = context.getPackageManager();
-        XmlResourceParser parser = null;
-        try {
-            parser = si.loadXmlMetaData(pm, WallpaperService.SERVICE_META_DATA);
+        try (XmlResourceParser parser = si.loadXmlMetaData(pm,
+                WallpaperService.SERVICE_META_DATA)) {
             if (parser == null) {
                 throw new XmlPullParserException("No "
                         + WallpaperService.SERVICE_META_DATA + " meta-data");
             }
-        
+
             Resources res = pm.getResourcesForApplication(si.applicationInfo);
-            
+
             AttributeSet attrs = Xml.asAttributeSet(parser);
-            
+
             int type;
-            while ((type=parser.next()) != XmlPullParser.END_DOCUMENT
+            while ((type = parser.next()) != XmlPullParser.END_DOCUMENT
                     && type != XmlPullParser.START_TAG) {
             }
-            
+
             String nodeName = parser.getName();
             if (!"wallpaper".equals(nodeName)) {
                 throw new XmlPullParserException(
                         "Meta-data does not start with wallpaper tag");
             }
-            
+
             TypedArray sa = res.obtainAttributes(attrs,
                     com.android.internal.R.styleable.Wallpaper);
             mSettingsActivityName = sa.getString(
@@ -142,9 +142,16 @@ public final class WallpaperInfo implements Parcelable {
             mShowMetadataInPreview = sa.getBoolean(
                     com.android.internal.R.styleable.Wallpaper_showMetadataInPreview,
                     false);
+
+            // Watch wallpapers support ambient mode by default.
+            final boolean defSupportsAmbientMode =
+                    pm.hasSystemFeature(PackageManager.FEATURE_WATCH);
             mSupportsAmbientMode = sa.getBoolean(
                     com.android.internal.R.styleable.Wallpaper_supportsAmbientMode,
-                    false);
+                    defSupportsAmbientMode);
+            mShouldUseDefaultUnfoldTransition = sa.getBoolean(
+                    com.android.internal.R.styleable
+                            .Wallpaper_shouldUseDefaultUnfoldTransition, true);
             mSettingsSliceUri = sa.getString(
                     com.android.internal.R.styleable.Wallpaper_settingsSliceUri);
             mSupportMultipleDisplays = sa.getBoolean(
@@ -155,8 +162,6 @@ public final class WallpaperInfo implements Parcelable {
         } catch (NameNotFoundException e) {
             throw new XmlPullParserException(
                     "Unable to create context for: " + si.packageName);
-        } finally {
-            if (parser != null) parser.close();
         }
     }
 
@@ -171,6 +176,7 @@ public final class WallpaperInfo implements Parcelable {
         mSupportsAmbientMode = source.readInt() != 0;
         mSettingsSliceUri = source.readString();
         mSupportMultipleDisplays = source.readInt() != 0;
+        mShouldUseDefaultUnfoldTransition = source.readInt() != 0;
         mService = ResolveInfo.CREATOR.createFromParcel(source);
     }
     
@@ -287,12 +293,12 @@ public final class WallpaperInfo implements Parcelable {
             packageName = mService.serviceInfo.packageName;
             applicationInfo = mService.serviceInfo.applicationInfo;
         }
-        String contextUriString = pm.getText(
-                packageName, mContextUriResource, applicationInfo).toString();
-        if (contextUriString == null) {
+        CharSequence contextUriCharSequence = pm.getText(
+                packageName, mContextUriResource, applicationInfo);
+        if (contextUriCharSequence == null) {
             return null;
         }
-        return Uri.parse(contextUriString);
+        return Uri.parse(contextUriCharSequence.toString());
     }
 
     /**
@@ -393,6 +399,28 @@ public final class WallpaperInfo implements Parcelable {
         return mSupportMultipleDisplays;
     }
 
+    /**
+     * Returns whether this wallpaper should receive default zooming updates when the device
+     * changes its state (e.g. when folding or unfolding a foldable device).
+     * If set to false the wallpaper will not receive zoom events when changing the device state,
+     * so it can implement its own transition instead.
+     * <p>
+     * This corresponds to the value {@link
+     * android.R.styleable#Wallpaper_shouldUseDefaultUnfoldTransition} in the
+     * XML description of the wallpaper.
+     * <p>
+     * The default value is {@code true}.
+     *
+     * @see android.R.styleable#Wallpaper_shouldUseDefaultUnfoldTransition
+     * @return {@code true} if wallpaper should receive default device state change
+     * transition updates
+     *
+     * @attr ref android.R.styleable#Wallpaper_shouldUseDefaultUnfoldTransition
+     */
+    public boolean shouldUseDefaultUnfoldTransition() {
+        return mShouldUseDefaultUnfoldTransition;
+    }
+
     public void dump(Printer pw, String prefix) {
         pw.println(prefix + "Service:");
         mService.dump(pw, prefix + "  ");
@@ -423,6 +451,7 @@ public final class WallpaperInfo implements Parcelable {
         dest.writeInt(mSupportsAmbientMode ? 1 : 0);
         dest.writeString(mSettingsSliceUri);
         dest.writeInt(mSupportMultipleDisplays ? 1 : 0);
+        dest.writeInt(mShouldUseDefaultUnfoldTransition ? 1 : 0);
         mService.writeToParcel(dest, flags);
     }
 

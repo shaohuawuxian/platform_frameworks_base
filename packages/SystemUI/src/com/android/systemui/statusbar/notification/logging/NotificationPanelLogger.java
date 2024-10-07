@@ -16,12 +16,13 @@
 
 package com.android.systemui.statusbar.notification.logging;
 
-import static com.android.systemui.statusbar.notification.stack.NotificationSectionsManagerKt.BUCKET_ALERTING;
-import static com.android.systemui.statusbar.notification.stack.NotificationSectionsManagerKt.BUCKET_FOREGROUND_SERVICE;
-import static com.android.systemui.statusbar.notification.stack.NotificationSectionsManagerKt.BUCKET_HEADS_UP;
-import static com.android.systemui.statusbar.notification.stack.NotificationSectionsManagerKt.BUCKET_MEDIA_CONTROLS;
-import static com.android.systemui.statusbar.notification.stack.NotificationSectionsManagerKt.BUCKET_PEOPLE;
-import static com.android.systemui.statusbar.notification.stack.NotificationSectionsManagerKt.BUCKET_SILENT;
+import static com.android.systemui.statusbar.notification.stack.NotificationPriorityBucketKt.BUCKET_ALERTING;
+import static com.android.systemui.statusbar.notification.stack.NotificationPriorityBucketKt.BUCKET_FOREGROUND_SERVICE;
+import static com.android.systemui.statusbar.notification.stack.NotificationPriorityBucketKt.BUCKET_HEADS_UP;
+import static com.android.systemui.statusbar.notification.stack.NotificationPriorityBucketKt.BUCKET_MEDIA_CONTROLS;
+import static com.android.systemui.statusbar.notification.stack.NotificationPriorityBucketKt.BUCKET_PEOPLE;
+import static com.android.systemui.statusbar.notification.stack.NotificationPriorityBucketKt.BUCKET_PRIORITY_PEOPLE;
+import static com.android.systemui.statusbar.notification.stack.NotificationPriorityBucketKt.BUCKET_SILENT;
 
 import android.annotation.Nullable;
 import android.service.notification.StatusBarNotification;
@@ -33,10 +34,16 @@ import com.android.systemui.statusbar.notification.logging.nano.Notifications;
 import com.android.systemui.statusbar.notification.stack.PriorityBucket;
 
 import java.util.List;
+
 /**
  * Statsd logging for notification panel.
  */
 public interface NotificationPanelLogger {
+
+    /**
+     * Log a NOTIFICATION_PANEL_REPORTED statsd event.
+     */
+    void logPanelShown(boolean isLockscreen, Notifications.NotificationList proto);
 
     /**
      * Log a NOTIFICATION_PANEL_REPORTED statsd event.
@@ -45,11 +52,21 @@ public interface NotificationPanelLogger {
     void logPanelShown(boolean isLockscreen,
             @Nullable List<NotificationEntry> visibleNotifications);
 
+    /**
+     * Log a NOTIFICATION_PANEL_REPORTED statsd event, with
+     * {@link NotificationPanelEvent#NOTIFICATION_DRAG} as the eventID.
+     *
+     * @param draggedNotification the notification that is being dragged
+     */
+    void logNotificationDrag(NotificationEntry draggedNotification);
+
     enum NotificationPanelEvent implements UiEventLogger.UiEventEnum {
         @UiEvent(doc = "Notification panel shown from status bar.")
         NOTIFICATION_PANEL_OPEN_STATUS_BAR(200),
         @UiEvent(doc = "Notification panel shown from lockscreen.")
-        NOTIFICATION_PANEL_OPEN_LOCKSCREEN(201);
+        NOTIFICATION_PANEL_OPEN_LOCKSCREEN(201),
+        @UiEvent(doc = "Notification was dragged")
+        NOTIFICATION_DRAG(1226);
 
         private final int mId;
         NotificationPanelEvent(int id) {
@@ -114,7 +131,8 @@ public interface NotificationPanelLogger {
             case BUCKET_HEADS_UP: return Notifications.Notification.SECTION_HEADS_UP;
             case BUCKET_FOREGROUND_SERVICE:
                 return Notifications.Notification.SECTION_FOREGROUND_SERVICE;
-            case BUCKET_PEOPLE: return Notifications.Notification.SECTION_PEOPLE;
+            case BUCKET_PEOPLE, BUCKET_PRIORITY_PEOPLE:
+                return Notifications.Notification.SECTION_PEOPLE;
             case BUCKET_ALERTING: return Notifications.Notification.SECTION_ALERTING;
             case BUCKET_SILENT: return Notifications.Notification.SECTION_SILENT;
         }

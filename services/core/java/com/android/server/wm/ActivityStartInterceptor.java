@@ -18,6 +18,7 @@ package com.android.server.wm;
 
 import static android.app.ActivityManager.INTENT_SENDER_ACTIVITY;
 import static android.app.ActivityOptions.ANIM_OPEN_CROSS_PROFILE_APPS;
+import static android.app.ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED;
 import static android.app.PendingIntent.FLAG_CANCEL_CURRENT;
 import static android.app.PendingIntent.FLAG_IMMUTABLE;
 import static android.app.PendingIntent.FLAG_ONE_SHOT;
@@ -37,6 +38,7 @@ import static com.android.server.pm.PackageManagerService.PLATFORM_PACKAGE_NAME;
 import android.annotation.Nullable;
 import android.app.ActivityOptions;
 import android.app.KeyguardManager;
+import android.app.TaskInfo;
 import android.app.admin.DevicePolicyManagerInternal;
 import android.content.Context;
 import android.content.IIntentSender;
@@ -47,10 +49,15 @@ import android.content.pm.PackageManagerInternal;
 import android.content.pm.ResolveInfo;
 import android.content.pm.SuspendDialogInfo;
 import android.content.pm.UserInfo;
+import android.content.pm.UserPackage;
 import android.os.Bundle;
+import android.os.IBinder;
 import android.os.RemoteException;
 import android.os.UserHandle;
 import android.os.UserManager;
+import android.util.Pair;
+import android.util.Slog;
+import android.util.SparseArray;
 
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.app.BlockedAppActivity;
@@ -59,19 +66,20 @@ import com.android.internal.app.SuspendedAppActivity;
 import com.android.internal.app.UnlaunchableAppActivity;
 import com.android.server.LocalServices;
 import com.android.server.am.ActivityManagerService;
+import com.android.server.wm.ActivityInterceptorCallback.ActivityInterceptResult;
 
 /**
- * A class that contains activity intercepting logic for {@link ActivityStarter#startActivityLocked}
+ * A class that contains activity intercepting logic for {@link ActivityStarter#execute()}
  * It's initialized via setStates and interception occurs via the intercept method.
  *
  * Note that this class is instantiated when {@link ActivityManagerService} gets created so there
  * is no guarantee that other system services are already present.
  */
 class ActivityStartInterceptor {
+    private static final String TAG = "ActivityStartInterceptor";
 
     private final ActivityTaskManagerService mService;
-    private final ActivityStackSupervisor mSupervisor;
-    private final RootWindowContainer mRootWindowContainer;
+    private final ActivityTaskSupervisor mSupervisor;
     private final Context mServiceContext;
 
     // UserManager cannot be final as it's not ready when this class is instantiated during boot
@@ -101,19 +109,26 @@ class ActivityStartInterceptor {
     ActivityInfo mAInfo;
     String mResolvedType;
     Task mInTask;
+    TaskFragment mInTaskFragment;
     ActivityOptions mActivityOptions;
 
+    /*
+     * Note that this is just a hint of what the launch display area will be as it is
+     * based only on the information at the early pre-interception stage of starting the
+     * intent. The real launch display area calculated later may be different from this one.
+     */
+    TaskDisplayArea mPresumableLaunchDisplayArea;
+
     ActivityStartInterceptor(
-            ActivityTaskManagerService service, ActivityStackSupervisor supervisor) {
-        this(service, supervisor, service.mRootWindowContainer, service.mContext);
+            ActivityTaskManagerService service, ActivityTaskSupervisor supervisor) {
+        this(service, supervisor, service.mContext);
     }
 
     @VisibleForTesting
-    ActivityStartInterceptor(ActivityTaskManagerService service, ActivityStackSupervisor supervisor,
-            RootWindowContainer root, Context context) {
+    ActivityStartInterceptor(ActivityTaskManagerService service, ActivityTaskSupervisor supervisor,
+            Context context) {
         mService = service;
         mSupervisor = supervisor;
-        mRootWindowContainer = root;
         mServiceContext = context;
     }
 
@@ -132,13 +147,42 @@ class ActivityStartInterceptor {
     }
 
     private IntentSender createIntentSenderForOriginalIntent(int callingUid, int flags) {
-        Bundle activityOptions = deferCrossProfileAppsAnimationIfNecessary();
+        ActivityOptions activityOptions = deferCrossProfileAppsAnimationIfNecessary();
+        activityOptions.setPendingIntentCreatorBackgroundActivityStartMode(
+                MODE_BACKGROUND_ACTIVITY_START_ALLOWED);
+        final TaskFragment taskFragment = getLaunchTaskFragment();
+        // If the original intent is going to be embedded, try to forward the embedding TaskFragment
+        // and its task id to embed back the original intent.
+        if (taskFragment != null) {
+            activityOptions.setLaunchTaskFragmentToken(taskFragment.getFragmentToken());
+        }
         final IIntentSender target = mService.getIntentSenderLocked(
                 INTENT_SENDER_ACTIVITY, mCallingPackage, mCallingFeatureId, callingUid, mUserId,
                 null /*token*/, null /*resultCode*/, 0 /*requestCode*/,
                 new Intent[] { mIntent }, new String[] { mResolvedType },
-                flags, activityOptions);
+                flags, activityOptions.toBundle());
         return new IntentSender(target);
+    }
+
+
+    /**
+     * A helper function to obtain the targeted {@link TaskFragment} during
+     * {@link #intercept(Intent, ResolveInfo, ActivityInfo, String, Task, TaskFragment, int, int,
+     * ActivityOptions, TaskDisplayArea)} if any.
+     */
+    @Nullable
+    private TaskFragment getLaunchTaskFragment() {
+        if (mInTaskFragment != null) {
+            return mInTaskFragment;
+        }
+        if (mActivityOptions == null) {
+            return null;
+        }
+        final IBinder taskFragToken = mActivityOptions.getLaunchTaskFragmentToken();
+        if (taskFragToken == null) {
+            return null;
+        }
+        return TaskFragment.fromTaskFragmentToken(taskFragToken, mService);
     }
 
     /**
@@ -148,7 +192,8 @@ class ActivityStartInterceptor {
      * @return true if an interception occurred
      */
     boolean intercept(Intent intent, ResolveInfo rInfo, ActivityInfo aInfo, String resolvedType,
-            Task inTask, int callingPid, int callingUid, ActivityOptions activityOptions) {
+            Task inTask, TaskFragment inTaskFragment, int callingPid, int callingUid,
+            ActivityOptions activityOptions, TaskDisplayArea presumableLaunchDisplayArea) {
         mUserManager = UserManager.get(mServiceContext);
 
         mIntent = intent;
@@ -158,7 +203,9 @@ class ActivityStartInterceptor {
         mAInfo = aInfo;
         mResolvedType = resolvedType;
         mInTask = inTask;
+        mInTaskFragment = inTaskFragment;
         mActivityOptions = activityOptions;
+        mPresumableLaunchDisplayArea = presumableLaunchDisplayArea;
 
         if (interceptQuietProfileIfNeeded()) {
             // If work profile is turned off, skip the work challenge since the profile can only
@@ -178,7 +225,41 @@ class ActivityStartInterceptor {
             // before issuing the work challenge.
             return true;
         }
-        return interceptLockedManagedProfileIfNeeded();
+        if (interceptLockedProfileIfNeeded()) {
+            return true;
+        }
+        if (interceptHomeIfNeeded()) {
+            // Replace primary home intents directed at displays that do not support primary home
+            // but support secondary home with the relevant secondary home activity.
+            return true;
+        }
+
+        final SparseArray<ActivityInterceptorCallback> callbacks =
+                mService.getActivityInterceptorCallbacks();
+        final ActivityInterceptorCallback.ActivityInterceptorInfo interceptorInfo =
+                getInterceptorInfo(null /* clearOptionsAnimation */);
+
+        for (int i = 0; i < callbacks.size(); i++) {
+            final ActivityInterceptorCallback callback = callbacks.valueAt(i);
+            final ActivityInterceptResult interceptResult = callback.onInterceptActivityLaunch(
+                    interceptorInfo);
+            if (interceptResult == null) {
+                continue;
+            }
+            mIntent = interceptResult.getIntent();
+            mActivityOptions = interceptResult.getActivityOptions();
+            mCallingPid = mRealCallingPid;
+            mCallingUid = mRealCallingUid;
+            if (interceptResult.isActivityResolved()) {
+                return true;
+            }
+            mRInfo = mSupervisor.resolveIntent(mIntent, null, mUserId, 0,
+                    mRealCallingUid, mRealCallingPid);
+            mAInfo = mSupervisor.resolveActivity(mIntent, mRInfo, mStartFlags,
+                    null /*profilerInfo*/);
+            return true;
+        }
+        return false;
     }
 
     private boolean hasCrossProfileAnimation() {
@@ -192,12 +273,12 @@ class ActivityStartInterceptor {
      *
      * @return the activity option used to start the original intent.
      */
-    private Bundle deferCrossProfileAppsAnimationIfNecessary() {
+    private ActivityOptions deferCrossProfileAppsAnimationIfNecessary() {
         if (hasCrossProfileAnimation()) {
             mActivityOptions = null;
-            return ActivityOptions.makeOpenCrossProfileAppsAnimation().toBundle();
+            return ActivityOptions.makeOpenCrossProfileAppsAnimation();
         }
-        return null;
+        return ActivityOptions.makeBasic();
     }
 
     private boolean interceptQuietProfileIfNeeded() {
@@ -205,17 +286,20 @@ class ActivityStartInterceptor {
         if (!mUserManager.isQuietModeEnabled(UserHandle.of(mUserId))) {
             return false;
         }
+        Slog.i(TAG, "Intent : " + mIntent + " intercepted for user: " + mUserId
+                + " because quiet mode is enabled.");
 
         IntentSender target = createIntentSenderForOriginalIntent(mCallingUid,
                 FLAG_CANCEL_CURRENT | FLAG_ONE_SHOT);
 
-        mIntent = UnlaunchableAppActivity.createInQuietModeDialogIntent(mUserId, target);
+        mIntent = UnlaunchableAppActivity.createInQuietModeDialogIntent(mUserId, target, mRInfo);
         mCallingPid = mRealCallingPid;
         mCallingUid = mRealCallingUid;
         mResolvedType = null;
 
         final UserInfo parent = mUserManager.getProfileParent(mUserId);
-        mRInfo = mSupervisor.resolveIntent(mIntent, mResolvedType, parent.id, 0, mRealCallingUid);
+        mRInfo = mSupervisor.resolveIntent(mIntent, mResolvedType, parent.id, 0,
+                mRealCallingUid, mRealCallingPid);
         mAInfo = mSupervisor.resolveActivity(mIntent, mRInfo, mStartFlags, null /*profilerInfo*/);
         return true;
     }
@@ -236,10 +320,10 @@ class ActivityStartInterceptor {
         final UserInfo parent = mUserManager.getProfileParent(mUserId);
         if (parent != null) {
             mRInfo = mSupervisor.resolveIntent(mIntent, mResolvedType, parent.id, 0,
-                    mRealCallingUid);
+                    mRealCallingUid, mRealCallingPid);
         } else {
             mRInfo = mSupervisor.resolveIntent(mIntent, mResolvedType, mUserId, 0,
-                    mRealCallingUid);
+                    mRealCallingUid, mRealCallingPid);
         }
         mAInfo = mSupervisor.resolveActivity(mIntent, mRInfo, mStartFlags, null /*profilerInfo*/);
         return true;
@@ -247,8 +331,7 @@ class ActivityStartInterceptor {
 
     private boolean interceptSuspendedPackageIfNeeded() {
         // Do not intercept if the package is not suspended
-        if (mAInfo == null || mAInfo.applicationInfo == null ||
-                (mAInfo.applicationInfo.flags & FLAG_SUSPENDED) == 0) {
+        if (!isPackageSuspended()) {
             return false;
         }
         final PackageManagerInternal pmi = mService.getPackageManagerInternalLocked();
@@ -256,23 +339,24 @@ class ActivityStartInterceptor {
             return false;
         }
         final String suspendedPackage = mAInfo.applicationInfo.packageName;
-        final String suspendingPackage = pmi.getSuspendingPackage(suspendedPackage, mUserId);
-        if (PLATFORM_PACKAGE_NAME.equals(suspendingPackage)) {
+        final UserPackage suspender = pmi.getSuspendingPackage(suspendedPackage, mUserId);
+        if (suspender != null && PLATFORM_PACKAGE_NAME.equals(suspender.packageName)) {
             return interceptSuspendedByAdminPackage();
         }
         final SuspendDialogInfo dialogInfo = pmi.getSuspendedDialogInfo(suspendedPackage,
-                suspendingPackage, mUserId);
+                suspender, mUserId);
         final Bundle crossProfileOptions = hasCrossProfileAnimation()
                 ? ActivityOptions.makeOpenCrossProfileAppsAnimation().toBundle()
                 : null;
         final IntentSender target = createIntentSenderForOriginalIntent(mCallingUid,
                 FLAG_IMMUTABLE);
         mIntent = SuspendedAppActivity.createSuspendedAppInterceptIntent(suspendedPackage,
-                suspendingPackage, dialogInfo, crossProfileOptions, target, mUserId);
+                suspender, dialogInfo, crossProfileOptions, target, mUserId);
         mCallingPid = mRealCallingPid;
         mCallingUid = mRealCallingUid;
         mResolvedType = null;
-        mRInfo = mSupervisor.resolveIntent(mIntent, mResolvedType, mUserId, 0, mRealCallingUid);
+        mRInfo = mSupervisor.resolveIntent(mIntent, mResolvedType, mUserId, 0,
+                mRealCallingUid, mRealCallingPid);
         mAInfo = mSupervisor.resolveActivity(mIntent, mRInfo, mStartFlags, null /*profilerInfo*/);
         return true;
     }
@@ -291,12 +375,13 @@ class ActivityStartInterceptor {
         mCallingPid = mRealCallingPid;
         mCallingUid = mRealCallingUid;
         mResolvedType = null;
-        mRInfo = mSupervisor.resolveIntent(mIntent, mResolvedType, mUserId, 0, mRealCallingUid);
+        mRInfo = mSupervisor.resolveIntent(mIntent, mResolvedType, mUserId, 0,
+                mRealCallingUid, mRealCallingPid);
         mAInfo = mSupervisor.resolveActivity(mIntent, mRInfo, mStartFlags, null /*profilerInfo*/);
         return true;
     }
 
-    private boolean interceptLockedManagedProfileIfNeeded() {
+    private boolean interceptLockedProfileIfNeeded() {
         final Intent interceptingIntent = interceptWithConfirmCredentialsIfNeeded(mAInfo, mUserId);
         if (interceptingIntent == null) {
             return false;
@@ -305,19 +390,29 @@ class ActivityStartInterceptor {
         mCallingPid = mRealCallingPid;
         mCallingUid = mRealCallingUid;
         mResolvedType = null;
+        final TaskFragment taskFragment = getLaunchTaskFragment();
         // If we are intercepting and there was a task, convert it into an extra for the
         // ConfirmCredentials intent and unassign it, as otherwise the task will move to
         // front even if ConfirmCredentials is cancelled.
         if (mInTask != null) {
             mIntent.putExtra(EXTRA_TASK_ID, mInTask.mTaskId);
             mInTask = null;
+        } else if (taskFragment != null) {
+            // If the original intent is started to an embedded TaskFragment, append its parent task
+            // id to extra. It is to embed back the original intent to the TaskFragment with the
+            // same task.
+            final Task parentTask = taskFragment.getTask();
+            if (parentTask != null) {
+                mIntent.putExtra(EXTRA_TASK_ID, parentTask.mTaskId);
+            }
         }
         if (mActivityOptions == null) {
             mActivityOptions = ActivityOptions.makeBasic();
         }
 
         final UserInfo parent = mUserManager.getProfileParent(mUserId);
-        mRInfo = mSupervisor.resolveIntent(mIntent, mResolvedType, parent.id, 0, mRealCallingUid);
+        mRInfo = mSupervisor.resolveIntent(mIntent, mResolvedType, parent.id, 0,
+                mRealCallingUid, mRealCallingPid);
         mAInfo = mSupervisor.resolveActivity(mIntent, mRInfo, mStartFlags, null /*profilerInfo*/);
         return true;
     }
@@ -331,7 +426,10 @@ class ActivityStartInterceptor {
         if (!mService.mAmInternal.shouldConfirmCredentials(userId)) {
             return null;
         }
-        // TODO(b/28935539): should allow certain activities to bypass work challenge
+        if ((aInfo.flags & ActivityInfo.FLAG_SHOW_WHEN_LOCKED) != 0
+                && (mUserManager.isUserUnlocked(userId) || aInfo.directBootAware)) {
+            return null;
+        }
         final IntentSender target = createIntentSenderForOriginalIntent(mCallingUid,
                 FLAG_CANCEL_CURRENT | FLAG_ONE_SHOT | FLAG_IMMUTABLE);
         final KeyguardManager km = (KeyguardManager) mServiceContext
@@ -353,7 +451,7 @@ class ActivityStartInterceptor {
         try {
             harmfulAppWarning = mService.getPackageManager()
                     .getHarmfulAppWarning(mAInfo.packageName, mUserId);
-        } catch (RemoteException ex) {
+        } catch (RemoteException | IllegalArgumentException ex) {
             return false;
         }
 
@@ -371,8 +469,85 @@ class ActivityStartInterceptor {
         mCallingUid = mRealCallingUid;
         mResolvedType = null;
 
-        mRInfo = mSupervisor.resolveIntent(mIntent, mResolvedType, mUserId, 0, mRealCallingUid);
+        mRInfo = mSupervisor.resolveIntent(mIntent, mResolvedType, mUserId, 0,
+                mRealCallingUid, mRealCallingPid);
         mAInfo = mSupervisor.resolveActivity(mIntent, mRInfo, mStartFlags, null /*profilerInfo*/);
         return true;
     }
+
+    private boolean interceptHomeIfNeeded() {
+        if (mPresumableLaunchDisplayArea == null || mService.mRootWindowContainer == null) {
+            return false;
+        }
+        if (!ActivityRecord.isHomeIntent(mIntent)) {
+            return false;
+        }
+        if (!mIntent.hasCategory(Intent.CATEGORY_HOME)) {
+            // Already a secondary home intent, leave it alone.
+            return false;
+        }
+        if (mService.mRootWindowContainer.shouldPlacePrimaryHomeOnDisplay(
+                mPresumableLaunchDisplayArea.getDisplayId())) {
+            // Primary home can be launched to the display area.
+            return false;
+        }
+        if (!mService.mRootWindowContainer.shouldPlaceSecondaryHomeOnDisplayArea(
+                mPresumableLaunchDisplayArea)) {
+            // Secondary home cannot be launched on the display area.
+            return false;
+        }
+
+        // At this point we have a primary home intent for a display that does not support primary
+        // home activity but it supports secondary home one. So replace it with secondary home.
+        Pair<ActivityInfo, Intent> info = mService.mRootWindowContainer
+                .resolveSecondaryHomeActivity(mUserId, mPresumableLaunchDisplayArea);
+        mIntent = info.second;
+        // The new task flag is needed because the home activity should already be in the root task
+        // and should not be moved to the caller's task. Also, activities cannot change their type,
+        // e.g. a standard activity cannot become a home activity.
+        mIntent.addFlags(FLAG_ACTIVITY_NEW_TASK);
+        mCallingPid = mRealCallingPid;
+        mCallingUid = mRealCallingUid;
+        mResolvedType = null;
+
+        mRInfo = mSupervisor.resolveIntent(mIntent, mResolvedType, mUserId, /* flags= */ 0,
+                mRealCallingUid, mRealCallingPid);
+        mAInfo = mSupervisor.resolveActivity(mIntent, mRInfo, mStartFlags, /*profilerInfo=*/ null);
+        return true;
+    }
+
+    private boolean isPackageSuspended() {
+        return mAInfo != null && mAInfo.applicationInfo != null
+                && (mAInfo.applicationInfo.flags & FLAG_SUSPENDED) != 0;
+    }
+
+    /**
+     * Called when an activity is successfully launched.
+     */
+    void onActivityLaunched(TaskInfo taskInfo, ActivityRecord r) {
+        final SparseArray<ActivityInterceptorCallback> callbacks =
+                mService.getActivityInterceptorCallbacks();
+        final ActivityInterceptorCallback.ActivityInterceptorInfo info = getInterceptorInfo(() -> {
+            synchronized (mService.mGlobalLock) {
+                r.clearOptionsAnimationForSiblings();
+            }
+        });
+        for (int i = 0; i < callbacks.size(); i++) {
+            final ActivityInterceptorCallback callback = callbacks.valueAt(i);
+            callback.onActivityLaunched(taskInfo, r.info, info);
+        }
+    }
+
+    private ActivityInterceptorCallback.ActivityInterceptorInfo getInterceptorInfo(
+            @Nullable Runnable clearOptionsAnimation) {
+        return new ActivityInterceptorCallback.ActivityInterceptorInfo.Builder(mCallingUid,
+                mCallingPid, mRealCallingUid, mRealCallingPid, mUserId, mIntent, mRInfo, mAInfo)
+                .setResolvedType(mResolvedType)
+                .setCallingPackage(mCallingPackage)
+                .setCallingFeatureId(mCallingFeatureId)
+                .setCheckedOptions(mActivityOptions)
+                .setClearOptionsAnimationRunnable(clearOptionsAnimation)
+                .build();
+    }
+
 }

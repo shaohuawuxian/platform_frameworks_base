@@ -16,16 +16,12 @@
 
 package com.android.server.uri;
 
-import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
-import android.annotation.NonNull;
 import android.app.ActivityManagerInternal;
-import android.content.ContentResolver;
-import android.content.Context;
-import android.content.ContextWrapper;
 import android.content.Intent;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
@@ -33,17 +29,19 @@ import android.content.pm.PackageManagerInternal;
 import android.content.pm.PathPermission;
 import android.content.pm.ProviderInfo;
 import android.net.Uri;
-import android.os.FileUtils;
 import android.os.PatternMatcher;
+import android.os.Process;
 import android.os.UserHandle;
-import android.test.mock.MockContentResolver;
+import android.test.mock.MockContext;
 import android.test.mock.MockPackageManager;
 
 import com.android.server.LocalServices;
 
 import java.io.File;
+import java.io.IOException;
+import java.nio.file.Files;
 
-public class UriGrantsMockContext extends ContextWrapper {
+public class UriGrantsMockContext extends MockContext {
     static final String TAG = "UriGrants";
 
     static final int FLAG_READ = Intent.FLAG_GRANT_READ_URI_PERMISSION;
@@ -97,19 +95,14 @@ public class UriGrantsMockContext extends ContextWrapper {
     private final File mDir;
 
     private final MockPackageManager mPackage;
-    private final MockContentResolver mResolver;
 
     final ActivityManagerInternal mAmInternal;
     final PackageManagerInternal mPmInternal;
 
-    public UriGrantsMockContext(@NonNull Context base) {
-        super(base);
-        mDir = new File(base.getFilesDir(), TAG);
-        mDir.mkdirs();
-        FileUtils.deleteContents(mDir);
+    public UriGrantsMockContext() throws IOException {
+        mDir = Files.createTempDirectory(TAG).toFile();
 
         mPackage = new MockPackageManager();
-        mResolver = new MockContentResolver(this);
 
         mAmInternal = mock(ActivityManagerInternal.class);
         LocalServices.removeServiceForTest(ActivityManagerInternal.class);
@@ -120,28 +113,48 @@ public class UriGrantsMockContext extends ContextWrapper {
         LocalServices.addService(PackageManagerInternal.class, mPmInternal);
 
         for (int userId : new int[] { USER_PRIMARY, USER_SECONDARY }) {
-            when(mPmInternal.getPackageUidInternal(eq(PKG_SOCIAL), anyInt(), eq(userId)))
+            when(mPmInternal.getPackageUid(eq(PKG_SOCIAL), anyLong(), eq(userId)))
                     .thenReturn(UserHandle.getUid(userId, UID_SOCIAL));
-            when(mPmInternal.getPackageUidInternal(eq(PKG_CAMERA), anyInt(), eq(userId)))
+            when(mPmInternal.getPackageUid(eq(PKG_CAMERA), anyLong(), eq(userId)))
                     .thenReturn(UserHandle.getUid(userId, UID_CAMERA));
-            when(mPmInternal.getPackageUidInternal(eq(PKG_PRIVATE), anyInt(), eq(userId)))
+            when(mPmInternal.getPackageUid(eq(PKG_PRIVATE), anyLong(), eq(userId)))
                     .thenReturn(UserHandle.getUid(userId, UID_PRIVATE));
-            when(mPmInternal.getPackageUidInternal(eq(PKG_PUBLIC), anyInt(), eq(userId)))
+            when(mPmInternal.getPackageUid(eq(PKG_PUBLIC), anyLong(), eq(userId)))
                     .thenReturn(UserHandle.getUid(userId, UID_PUBLIC));
-            when(mPmInternal.getPackageUidInternal(eq(PKG_FORCE), anyInt(), eq(userId)))
+            when(mPmInternal.getPackageUid(eq(PKG_FORCE), anyLong(), eq(userId)))
                     .thenReturn(UserHandle.getUid(userId, UID_FORCE));
-            when(mPmInternal.getPackageUidInternal(eq(PKG_COMPLEX), anyInt(), eq(userId)))
+            when(mPmInternal.getPackageUid(eq(PKG_COMPLEX), anyLong(), eq(userId)))
                     .thenReturn(UserHandle.getUid(userId, UID_COMPLEX));
 
-            when(mPmInternal.resolveContentProvider(eq(PKG_CAMERA), anyInt(), eq(userId)))
+            when(mPmInternal.resolveContentProvider(eq(PKG_CAMERA), anyLong(), eq(userId),
+                    eq(Process.SYSTEM_UID)))
                     .thenReturn(buildCameraProvider(userId));
-            when(mPmInternal.resolveContentProvider(eq(PKG_PRIVATE), anyInt(), eq(userId)))
+            when(mPmInternal.resolveContentProvider(eq(PKG_CAMERA), anyLong(), eq(userId),
+                    eq(UserHandle.getUid(userId, UID_CAMERA))))
+                    .thenReturn(buildCameraProvider(userId));
+            when(mPmInternal.resolveContentProvider(eq(PKG_PRIVATE), anyLong(), eq(userId),
+                    eq(Process.SYSTEM_UID)))
                     .thenReturn(buildPrivateProvider(userId));
-            when(mPmInternal.resolveContentProvider(eq(PKG_PUBLIC), anyInt(), eq(userId)))
+            when(mPmInternal.resolveContentProvider(eq(PKG_PRIVATE), anyLong(), eq(userId),
+                    eq(UserHandle.getUid(userId, UID_PRIVATE))))
+                    .thenReturn(buildPrivateProvider(userId));
+            when(mPmInternal.resolveContentProvider(eq(PKG_PUBLIC), anyLong(), eq(userId),
+                    eq(Process.SYSTEM_UID)))
                     .thenReturn(buildPublicProvider(userId));
-            when(mPmInternal.resolveContentProvider(eq(PKG_FORCE), anyInt(), eq(userId)))
+            when(mPmInternal.resolveContentProvider(eq(PKG_PUBLIC), anyLong(), eq(userId),
+                    eq(UserHandle.getUid(userId, UID_PUBLIC))))
+                    .thenReturn(buildPublicProvider(userId));
+            when(mPmInternal.resolveContentProvider(eq(PKG_FORCE), anyLong(), eq(userId),
+                    eq(Process.SYSTEM_UID)))
                     .thenReturn(buildForceProvider(userId));
-            when(mPmInternal.resolveContentProvider(eq(PKG_COMPLEX), anyInt(), eq(userId)))
+            when(mPmInternal.resolveContentProvider(eq(PKG_FORCE), anyLong(), eq(userId),
+                    eq(UserHandle.getUid(userId, UID_FORCE))))
+                    .thenReturn(buildForceProvider(userId));
+            when(mPmInternal.resolveContentProvider(eq(PKG_COMPLEX), anyLong(), eq(userId),
+                    eq(Process.SYSTEM_UID)))
+                    .thenReturn(buildComplexProvider(userId));
+            when(mPmInternal.resolveContentProvider(eq(PKG_COMPLEX), anyLong(), eq(userId),
+                    eq(UserHandle.getUid(userId, UID_COMPLEX))))
                     .thenReturn(buildComplexProvider(userId));
         }
     }
@@ -215,11 +228,6 @@ public class UriGrantsMockContext extends ContextWrapper {
     @Override
     public PackageManager getPackageManager() {
         return mPackage;
-    }
-
-    @Override
-    public ContentResolver getContentResolver() {
-        return mResolver;
     }
 
     @Override

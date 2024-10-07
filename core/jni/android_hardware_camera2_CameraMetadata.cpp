@@ -16,6 +16,7 @@
 */
 
 // #define LOG_NDEBUG 0
+#include <memory>
 #define LOG_TAG "CameraMetadata-JNI"
 #include <utils/Errors.h>
 #include <utils/Log.h>
@@ -162,6 +163,8 @@ struct Helpers {
 
 extern "C" {
 
+static void CameraMetadata_setVendorId(JNIEnv* env, jclass thiz, jlong ptr,
+        jlong vendorId);
 static jobject CameraMetadata_getAllVendorKeys(JNIEnv* env, jclass thiz, jlong ptr,
         jclass keyType);
 static jint CameraMetadata_getTagFromKey(JNIEnv *env, jclass thiz, jstring keyName,
@@ -247,6 +250,53 @@ static jint CameraMetadata_getEntryCount(JNIEnv *env, jclass thiz, jlong ptr) {
     if (metadata == NULL) return 0; // actually throws java exc.
 
     return metadata->entryCount();
+}
+
+static void CameraMetadata_update(JNIEnv *env, jclass thiz, jlong dst, jlong src) {
+    ALOGV("%s", __FUNCTION__);
+
+    CameraMetadata* metadataDst = CameraMetadata_getPointerThrow(env, dst);
+    CameraMetadata* metadataSrc = CameraMetadata_getPointerThrow(env, src);
+
+    if (((metadataDst == NULL) || (metadataDst->isEmpty())) ||
+            ((metadataSrc == NULL) || metadataSrc->isEmpty())) {
+        return;
+    }
+
+    auto metaBuffer = metadataSrc->getAndLock();
+    camera_metadata_ro_entry_t entry;
+    auto entryCount = get_camera_metadata_entry_count(metaBuffer);
+    for (size_t i = 0; i < entryCount; i++) {
+        auto stat = get_camera_metadata_ro_entry(metaBuffer, i, &entry);
+        if (stat != NO_ERROR) {
+            ALOGE("%s: Failed to retrieve source metadata!", __func__);
+            metadataSrc->unlock(metaBuffer);
+            return;
+        }
+        switch (entry.type) {
+            case TYPE_BYTE:
+                metadataDst->update(entry.tag, entry.data.u8, entry.count);
+                break;
+            case TYPE_INT32:
+                metadataDst->update(entry.tag, entry.data.i32, entry.count);
+                break;
+            case TYPE_FLOAT:
+                metadataDst->update(entry.tag, entry.data.f, entry.count);
+                break;
+            case TYPE_INT64:
+                metadataDst->update(entry.tag, entry.data.i64, entry.count);
+                break;
+            case TYPE_DOUBLE:
+                metadataDst->update(entry.tag, entry.data.d, entry.count);
+                break;
+            case TYPE_RATIONAL:
+                metadataDst->update(entry.tag, entry.data.r, entry.count);
+                break;
+            default:
+                ALOGE("%s: Unsupported tag type: %d!", __func__, entry.type);
+        }
+    }
+    metadataSrc->unlock(metaBuffer);
 }
 
 static jlong CameraMetadata_getBufferSize(JNIEnv *env, jclass thiz, jlong ptr) {
@@ -464,7 +514,7 @@ static void CameraMetadata_dump(JNIEnv *env, jclass thiz, jlong ptr) {
         ssize_t res;
         while ((res = TEMP_FAILURE_RETRY(read(readFd, &out[0], /*count*/1))) > 0) {
             if (out[0] == '\n') {
-                ALOGD("%s", logLine.string());
+                ALOGD("%s", logLine.c_str());
                 logLine.clear();
             } else {
                 logLine.append(out);
@@ -476,8 +526,8 @@ static void CameraMetadata_dump(JNIEnv *env, jclass thiz, jlong ptr) {
                     "Failed to read from fd (errno = %#x, message = '%s')",
                     errno, strerror(errno));
             //return;
-        } else if (!logLine.isEmpty()) {
-            ALOGD("%s", logLine.string());
+        } else if (!logLine.empty()) {
+            ALOGD("%s", logLine.c_str());
         }
 
         close(readFd);
@@ -511,6 +561,15 @@ static void CameraMetadata_readFromParcel(JNIEnv *env, jclass thiz, jobject parc
                              "Failed to read from parcel (error code %d)", err);
         return;
     }
+
+    // Update vendor descriptor cache if necessary
+    auto vendorId = metadata->getVendorId();
+    if ((vendorId != CAMERA_METADATA_INVALID_VENDOR_ID) &&
+            !VendorTagDescriptorCache::isVendorCachePresent(vendorId)) {
+        ALOGW("%s: Tag vendor id missing or cache not initialized, trying to update!",
+                __FUNCTION__);
+        CameraMetadata_setupGlobalVendorTagDescriptor(env, thiz);
+    }
 }
 
 static void CameraMetadata_writeToParcel(JNIEnv *env, jclass thiz, jobject parcel, jlong ptr) {
@@ -540,6 +599,9 @@ static void CameraMetadata_writeToParcel(JNIEnv *env, jclass thiz, jobject parce
 
 static const JNINativeMethod gCameraMetadataMethods[] = {
 // static methods
+  { "nativeSetVendorId",
+    "(JJ)V",
+    (void *)CameraMetadata_setVendorId },
   { "nativeGetTagFromKey",
     "(Ljava/lang/String;J)I",
     (void *)CameraMetadata_getTagFromKey },
@@ -556,6 +618,9 @@ static const JNINativeMethod gCameraMetadataMethods[] = {
   { "nativeAllocateCopy",
     "(J)J",
     (void *)CameraMetadata_allocateCopy },
+  { "nativeUpdate",
+    "(JJ)V",
+    (void*)CameraMetadata_update },
   { "nativeIsEmpty",
     "(J)Z",
     (void*)CameraMetadata_isEmpty },
@@ -655,9 +720,7 @@ static jint CameraMetadata_getTypeFromTagLocal(JNIEnv *env, jclass thiz, jlong p
     CameraMetadata* metadata = CameraMetadata_getPointerNoThrow(ptr);
     metadata_vendor_id_t vendorId = CAMERA_METADATA_INVALID_VENDOR_ID;
     if (metadata) {
-        const camera_metadata_t *metaBuffer = metadata->getAndLock();
-        vendorId = get_camera_metadata_vendor_id(metaBuffer);
-        metadata->unlock(metaBuffer);
+        vendorId = metadata->getVendorId();
     }
 
     int tagType = get_local_camera_metadata_tag_type_vendor_id(tag, vendorId);
@@ -686,9 +749,7 @@ static jint CameraMetadata_getTagFromKeyLocal(JNIEnv *env, jclass thiz, jlong pt
     if (metadata) {
         sp<VendorTagDescriptorCache> cache = VendorTagDescriptorCache::getGlobalVendorTagCache();
         if (cache.get()) {
-            const camera_metadata_t *metaBuffer = metadata->getAndLock();
-            metadata_vendor_id_t vendorId = get_camera_metadata_vendor_id(metaBuffer);
-            metadata->unlock(metaBuffer);
+            auto vendorId = metadata->getVendorId();
             cache->getVendorTagDescriptor(vendorId, &vTags);
         }
     }
@@ -716,10 +777,8 @@ static jobject CameraMetadata_getAllVendorKeys(JNIEnv* env, jclass thiz, jlong p
         CameraMetadata* metadata = CameraMetadata_getPointerThrow(env, ptr);
         if (metadata == NULL) return NULL;
 
-        const camera_metadata_t *metaBuffer = metadata->getAndLock();
-        vendorId = get_camera_metadata_vendor_id(metaBuffer);
+        vendorId = metadata->getVendorId();
         cache->getVendorTagDescriptor(vendorId, &vTags);
-        metadata->unlock(metaBuffer);
         if (vTags.get() == nullptr) {
             return nullptr;
         }
@@ -817,6 +876,27 @@ static jobject CameraMetadata_getAllVendorKeys(JNIEnv* env, jclass thiz, jlong p
     return arrayList;
 }
 
+static void CameraMetadata_setVendorId(JNIEnv *env, jclass thiz, jlong ptr,
+        jlong vendorId) {
+    ALOGV("%s", __FUNCTION__);
+
+    CameraMetadata* metadata = CameraMetadata_getPointerThrow(env, ptr);
+
+    if (metadata == NULL) {
+        ALOGW("%s: Returning early due to exception being thrown",
+               __FUNCTION__);
+        return;
+    }
+    if (metadata->isEmpty()) {
+        std::unique_ptr<CameraMetadata> emptyBuffer = std::make_unique<CameraMetadata>(10);
+        metadata->swap(*emptyBuffer);
+    }
+
+    camera_metadata_t *meta = const_cast<camera_metadata_t *>(metadata->getAndLock());
+    set_camera_metadata_vendor_id(meta, vendorId);
+    metadata->unlock(meta);
+}
+
 static jint CameraMetadata_getTagFromKey(JNIEnv *env, jclass thiz, jstring keyName,
         jlong vendorId) {
     ScopedUtfChars keyScoped(env, keyName);
@@ -876,8 +956,8 @@ static jint CameraMetadata_setupGlobalVendorTagDescriptor(JNIEnv *env, jclass th
         return OK;
     } else if (!res.isOk()) {
         VendorTagDescriptor::clearGlobalVendorTagDescriptor();
-        ALOGE("%s: Failed to setup vendor tag descriptors: %s",
-                __FUNCTION__, res.toString8().string());
+        ALOGE("%s: Failed to setup vendor tag descriptors: %s", __FUNCTION__,
+              res.toString8().c_str());
         return res.serviceSpecificErrorCode();
     }
     if (0 < desc->getTagCount()) {
@@ -891,8 +971,8 @@ static jint CameraMetadata_setupGlobalVendorTagDescriptor(JNIEnv *env, jclass th
             return OK;
         } else if (!res.isOk()) {
             VendorTagDescriptorCache::clearGlobalVendorTagCache();
-            ALOGE("%s: Failed to setup vendor tag cache: %s",
-                    __FUNCTION__, res.toString8().string());
+            ALOGE("%s: Failed to setup vendor tag cache: %s", __FUNCTION__,
+                  res.toString8().c_str());
             return res.serviceSpecificErrorCode();
         }
 

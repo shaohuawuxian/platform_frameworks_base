@@ -59,20 +59,35 @@ class ControlsRequestReceiver : BroadcastReceiver() {
             return
         }
 
-        val packageName = intent.getParcelableExtra<ComponentName>(Intent.EXTRA_COMPONENT_NAME)
-                ?.packageName
+        val targetComponent = try {
+            intent.getParcelableExtra(Intent.EXTRA_COMPONENT_NAME, ComponentName::class.java)
+        } catch (e: Exception) {
+            Log.e(TAG, "Malformed intent extra ComponentName", e)
+            return
+        } ?: run {
+            Log.e(TAG, "Null target component")
+            return
+        }
 
-        if (packageName == null || !isPackageInForeground(context, packageName)) {
+        val control = try {
+            intent.getParcelableExtra(ControlsProviderService.EXTRA_CONTROL, Control::class.java)
+        } catch (e: Exception) {
+            Log.e(TAG, "Malformed intent extra Control", e)
+            return
+        } ?: run {
+            Log.e(TAG, "Null control")
+            return
+        }
+
+        val packageName = targetComponent.packageName
+
+        if (!isPackageInForeground(context, packageName)) {
             return
         }
 
         val activityIntent = Intent(context, ControlsRequestDialog::class.java).apply {
-            Intent.EXTRA_COMPONENT_NAME.let {
-                putExtra(it, intent.getParcelableExtra<ComponentName>(it))
-            }
-            ControlsProviderService.EXTRA_CONTROL.let {
-                putExtra(it, intent.getParcelableExtra<Control>(it))
-            }
+            putExtra(Intent.EXTRA_COMPONENT_NAME, targetComponent)
+            putExtra(ControlsProviderService.EXTRA_CONTROL, control)
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
         }
         activityIntent.putExtra(Intent.EXTRA_USER_ID, context.userId)

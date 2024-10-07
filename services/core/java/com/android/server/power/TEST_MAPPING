@@ -1,28 +1,13 @@
 {
   "presubmit": [
     {
-      "name": "CtsBatterySavingTestCases",
-      "options": [
-        {"exclude-annotation": "android.platform.test.annotations.FlakyTest"},
-        {"exclude-annotation": "androidx.test.filters.LargeTest"},
-        {"exclude-annotation": "androidx.test.filters.FlakyTest"}
-      ]
+      "name": "CtsBatterySavingTestCases_android_server_power"
     },
     {
-      "name": "FrameworksMockingServicesTests",
-      "options": [
-        {"include-filter": "com.android.server.power"},
-        {"exclude-annotation": "android.platform.test.annotations.FlakyTest"},
-        {"exclude-annotation": "androidx.test.filters.FlakyTest"}
-      ]
+      "name": "FrameworksMockingServicesTests_android_server_power_Presubmit"
     },
     {
-      "name": "FrameworksServicesTests",
-      "options": [
-        {"include-filter": "com.android.server.power"},
-        {"exclude-annotation": "android.platform.test.annotations.FlakyTest"},
-        {"exclude-annotation": "androidx.test.filters.FlakyTest"}
-      ]
+      "name": "PowerServiceTests_server_power"
     }
   ],
   "postsubmit": [
@@ -30,15 +15,18 @@
       "name": "CtsBatterySavingTestCases"
     },
     {
-      "name": "FrameworksMockingServicesTests",
-      "options": [
-        {"include-filter": "com.android.server.power"}
-      ]
+      "name": "FrameworksMockingServicesTests_android_server_power"
     },
     {
-      "name": "FrameworksServicesTests",
-      "options": [
-        {"include-filter": "com.android.server.power"}
+      "name": "FrameworksServicesTests_android_server_power"
+    },
+    {
+      "name": "PowerServiceTests_server_power"
+    },
+    {
+      "name": "CtsStatsdAtomHostTestCases_statsdatom_powermanager",
+      "file_patterns": [
+        "(/|^)ThermalManagerService.java"
       ]
     }
   ]

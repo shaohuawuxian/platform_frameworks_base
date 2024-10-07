@@ -21,6 +21,7 @@ import android.hardware.security.keymint.KeyParameter;
 import android.os.Binder;
 import android.os.RemoteException;
 import android.os.ServiceSpecificException;
+import android.os.StrictMode;
 import android.security.keymaster.KeymasterDefs;
 import android.system.keystore2.IKeystoreOperation;
 import android.system.keystore2.ResponseCode;
@@ -75,7 +76,7 @@ public class KeyStoreOperation {
                     );
                 }
                 default:
-                    throw KeyStore2.getKeyStoreException(e.errorCode);
+                    throw KeyStore2.getKeyStoreException(e.errorCode, e.getMessage());
             }
         } catch (RemoteException e) {
             // Log exception and report invalid operation handle.
@@ -85,7 +86,8 @@ public class KeyStoreOperation {
                     "Remote exception while advancing a KeyStoreOperation.",
                     e
             );
-            throw new KeyStoreException(KeymasterDefs.KM_ERROR_INVALID_OPERATION_HANDLE, "");
+            throw new KeyStoreException(KeymasterDefs.KM_ERROR_INVALID_OPERATION_HANDLE, "",
+                    e.getMessage());
         }
     }
 
@@ -96,6 +98,7 @@ public class KeyStoreOperation {
      * @throws KeyStoreException
      */
     public void updateAad(@NonNull byte[] input) throws KeyStoreException {
+        StrictMode.noteSlowCall("updateAad");
         handleExceptions(() -> {
             mOperation.updateAad(input);
             return 0;
@@ -111,6 +114,7 @@ public class KeyStoreOperation {
      * @hide
      */
     public byte[] update(@NonNull byte[] input) throws KeyStoreException {
+        StrictMode.noteSlowCall("update");
         return handleExceptions(() -> mOperation.update(input));
     }
 
@@ -124,6 +128,7 @@ public class KeyStoreOperation {
      * @hide
      */
     public byte[] finish(byte[] input, byte[] signature) throws KeyStoreException {
+        StrictMode.noteSlowCall("finish");
         return handleExceptions(() -> mOperation.finish(input, signature));
     }
 
@@ -134,6 +139,7 @@ public class KeyStoreOperation {
      * @hide
      */
     public void abort() throws KeyStoreException {
+        StrictMode.noteSlowCall("abort");
         handleExceptions(() -> {
             mOperation.abort();
             return 0;

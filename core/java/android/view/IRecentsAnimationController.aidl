@@ -17,8 +17,15 @@
 package android.view;
 
 import android.app.ActivityManager;
-import android.view.IRemoteAnimationFinishedCallback;
 import android.graphics.GraphicBuffer;
+import android.view.IRemoteAnimationFinishedCallback;
+import android.view.RemoteAnimationTarget;
+import android.view.SurfaceControl;
+import android.window.PictureInPictureSurfaceTransaction;
+import android.window.TaskSnapshot;
+import android.window.WindowAnimationState;
+
+import com.android.internal.os.IResultReceiver;
 
 /**
  * Passed to the {@link IRecentsAnimationRunner} in order for the runner to control to let the
@@ -33,8 +40,18 @@ interface IRecentsAnimationController {
      * Takes a screenshot of the task associated with the given {@param taskId}. Only valid for the
      * current set of task ids provided to the handler.
      */
-    @UnsupportedAppUsage
-    ActivityManager.TaskSnapshot screenshotTask(int taskId);
+    TaskSnapshot screenshotTask(int taskId);
+
+    /**
+     * Sets the final surface transaction on a Task. This is used by Launcher to notify the system
+     * that animating Activity to PiP has completed and the associated task surface should be
+     * updated accordingly. This should be called before `finish`
+     * @param taskId for which the leash should be updated
+     * @param finishTransaction leash operations for the final transform.
+     * @param overlay the surface control for an overlay being shown above the pip (can be null)
+     */
+     void setFinishTaskTransaction(int taskId,
+             in PictureInPictureSurfaceTransaction finishTransaction, in SurfaceControl overlay);
 
     /**
      * Notifies to the system that the animation into Recents should end, and all leashes associated
@@ -45,7 +62,7 @@ interface IRecentsAnimationController {
      *                          top resumed app, false otherwise.
      */
     @UnsupportedAppUsage
-    void finish(boolean moveHomeToTop, boolean sendUserLeaveHint);
+    void finish(boolean moveHomeToTop, boolean sendUserLeaveHint, in IResultReceiver finishCb);
 
     /**
      * Called by the handler to indicate that the recents animation input consumer should be
@@ -65,11 +82,6 @@ interface IRecentsAnimationController {
     */
     @UnsupportedAppUsage
     void setAnimationTargetsBehindSystemBars(boolean behindSystemBars);
-
-    /**
-     * Hides the current input method if one is showing.
-     */
-    void hideCurrentInputMethod();
 
     /**
      * Clean up the screenshot of previous task which was created during recents animation that
@@ -126,4 +138,41 @@ interface IRecentsAnimationController {
      * @return {@code true} when target removed successfully, {@code false} otherwise.
      */
     boolean removeTask(int taskId);
+
+    /**
+     * Detach navigation bar from app.
+     *
+     * The system reparents the leash of navigation bar to the app when the recents animation starts
+     * and Launcher should call this method to let system restore the navigation bar to its
+     * original position when the quick switch gesture is finished and will run the fade-in
+     * animation If {@param moveHomeToTop} is {@code true}. Otherwise, restore the navigtation bar
+     * without animation.
+     *
+     * @param moveHomeToTop if {@code true}, the home activity should be moved to the top.
+     *                      Otherwise, the home activity is hidden and the user is returned to the
+     *                      app.
+     */
+    void detachNavigationBarFromApp(boolean moveHomeToTop);
+
+    /**
+     * Used for animating the navigation bar during app launch from recents in live tile mode.
+     *
+     * First fade out the navigation bar at the bottom of the display and then fade in to the app.
+     *
+     * @param duration the duration of the app launch animation
+     */
+    void animateNavigationBarToApp(long duration);
+
+    /**
+     * Hand off the ongoing animation of a set of remote targets, to be run by another handler using
+     * the given starting parameters.
+     *
+     * Once the handoff is complete, operations on the old leashes for the given targets as well as
+     * callbacks will become no-ops.
+     *
+     * The number of targets MUST match the number of states, and each state MUST match the target
+     * at the same index.
+     */
+    oneway void handOffAnimation(in RemoteAnimationTarget[] targets,
+                    in WindowAnimationState[] states);
 }

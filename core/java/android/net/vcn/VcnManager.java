@@ -20,10 +20,12 @@ import static java.util.Objects.requireNonNull;
 import android.annotation.IntDef;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
+import android.annotation.RequiresFeature;
 import android.annotation.RequiresPermission;
 import android.annotation.SystemApi;
 import android.annotation.SystemService;
 import android.content.Context;
+import android.content.pm.PackageManager;
 import android.net.LinkProperties;
 import android.net.NetworkCapabilities;
 import android.os.Binder;
@@ -69,18 +71,25 @@ import java.util.concurrent.Executor;
  * tasks. In Safe Mode, the system will allow underlying cellular networks to be used as default.
  * Additionally, during Safe Mode, the VCN will continue to retry the connections, and will
  * automatically exit Safe Mode if all active tunnels connect successfully.
+ *
+ * <p>Apps targeting Android 15 or newer should check the existence of {@link
+ * PackageManager#FEATURE_TELEPHONY_SUBSCRIPTION} before querying the service. If the feature is
+ * absent, {@link Context#getSystemService} may return null.
  */
-@SystemService(Context.VCN_MANAGEMENT_SERVICE)
+@SystemService(VcnManager.VCN_MANAGEMENT_SERVICE_STRING)
+@RequiresFeature(PackageManager.FEATURE_TELEPHONY_SUBSCRIPTION)
 public class VcnManager {
     @NonNull private static final String TAG = VcnManager.class.getSimpleName();
+
+    // TODO: b/366598445: Expose and use Context.VCN_MANAGEMENT_SERVICE
+    /** @hide */
+    public static final String VCN_MANAGEMENT_SERVICE_STRING = "vcn_management";
 
     /**
      * Key for WiFi entry RSSI thresholds
      *
      * <p>The VCN will only migrate to a Carrier WiFi network that has a signal strength greater
      * than, or equal to this threshold.
-     *
-     * <p>WARNING: The VCN does not listen for changes to this key made after VCN startup.
      *
      * @hide
      */
@@ -94,15 +103,109 @@ public class VcnManager {
      * <p>If the VCN's selected Carrier WiFi network has a signal strength less than this threshold,
      * the VCN will attempt to migrate away from the Carrier WiFi network.
      *
-     * <p>WARNING: The VCN does not listen for changes to this key made after VCN startup.
-     *
      * @hide
      */
     @NonNull
     public static final String VCN_NETWORK_SELECTION_WIFI_EXIT_RSSI_THRESHOLD_KEY =
             "vcn_network_selection_wifi_exit_rssi_threshold";
 
+    /**
+     * Key for the interval to poll IpSecTransformState for packet loss monitoring
+     *
+     * @hide
+     */
+    @NonNull
+    public static final String VCN_NETWORK_SELECTION_POLL_IPSEC_STATE_INTERVAL_SECONDS_KEY =
+            "vcn_network_selection_poll_ipsec_state_interval_seconds";
+
+    /**
+     * Key for the threshold of IPSec packet loss rate
+     *
+     * @hide
+     */
+    @NonNull
+    public static final String VCN_NETWORK_SELECTION_IPSEC_PACKET_LOSS_PERCENT_THRESHOLD_KEY =
+            "vcn_network_selection_ipsec_packet_loss_percent_threshold";
+
+    /**
+     * Key for detecting unusually large increases in IPsec packet sequence numbers.
+     *
+     * <p>If the sequence number increases by more than this value within a second, it may indicate
+     * an intentional leap on the server's downlink. To avoid false positives, the packet loss
+     * detector will suppress loss reporting.
+     *
+     * <p>By default, there's no maximum limit enforced, prioritizing detection of lossy networks.
+     * To reduce false positives, consider setting an appropriate maximum threshold.
+     *
+     * @hide
+     */
+    @NonNull
+    public static final String VCN_NETWORK_SELECTION_MAX_SEQ_NUM_INCREASE_PER_SECOND_KEY =
+            "vcn_network_selection_max_seq_num_increase_per_second";
+
+    /**
+     * Key for the list of timeouts in minute to stop penalizing an underlying network candidate
+     *
+     * @hide
+     */
+    @NonNull
+    public static final String VCN_NETWORK_SELECTION_PENALTY_TIMEOUT_MINUTES_LIST_KEY =
+            "vcn_network_selection_penalty_timeout_minutes_list";
+
     // TODO: Add separate signal strength thresholds for 2.4 GHz and 5GHz
+
+    /**
+     * Key for transports that need to be marked as restricted by the VCN
+     *
+     * <p>Defaults to TRANSPORT_WIFI if the config does not exist
+     *
+     * @hide
+     */
+    public static final String VCN_RESTRICTED_TRANSPORTS_INT_ARRAY_KEY =
+            "vcn_restricted_transports";
+
+    /**
+     * Key for number of seconds to wait before entering safe mode
+     *
+     * <p>A VcnGatewayConnection will enter safe mode when it takes over the configured timeout to
+     * enter {@link ConnectedState}.
+     *
+     * <p>Defaults to 30, unless overridden by carrier config
+     *
+     * @hide
+     */
+    @NonNull
+    public static final String VCN_SAFE_MODE_TIMEOUT_SECONDS_KEY =
+            "vcn_safe_mode_timeout_seconds_key";
+
+    /**
+     * Key for maximum number of parallel SAs for tunnel aggregation
+     *
+     * <p>If set to a value > 1, multiple tunnels will be set up, and inbound traffic will be
+     * aggregated over the various tunnels.
+     *
+     * <p>Defaults to 1, unless overridden by carrier config
+     *
+     * @hide
+     */
+    @NonNull
+    public static final String VCN_TUNNEL_AGGREGATION_SA_COUNT_MAX_KEY =
+            "vcn_tunnel_aggregation_sa_count_max";
+
+    /** List of Carrier Config options to extract from Carrier Config bundles. @hide */
+    @NonNull
+    public static final String[] VCN_RELATED_CARRIER_CONFIG_KEYS =
+            new String[] {
+                VCN_NETWORK_SELECTION_WIFI_ENTRY_RSSI_THRESHOLD_KEY,
+                VCN_NETWORK_SELECTION_WIFI_EXIT_RSSI_THRESHOLD_KEY,
+                VCN_NETWORK_SELECTION_POLL_IPSEC_STATE_INTERVAL_SECONDS_KEY,
+                VCN_NETWORK_SELECTION_IPSEC_PACKET_LOSS_PERCENT_THRESHOLD_KEY,
+                VCN_NETWORK_SELECTION_MAX_SEQ_NUM_INCREASE_PER_SECOND_KEY,
+                VCN_NETWORK_SELECTION_PENALTY_TIMEOUT_MINUTES_LIST_KEY,
+                VCN_RESTRICTED_TRANSPORTS_INT_ARRAY_KEY,
+                VCN_SAFE_MODE_TIMEOUT_SECONDS_KEY,
+                VCN_TUNNEL_AGGREGATION_SA_COUNT_MAX_KEY,
+            };
 
     private static final Map<
                     VcnNetworkPolicyChangeListener, VcnUnderlyingNetworkPolicyListenerBinder>
@@ -172,11 +275,11 @@ public class VcnManager {
      *
      * <p>An app that has carrier privileges for any of the subscriptions in the given group may
      * clear a VCN configuration. This API is ONLY permitted for callers running as the primary
-     * user. Any active VCN will be torn down.
+     * user. Any active VCN associated with this configuration will be torn down.
      *
      * @param subscriptionGroup the subscription group that the configuration should be applied to
-     * @throws SecurityException if the caller does not have carrier privileges, or is not running
-     *     as the primary user
+     * @throws SecurityException if the caller does not have carrier privileges, is not the owner of
+     *     the associated configuration, or is not running as the primary user
      * @throws IOException if the configuration failed to be cleared from disk. This may occur due
      *     to temporary disk errors, or more permanent conditions such as a full disk.
      */
@@ -196,8 +299,13 @@ public class VcnManager {
     /**
      * Retrieves the list of Subscription Groups for which a VCN Configuration has been set.
      *
-     * <p>The returned list will include only subscription groups for which the carrier app is
-     * privileged, and which have an associated {@link VcnConfig}.
+     * <p>The returned list will include only subscription groups for which an associated {@link
+     * VcnConfig} exists, and the app is either:
+     *
+     * <ul>
+     *   <li>Carrier privileged for that subscription group, or
+     *   <li>Is the provisioning package of the config
+     * </ul>
      *
      * @throws SecurityException if the caller is not running as the primary user
      */

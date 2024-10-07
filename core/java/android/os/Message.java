@@ -16,6 +16,7 @@
 
 package android.os;
 
+import android.annotation.Nullable;
 import android.compat.annotation.UnsupportedAppUsage;
 import android.util.TimeUtils;
 import android.util.proto.ProtoOutputStream;
@@ -33,12 +34,16 @@ import com.android.internal.annotations.VisibleForTesting;
  * {@link Handler#obtainMessage Handler.obtainMessage()} methods, which will pull
  * them from a pool of recycled objects.</p>
  */
+@android.ravenwood.annotation.RavenwoodKeepWholeClass
 public final class Message implements Parcelable {
     /**
      * User-defined message code so that the recipient can identify
      * what this message is about. Each {@link Handler} has its own name-space
      * for message codes, so you do not need to worry about yours conflicting
      * with other handlers.
+     *
+     * If not specified, this value is 0.
+     * Use values other than 0 to indicate custom message codes.
      */
     public int what;
 
@@ -436,6 +441,7 @@ public final class Message implements Parcelable {
      * @see #getData()
      * @see #setData(Bundle)
      */
+    @Nullable
     public Bundle peekData() {
         return data;
     }
@@ -654,7 +660,7 @@ public final class Message implements Parcelable {
         arg1 = source.readInt();
         arg2 = source.readInt();
         if (source.readInt() != 0) {
-            obj = source.readParcelable(getClass().getClassLoader());
+            obj = source.readParcelable(getClass().getClassLoader(), java.lang.Object.class);
         }
         when = source.readLong();
         data = source.readBundle();

@@ -16,19 +16,23 @@
 
 package com.android.internal.os;
 
+import static com.google.common.truth.Truth.assertThat;
+
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
+import android.platform.test.annotations.IgnoreUnderRavenwood;
+import android.platform.test.ravenwood.RavenwoodRule;
 import android.util.SparseArray;
 
 import androidx.test.filters.SmallTest;
-import androidx.test.runner.AndroidJUnit4;
 
 import com.android.internal.os.KernelSingleUidTimeReader.Injector;
 
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.Parameterized;
@@ -42,7 +46,11 @@ import java.util.Collection;
 
 @SmallTest
 @RunWith(Parameterized.class)
+@IgnoreUnderRavenwood(reason = "Needs kernel support")
 public class KernelSingleUidTimeReaderTest {
+    @Rule
+    public final RavenwoodRule mRavenwood = new RavenwoodRule();
+
     private final static int TEST_UID = 2222;
     private final static int TEST_FREQ_COUNT = 5;
 
@@ -279,6 +287,56 @@ public class KernelSingleUidTimeReaderTest {
                 0, lastUidCpuTimes.size());
     }
 
+    @Test
+    public void testAddDeltaFromBpf() {
+        LongArrayMultiStateCounter counter = new LongArrayMultiStateCounter(2, 5);
+        counter.setState(0, 0);
+        mInjector.setCpuTimeInStatePerClusterNs(new long[][]{{0, 0, 0}, {0, 0}});
+        boolean success = mInjector.addDelta(TEST_UID, counter, 0, null);
+        assertThat(success).isTrue();
+
+        // Nanoseconds
+        mInjector.setCpuTimeInStatePerClusterNs(
+                new long[][]{
+                        {1_000_000, 2_000_000, 3_000_000},
+                        {4_000_000, 5_000_000}});
+
+        LongArrayMultiStateCounter.LongArrayContainer array =
+                new LongArrayMultiStateCounter.LongArrayContainer(5);
+        long[] out = new long[5];
+
+        success = mInjector.addDelta(TEST_UID, counter, 2000, array);
+        assertThat(success).isTrue();
+
+        array.getValues(out);
+        assertThat(out).isEqualTo(new long[]{1, 2, 3, 4, 5});
+
+        counter.getCounts(array, 0);
+        array.getValues(out);
+        assertThat(out).isEqualTo(new long[]{1, 2, 3, 4, 5});
+
+        counter.setState(1, 3000);
+
+        mInjector.setCpuTimeInStatePerClusterNs(
+                new long[][]{
+                        {11_000_000, 22_000_000, 33_000_000},
+                        {44_000_000, 55_000_000}});
+
+        success = mInjector.addDelta(TEST_UID, counter, 4000, array);
+        assertThat(success).isTrue();
+
+        array.getValues(out);
+        assertThat(out).isEqualTo(new long[]{10, 20, 30, 40, 50});
+
+        counter.getCounts(array, 0);
+        array.getValues(out);
+        assertThat(out).isEqualTo(new long[]{1 + 5, 2 + 10, 3 + 15, 4 + 20, 5 + 25});
+
+        counter.getCounts(array, 1);
+        array.getValues(out);
+        assertThat(out).isEqualTo(new long[]{5, 10, 15, 20, 25});
+    }
+
     private void assertCpuTimesEqual(long[] expected, long[] actual) {
         assertArrayEquals("Expected=" + Arrays.toString(expected)
                 + ", Actual=" + Arrays.toString(actual), expected, actual);
@@ -288,6 +346,7 @@ public class KernelSingleUidTimeReaderTest {
         private byte[] mData;
         private long[] mBpfData;
         private boolean mThrowExcpetion;
+        private long[][] mCpuTimeInStatePerClusterNs;
 
         @Override
         public byte[] readData(String procFile) throws IOException {
@@ -316,8 +375,19 @@ public class KernelSingleUidTimeReaderTest {
             mBpfData = cpuTimes.clone();
         }
 
+        public void setCpuTimeInStatePerClusterNs(long[][] cpuTimeInStatePerClusterNs) {
+            mCpuTimeInStatePerClusterNs = cpuTimeInStatePerClusterNs;
+        }
+
         public void letReadDataThrowException(boolean throwException) {
             mThrowExcpetion = throwException;
+        }
+
+        @Override
+        public boolean addDelta(int uid, LongArrayMultiStateCounter counter, long timestampMs,
+                LongArrayMultiStateCounter.LongArrayContainer deltaOut) {
+            return addDeltaForTest(uid, counter, timestampMs, mCpuTimeInStatePerClusterNs,
+                    deltaOut);
         }
     }
 }

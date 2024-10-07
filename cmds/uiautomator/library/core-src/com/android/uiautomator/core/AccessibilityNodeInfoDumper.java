@@ -139,7 +139,7 @@ public class AccessibilityNodeInfoDumper {
                 serializer.attribute("", "id", Integer.toString(displayId));
                 int rotation = display.getRotation();
                 Point size = new Point();
-                display.getSize(size);
+                display.getRealSize(size);
                 for (int i = 0, n = windows.size(); i < n; ++i) {
                     dumpWindowRec(windows.get(i), serializer, i, size.x, size.y, rotation);
                 }
@@ -292,13 +292,17 @@ public class AccessibilityNodeInfoDumper {
         int childCount = node.getChildCount();
         for (int x = 0; x < childCount; x++) {
             AccessibilityNodeInfo childNode = node.getChild(x);
-
+            if (childNode == null) {
+                continue;
+            }
             if (!safeCharSeqToString(childNode.getContentDescription()).isEmpty()
-                    || !safeCharSeqToString(childNode.getText()).isEmpty())
+                    || !safeCharSeqToString(childNode.getText()).isEmpty()) {
                 return true;
+            }
 
-            if (childNafCheck(childNode))
+            if (childNafCheck(childNode)) {
                 return true;
+            }
         }
         return false;
     }

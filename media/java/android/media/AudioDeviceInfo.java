@@ -16,19 +16,23 @@
 
 package android.media;
 
+import android.Manifest;
 import android.annotation.IntDef;
 import android.annotation.NonNull;
-import android.annotation.SystemApi;
+import android.annotation.RequiresPermission;
+import android.annotation.TestApi;
 import android.util.SparseIntArray;
+
+import com.android.internal.annotations.VisibleForTesting;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
-import java.util.Arrays;
+import java.util.List;
 import java.util.Objects;
 import java.util.TreeSet;
 
 /**
- * Class to provide information about the audio devices.
+ * Provides information about an audio device.
  */
 public final class AudioDeviceInfo {
 
@@ -87,6 +91,9 @@ public final class AudioDeviceInfo {
     public static final int TYPE_USB_ACCESSORY    = 12;
     /**
      * A device type describing the audio device associated with a dock.
+     * Starting at API 34, this device type only represents digital docks, while docks with an
+     * analog connection are represented with {@link #TYPE_DOCK_ANALOG}.
+     * @see #TYPE_DOCK_ANALOG
      */
     public static final int TYPE_DOCK             = 13;
     /**
@@ -138,13 +145,15 @@ public final class AudioDeviceInfo {
      */
     public static final int TYPE_BUILTIN_SPEAKER_SAFE = 24;
     /**
-     * @hide
      * A device type for rerouting audio within the Android framework between mixes and
-     * system applications. Typically created when using
-     * {@link android.media.audiopolicy.AudioPolicy} for mixes created with the
-     * {@link android.media.audiopolicy.AudioMix#ROUTE_FLAG_RENDER} flag.
+     * system applications.
+     * This type is for instance encountered when querying the output device of a track
+     * (with {@link AudioTrack#getRoutedDevice()} playing from a device in screen mirroring mode,
+     * where the audio is not heard on the device, but on the remote device.
      */
-    @SystemApi
+    // Typically created when using
+    // {@link android.media.audiopolicy.AudioPolicy} for mixes created with the
+    // {@link android.media.audiopolicy.AudioMix#ROUTE_FLAG_LOOP_BACK} flag.
     public static final int TYPE_REMOTE_SUBMIX = 25;
 
     /**
@@ -159,6 +168,29 @@ public final class AudioDeviceInfo {
      */
     public static final int TYPE_BLE_SPEAKER   = 27;
 
+    /**
+     * A device type describing an Echo Canceller loopback Reference.
+     * This device is only used when capturing with MediaRecorder.AudioSource.ECHO_REFERENCE,
+     * which requires privileged permission
+     * {@link android.Manifest.permission#CAPTURE_AUDIO_OUTPUT}.
+     * @hide */
+    @RequiresPermission(Manifest.permission.CAPTURE_AUDIO_OUTPUT)
+    public static final int TYPE_ECHO_REFERENCE   = 28;
+
+    /**
+     * A device type describing the Enhanced Audio Return Channel of an HDMI connection.
+     */
+    public static final int TYPE_HDMI_EARC         = 29;
+
+    /**
+     * A device type describing a Bluetooth Low Energy (BLE) broadcast group.
+     */
+    public static final int TYPE_BLE_BROADCAST   = 30;
+
+    /**
+     * A device type describing the audio device associated with a dock using an analog connection.
+     */
+    public static final int TYPE_DOCK_ANALOG = 31;
 
     /** @hide */
     @IntDef(flag = false, prefix = "TYPE", value = {
@@ -176,6 +208,7 @@ public final class AudioDeviceInfo {
             TYPE_TELEPHONY,
             TYPE_LINE_ANALOG,
             TYPE_HDMI_ARC,
+            TYPE_HDMI_EARC,
             TYPE_LINE_DIGITAL,
             TYPE_FM,
             TYPE_AUX_LINE,
@@ -185,8 +218,13 @@ public final class AudioDeviceInfo {
             TYPE_BUILTIN_MIC,
             TYPE_FM_TUNER,
             TYPE_TV_TUNER,
+            TYPE_BUILTIN_SPEAKER_SAFE,
+            TYPE_REMOTE_SUBMIX,
             TYPE_BLE_HEADSET,
-            TYPE_BLE_SPEAKER}
+            TYPE_BLE_SPEAKER,
+            TYPE_ECHO_REFERENCE,
+            TYPE_BLE_BROADCAST,
+            TYPE_DOCK_ANALOG}
     )
     @Retention(RetentionPolicy.SOURCE)
     public @interface AudioDeviceType {}
@@ -209,7 +247,12 @@ public final class AudioDeviceInfo {
             TYPE_LINE_DIGITAL,
             TYPE_IP,
             TYPE_BUS,
-            TYPE_BLE_HEADSET}
+            TYPE_REMOTE_SUBMIX,
+            TYPE_BLE_HEADSET,
+            TYPE_HDMI_ARC,
+            TYPE_HDMI_EARC,
+            TYPE_ECHO_REFERENCE,
+            TYPE_DOCK_ANALOG}
     )
     @Retention(RetentionPolicy.SOURCE)
     public @interface AudioDeviceTypeIn {}
@@ -230,14 +273,18 @@ public final class AudioDeviceInfo {
             TYPE_TELEPHONY,
             TYPE_LINE_ANALOG,
             TYPE_HDMI_ARC,
+            TYPE_HDMI_EARC,
             TYPE_LINE_DIGITAL,
             TYPE_FM,
             TYPE_AUX_LINE,
             TYPE_IP,
             TYPE_BUS,
             TYPE_HEARING_AID,
+            TYPE_BUILTIN_SPEAKER_SAFE,
             TYPE_BLE_HEADSET,
-            TYPE_BLE_SPEAKER}
+            TYPE_BLE_SPEAKER,
+            TYPE_BLE_BROADCAST,
+            TYPE_DOCK_ANALOG}
     )
     @Retention(RetentionPolicy.SOURCE)
     public @interface AudioDeviceTypeOut {}
@@ -259,6 +306,7 @@ public final class AudioDeviceInfo {
             case TYPE_TELEPHONY:
             case TYPE_LINE_ANALOG:
             case TYPE_HDMI_ARC:
+            case TYPE_HDMI_EARC:
             case TYPE_LINE_DIGITAL:
             case TYPE_FM:
             case TYPE_AUX_LINE:
@@ -268,6 +316,8 @@ public final class AudioDeviceInfo {
             case TYPE_BUILTIN_SPEAKER_SAFE:
             case TYPE_BLE_HEADSET:
             case TYPE_BLE_SPEAKER:
+            case TYPE_BLE_BROADCAST:
+            case TYPE_DOCK_ANALOG:
                 return true;
             default:
                 return false;
@@ -295,6 +345,10 @@ public final class AudioDeviceInfo {
             case TYPE_BUS:
             case TYPE_REMOTE_SUBMIX:
             case TYPE_BLE_HEADSET:
+            case TYPE_HDMI_ARC:
+            case TYPE_HDMI_EARC:
+            case TYPE_ECHO_REFERENCE:
+            case TYPE_DOCK_ANALOG:
                 return true;
             default:
                 return false;
@@ -303,9 +357,15 @@ public final class AudioDeviceInfo {
 
     /**
      * @hide
-     * Throws IAE on an invalid output device type
+     * Enforces whether the audio device type is acceptable for output.
+     *
+     * A vendor implemented output type should modify isValidAudioDeviceTypeOut()
+     * appropriately to accept the new type.  Do not remove already acceptable types.
+     *
+     * @throws IllegalArgumentException on an invalid output device type.
      * @param type
      */
+    @TestApi
     public static void enforceValidAudioDeviceTypeOut(int type) {
         if (!isValidAudioDeviceTypeOut(type)) {
             throw new IllegalArgumentException("Illegal output device type " + type);
@@ -314,9 +374,15 @@ public final class AudioDeviceInfo {
 
     /**
      * @hide
-     * Throws IAE on an invalid input device type
+     * Enforces whether the audio device type is acceptable for input.
+     *
+     * A vendor implemented input type should modify isValidAudioDeviceTypeIn()
+     * appropriately to accept the new type.  Do not remove already acceptable types.
+     *
+     * @throws IllegalArgumentException on an invalid input device type.
      * @param type
      */
+    @TestApi
     public static void enforceValidAudioDeviceTypeIn(int type) {
         if (!isValidAudioDeviceTypeIn(type)) {
             throw new IllegalArgumentException("Illegal input device type " + type);
@@ -338,7 +404,9 @@ public final class AudioDeviceInfo {
 
     private final AudioDevicePort mPort;
 
-    AudioDeviceInfo(AudioDevicePort port) {
+    /** @hide */
+    @VisibleForTesting
+    public AudioDeviceInfo(AudioDevicePort port) {
        mPort = port;
     }
 
@@ -352,7 +420,7 @@ public final class AudioDeviceInfo {
 
     /**
      * @hide
-     * @return the internal device tyoe
+     * @return the internal device type
      */
     public int getInternalType() {
         return mPort.type();
@@ -370,7 +438,7 @@ public final class AudioDeviceInfo {
      */
     public CharSequence getProductName() {
         String portName = mPort.name();
-        return portName.length() != 0 ? portName : android.os.Build.MODEL;
+        return (portName != null && portName.length() != 0) ? portName : android.os.Build.MODEL;
     }
 
     /**
@@ -471,29 +539,21 @@ public final class AudioDeviceInfo {
      * For forward compatibility, applications should ignore entries it does not recognize.
      */
     public @NonNull int[] getEncodings() {
-        final int[] encodings = AudioFormat.filterPublicFormats(mPort.formats());
-        boolean hasFloat = false;
-        boolean hasExtendedIntegerPrecision = false;
+        return AudioFormat.filterPublicFormats(mPort.formats());
+    }
 
-        for (int encoding : encodings) {
-            if (AudioFormat.isEncodingLinearPcm(encoding)) {
-                if (encoding == AudioFormat.ENCODING_PCM_FLOAT) {
-                    hasFloat = true;
-                } else if (AudioFormat.getBytesPerSample(encoding) > 2) {
-                    hasExtendedIntegerPrecision = true;
-                }
-            }
-        }
-        if (hasExtendedIntegerPrecision && !hasFloat) {
-            // R and earlier compatibility - add ENCODING_PCM_FLOAT to the end
-            // (replacing the zero pad). This ensures pre-S apps that look
-            // for ENCODING_PCM_FLOAT continue to see that encoding if the device supports
-            // extended precision integers.
-            int[] encodingsPlusFloat = Arrays.copyOf(encodings, encodings.length + 1);
-            encodingsPlusFloat[encodings.length] = AudioFormat.ENCODING_PCM_FLOAT;
-            return encodingsPlusFloat;
-        }
-        return encodings;
+    /**
+     * @return A list of {@link AudioProfile} supported by the audio devices.
+     */
+    public @NonNull List<AudioProfile> getAudioProfiles() {
+        return mPort.profiles();
+    }
+
+    /**
+     * @return A list of {@link AudioDescriptor} supported by the audio devices.
+     */
+    public @NonNull List<AudioDescriptor> getAudioDescriptors() {
+        return mPort.audioDescriptors();
     }
 
     /**
@@ -530,7 +590,7 @@ public final class AudioDeviceInfo {
    /**
      * @return The device type identifier of the audio device (i.e. TYPE_BUILTIN_SPEAKER).
      */
-    public int getType() {
+    public @AudioDeviceType int getType() {
         return INT_TO_EXT_DEVICE_MAPPING.get(mPort.type(), TYPE_UNKNOWN);
     }
 
@@ -546,7 +606,16 @@ public final class AudioDeviceInfo {
 
     /** @hide */
     public static int convertDeviceTypeToInternalInputDevice(int deviceType) {
-        return EXT_TO_INT_INPUT_DEVICE_MAPPING.get(deviceType, AudioSystem.DEVICE_NONE);
+        return convertDeviceTypeToInternalInputDevice(deviceType, "");
+    }
+    /** @hide */
+    public static int convertDeviceTypeToInternalInputDevice(int deviceType, String address) {
+        int internalType = EXT_TO_INT_INPUT_DEVICE_MAPPING.get(deviceType, AudioSystem.DEVICE_NONE);
+        if (internalType == AudioSystem.DEVICE_IN_BUILTIN_MIC
+                && "back".equals(address)) {
+            internalType = AudioSystem.DEVICE_IN_BACK_MIC;
+        }
+        return internalType;
     }
 
     private static final SparseIntArray INT_TO_EXT_DEVICE_MAPPING;
@@ -572,7 +641,7 @@ public final class AudioDeviceInfo {
         INT_TO_EXT_DEVICE_MAPPING.put(AudioSystem.DEVICE_OUT_BLUETOOTH_A2DP_HEADPHONES, TYPE_BLUETOOTH_A2DP);
         INT_TO_EXT_DEVICE_MAPPING.put(AudioSystem.DEVICE_OUT_BLUETOOTH_A2DP_SPEAKER, TYPE_BLUETOOTH_A2DP);
         INT_TO_EXT_DEVICE_MAPPING.put(AudioSystem.DEVICE_OUT_HDMI, TYPE_HDMI);
-        INT_TO_EXT_DEVICE_MAPPING.put(AudioSystem.DEVICE_OUT_ANLG_DOCK_HEADSET, TYPE_DOCK);
+        INT_TO_EXT_DEVICE_MAPPING.put(AudioSystem.DEVICE_OUT_ANLG_DOCK_HEADSET, TYPE_DOCK_ANALOG);
         INT_TO_EXT_DEVICE_MAPPING.put(AudioSystem.DEVICE_OUT_DGTL_DOCK_HEADSET, TYPE_DOCK);
         INT_TO_EXT_DEVICE_MAPPING.put(AudioSystem.DEVICE_OUT_USB_ACCESSORY, TYPE_USB_ACCESSORY);
         INT_TO_EXT_DEVICE_MAPPING.put(AudioSystem.DEVICE_OUT_USB_DEVICE, TYPE_USB_DEVICE);
@@ -580,6 +649,7 @@ public final class AudioDeviceInfo {
         INT_TO_EXT_DEVICE_MAPPING.put(AudioSystem.DEVICE_OUT_TELEPHONY_TX, TYPE_TELEPHONY);
         INT_TO_EXT_DEVICE_MAPPING.put(AudioSystem.DEVICE_OUT_LINE, TYPE_LINE_ANALOG);
         INT_TO_EXT_DEVICE_MAPPING.put(AudioSystem.DEVICE_OUT_HDMI_ARC, TYPE_HDMI_ARC);
+        INT_TO_EXT_DEVICE_MAPPING.put(AudioSystem.DEVICE_OUT_HDMI_EARC, TYPE_HDMI_EARC);
         INT_TO_EXT_DEVICE_MAPPING.put(AudioSystem.DEVICE_OUT_SPDIF, TYPE_LINE_DIGITAL);
         INT_TO_EXT_DEVICE_MAPPING.put(AudioSystem.DEVICE_OUT_FM, TYPE_FM);
         INT_TO_EXT_DEVICE_MAPPING.put(AudioSystem.DEVICE_OUT_AUX_LINE, TYPE_AUX_LINE);
@@ -591,6 +661,7 @@ public final class AudioDeviceInfo {
         INT_TO_EXT_DEVICE_MAPPING.put(AudioSystem.DEVICE_OUT_REMOTE_SUBMIX, TYPE_REMOTE_SUBMIX);
         INT_TO_EXT_DEVICE_MAPPING.put(AudioSystem.DEVICE_OUT_BLE_HEADSET, TYPE_BLE_HEADSET);
         INT_TO_EXT_DEVICE_MAPPING.put(AudioSystem.DEVICE_OUT_BLE_SPEAKER, TYPE_BLE_SPEAKER);
+        INT_TO_EXT_DEVICE_MAPPING.put(AudioSystem.DEVICE_OUT_BLE_BROADCAST, TYPE_BLE_BROADCAST);
 
         INT_TO_EXT_DEVICE_MAPPING.put(AudioSystem.DEVICE_IN_BUILTIN_MIC, TYPE_BUILTIN_MIC);
         INT_TO_EXT_DEVICE_MAPPING.put(AudioSystem.DEVICE_IN_BLUETOOTH_SCO_HEADSET, TYPE_BLUETOOTH_SCO);
@@ -598,7 +669,7 @@ public final class AudioDeviceInfo {
         INT_TO_EXT_DEVICE_MAPPING.put(AudioSystem.DEVICE_IN_HDMI, TYPE_HDMI);
         INT_TO_EXT_DEVICE_MAPPING.put(AudioSystem.DEVICE_IN_TELEPHONY_RX, TYPE_TELEPHONY);
         INT_TO_EXT_DEVICE_MAPPING.put(AudioSystem.DEVICE_IN_BACK_MIC, TYPE_BUILTIN_MIC);
-        INT_TO_EXT_DEVICE_MAPPING.put(AudioSystem.DEVICE_IN_ANLG_DOCK_HEADSET, TYPE_DOCK);
+        INT_TO_EXT_DEVICE_MAPPING.put(AudioSystem.DEVICE_IN_ANLG_DOCK_HEADSET, TYPE_DOCK_ANALOG);
         INT_TO_EXT_DEVICE_MAPPING.put(AudioSystem.DEVICE_IN_DGTL_DOCK_HEADSET, TYPE_DOCK);
         INT_TO_EXT_DEVICE_MAPPING.put(AudioSystem.DEVICE_IN_USB_ACCESSORY, TYPE_USB_ACCESSORY);
         INT_TO_EXT_DEVICE_MAPPING.put(AudioSystem.DEVICE_IN_USB_DEVICE, TYPE_USB_DEVICE);
@@ -612,6 +683,10 @@ public final class AudioDeviceInfo {
         INT_TO_EXT_DEVICE_MAPPING.put(AudioSystem.DEVICE_IN_BUS, TYPE_BUS);
         INT_TO_EXT_DEVICE_MAPPING.put(AudioSystem.DEVICE_IN_REMOTE_SUBMIX, TYPE_REMOTE_SUBMIX);
         INT_TO_EXT_DEVICE_MAPPING.put(AudioSystem.DEVICE_IN_BLE_HEADSET, TYPE_BLE_HEADSET);
+        INT_TO_EXT_DEVICE_MAPPING.put(AudioSystem.DEVICE_IN_HDMI_ARC, TYPE_HDMI_ARC);
+        INT_TO_EXT_DEVICE_MAPPING.put(AudioSystem.DEVICE_IN_HDMI_EARC, TYPE_HDMI_EARC);
+        INT_TO_EXT_DEVICE_MAPPING.put(AudioSystem.DEVICE_IN_ECHO_REFERENCE, TYPE_ECHO_REFERENCE);
+
 
         // privileges mapping to output device
         EXT_TO_INT_DEVICE_MAPPING = new SparseIntArray();
@@ -625,14 +700,13 @@ public final class AudioDeviceInfo {
         EXT_TO_INT_DEVICE_MAPPING.put(TYPE_BLUETOOTH_A2DP, AudioSystem.DEVICE_OUT_BLUETOOTH_A2DP);
         EXT_TO_INT_DEVICE_MAPPING.put(TYPE_HDMI, AudioSystem.DEVICE_OUT_HDMI);
         EXT_TO_INT_DEVICE_MAPPING.put(TYPE_HDMI_ARC, AudioSystem.DEVICE_OUT_HDMI_ARC);
+        EXT_TO_INT_DEVICE_MAPPING.put(TYPE_HDMI_EARC, AudioSystem.DEVICE_OUT_HDMI_EARC);
         EXT_TO_INT_DEVICE_MAPPING.put(TYPE_USB_DEVICE, AudioSystem.DEVICE_OUT_USB_DEVICE);
         EXT_TO_INT_DEVICE_MAPPING.put(TYPE_USB_HEADSET, AudioSystem.DEVICE_OUT_USB_HEADSET);
         EXT_TO_INT_DEVICE_MAPPING.put(TYPE_USB_ACCESSORY, AudioSystem.DEVICE_OUT_USB_ACCESSORY);
-        EXT_TO_INT_DEVICE_MAPPING.put(TYPE_DOCK, AudioSystem.DEVICE_OUT_ANLG_DOCK_HEADSET);
+        EXT_TO_INT_DEVICE_MAPPING.put(TYPE_DOCK, AudioSystem.DEVICE_OUT_DGTL_DOCK_HEADSET);
+        EXT_TO_INT_DEVICE_MAPPING.put(TYPE_DOCK_ANALOG, AudioSystem.DEVICE_OUT_ANLG_DOCK_HEADSET);
         EXT_TO_INT_DEVICE_MAPPING.put(TYPE_FM, AudioSystem.DEVICE_OUT_FM);
-        EXT_TO_INT_DEVICE_MAPPING.put(TYPE_BUILTIN_MIC, AudioSystem.DEVICE_IN_BUILTIN_MIC);
-        EXT_TO_INT_DEVICE_MAPPING.put(TYPE_FM_TUNER, AudioSystem.DEVICE_IN_FM_TUNER);
-        EXT_TO_INT_DEVICE_MAPPING.put(TYPE_TV_TUNER, AudioSystem.DEVICE_IN_TV_TUNER);
         EXT_TO_INT_DEVICE_MAPPING.put(TYPE_TELEPHONY, AudioSystem.DEVICE_OUT_TELEPHONY_TX);
         EXT_TO_INT_DEVICE_MAPPING.put(TYPE_AUX_LINE, AudioSystem.DEVICE_OUT_AUX_LINE);
         EXT_TO_INT_DEVICE_MAPPING.put(TYPE_IP, AudioSystem.DEVICE_OUT_IP);
@@ -643,6 +717,7 @@ public final class AudioDeviceInfo {
         EXT_TO_INT_DEVICE_MAPPING.put(TYPE_REMOTE_SUBMIX, AudioSystem.DEVICE_OUT_REMOTE_SUBMIX);
         EXT_TO_INT_DEVICE_MAPPING.put(TYPE_BLE_HEADSET, AudioSystem.DEVICE_OUT_BLE_HEADSET);
         EXT_TO_INT_DEVICE_MAPPING.put(TYPE_BLE_SPEAKER, AudioSystem.DEVICE_OUT_BLE_SPEAKER);
+        EXT_TO_INT_DEVICE_MAPPING.put(TYPE_BLE_BROADCAST, AudioSystem.DEVICE_OUT_BLE_BROADCAST);
 
         // privileges mapping to input device
         EXT_TO_INT_INPUT_DEVICE_MAPPING = new SparseIntArray();
@@ -653,7 +728,9 @@ public final class AudioDeviceInfo {
                 TYPE_WIRED_HEADSET, AudioSystem.DEVICE_IN_WIRED_HEADSET);
         EXT_TO_INT_INPUT_DEVICE_MAPPING.put(TYPE_HDMI, AudioSystem.DEVICE_IN_HDMI);
         EXT_TO_INT_INPUT_DEVICE_MAPPING.put(TYPE_TELEPHONY, AudioSystem.DEVICE_IN_TELEPHONY_RX);
-        EXT_TO_INT_INPUT_DEVICE_MAPPING.put(TYPE_DOCK, AudioSystem.DEVICE_IN_ANLG_DOCK_HEADSET);
+        EXT_TO_INT_INPUT_DEVICE_MAPPING.put(TYPE_DOCK, AudioSystem.DEVICE_IN_DGTL_DOCK_HEADSET);
+        EXT_TO_INT_INPUT_DEVICE_MAPPING.put(
+                TYPE_DOCK_ANALOG, AudioSystem.DEVICE_IN_ANLG_DOCK_HEADSET);
         EXT_TO_INT_INPUT_DEVICE_MAPPING.put(
                 TYPE_USB_ACCESSORY, AudioSystem.DEVICE_IN_USB_ACCESSORY);
         EXT_TO_INT_INPUT_DEVICE_MAPPING.put(TYPE_USB_DEVICE, AudioSystem.DEVICE_IN_USB_DEVICE);
@@ -669,6 +746,11 @@ public final class AudioDeviceInfo {
         EXT_TO_INT_INPUT_DEVICE_MAPPING.put(
                 TYPE_REMOTE_SUBMIX, AudioSystem.DEVICE_IN_REMOTE_SUBMIX);
         EXT_TO_INT_INPUT_DEVICE_MAPPING.put(TYPE_BLE_HEADSET, AudioSystem.DEVICE_IN_BLE_HEADSET);
+        EXT_TO_INT_INPUT_DEVICE_MAPPING.put(TYPE_HDMI_ARC, AudioSystem.DEVICE_IN_HDMI_ARC);
+        EXT_TO_INT_INPUT_DEVICE_MAPPING.put(TYPE_HDMI_EARC, AudioSystem.DEVICE_IN_HDMI_EARC);
+        EXT_TO_INT_INPUT_DEVICE_MAPPING.put(
+                TYPE_ECHO_REFERENCE, AudioSystem.DEVICE_IN_ECHO_REFERENCE);
+
     }
 }
 

@@ -16,29 +16,58 @@
 
 package com.android.systemui.statusbar.notification.row;
 
-import javax.inject.Singleton;
+import com.android.systemui.dagger.SysUISingleton;
+import com.android.systemui.statusbar.notification.row.shared.NotificationRowContentBinderRefactor;
 
 import dagger.Binds;
 import dagger.Module;
+import dagger.Provides;
+
+import javax.inject.Provider;
 
 /**
  * Dagger Module containing notification row and view inflation implementations.
  */
 @Module
 public abstract class NotificationRowModule {
+
     /**
      * Provides notification row content binder instance.
      */
-    @Binds
-    @Singleton
-    public abstract NotificationRowContentBinder provideNotificationRowContentBinder(
-            NotificationContentInflater contentBinderImpl);
+    @Provides
+    @SysUISingleton
+    public static NotificationRowContentBinder provideNotificationRowContentBinder(
+            Provider<NotificationContentInflater> legacyImpl,
+            Provider<NotificationRowContentBinderImpl> refactoredImpl
+    ) {
+        if (NotificationRowContentBinderRefactor.isEnabled()) {
+            return refactoredImpl.get();
+        } else {
+            return legacyImpl.get();
+        }
+    }
 
     /**
      * Provides notification remote view cache instance.
      */
     @Binds
-    @Singleton
+    @SysUISingleton
     public abstract NotifRemoteViewCache provideNotifRemoteViewCache(
             NotifRemoteViewCacheImpl cacheImpl);
+
+    /**
+     * Provides notification remote view factory container
+     */
+    @Binds
+    @SysUISingleton
+    public abstract NotifRemoteViewsFactoryContainer provideNotifRemoteViewsFactoryContainer(
+            NotifRemoteViewsFactoryContainerImpl containerImpl);
+
+    /**
+     * Provides heads up style manager
+     */
+    @Binds
+    @SysUISingleton
+    public abstract HeadsUpStyleProvider provideHeadsUpStyleManager(
+            HeadsUpStyleProviderImpl headsUpStyleManagerImpl);
 }

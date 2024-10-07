@@ -27,6 +27,7 @@ import java.util.List;
  *
  * @hide.
  */
+@android.ravenwood.annotation.RavenwoodKeepWholeClass
 public class UiEventLoggerFake implements UiEventLogger {
     /**
      * Immutable data class used to record fake log events.
@@ -85,6 +86,11 @@ public class UiEventLoggerFake implements UiEventLogger {
     @Override
     public void log(UiEventEnum event) {
         log(event, 0, null);
+    }
+
+    @Override
+    public void log(UiEventEnum event, InstanceId instance) {
+        logWithInstanceId(event, 0, null, instance);
     }
 
     @Override

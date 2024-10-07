@@ -27,21 +27,22 @@ import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.clearInvocations;
-import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import android.app.AlarmManager;
 import android.os.Handler;
 import android.os.HandlerThread;
+import android.testing.TestableLooper;
 
 import androidx.test.filters.SmallTest;
 import androidx.test.runner.AndroidJUnit4;
 
-import com.android.keyguard.KeyguardUpdateMonitor;
+import com.android.systemui.DejankUtils;
 import com.android.systemui.SysuiTestCase;
 import com.android.systemui.statusbar.phone.DozeParameters;
+import com.android.systemui.util.concurrency.FakeExecutor;
+import com.android.systemui.util.time.FakeSystemClock;
 import com.android.systemui.util.wakelock.WakeLockFake;
 
 import org.junit.After;
@@ -53,6 +54,7 @@ import org.mockito.MockitoAnnotations;
 
 @RunWith(AndroidJUnit4.class)
 @SmallTest
+@TestableLooper.RunWithLooper
 public class DozeUiTest extends SysuiTestCase {
 
     @Mock
@@ -62,8 +64,6 @@ public class DozeUiTest extends SysuiTestCase {
     @Mock
     private DozeParameters mDozeParameters;
     @Mock
-    private KeyguardUpdateMonitor mKeyguardUpdateMonitor;
-    @Mock
     private DozeHost mHost;
     @Mock
     private DozeLog mDozeLog;
@@ -71,29 +71,34 @@ public class DozeUiTest extends SysuiTestCase {
     private Handler mHandler;
     private HandlerThread mHandlerThread;
     private DozeUi mDozeUi;
+    private FakeExecutor mFakeExecutor;
 
     @Before
     public void setUp() throws Exception {
+        allowTestableLooperAsMainThread();
         MockitoAnnotations.initMocks(this);
+        DejankUtils.setImmediate(true);
 
         mHandlerThread = new HandlerThread("DozeUiTest");
         mHandlerThread.start();
         mWakeLock = new WakeLockFake();
         mHandler = mHandlerThread.getThreadHandler();
-
-        mDozeUi = new DozeUi(mContext, mAlarmManager, mMachine, mWakeLock, mHost, mHandler,
-                mDozeParameters, mKeyguardUpdateMonitor, mDozeLog);
+        mFakeExecutor = new FakeExecutor(new FakeSystemClock());
+        mDozeUi = new DozeUi(mContext, mAlarmManager, mWakeLock, mHost, mHandler,
+                mHandler, mDozeParameters, mFakeExecutor, mDozeLog);
+        mDozeUi.setDozeMachine(mMachine);
     }
 
     @After
     public void tearDown() throws Exception {
+        DejankUtils.setImmediate(false);
         mHandlerThread.quit();
         mHandler = null;
         mHandlerThread = null;
     }
 
     @Test
-    public void pausingAndUnpausingAod_registersTimeTickAfterUnpausing() throws Exception {
+    public void pausingAndUnpausingAod_registersTimeTickAfterUnpausing() {
         mDozeUi.transitionTo(UNINITIALIZED, INITIALIZED);
         mDozeUi.transitionTo(INITIALIZED, DOZE_AOD);
         mDozeUi.transitionTo(DOZE_AOD, DOZE_AOD_PAUSED);
@@ -106,43 +111,9 @@ public class DozeUiTest extends SysuiTestCase {
     }
 
     @Test
-    public void propagatesAnimateScreenOff_noAlwaysOn() {
-        reset(mHost);
-        when(mDozeParameters.getAlwaysOn()).thenReturn(false);
-        when(mDozeParameters.getDisplayNeedsBlanking()).thenReturn(false);
-
-        mDozeUi.getKeyguardCallback().onKeyguardVisibilityChanged(false);
-        verify(mHost).setAnimateScreenOff(eq(false));
-    }
-
-    @Test
-    public void propagatesAnimateScreenOff_alwaysOn() {
-        reset(mHost);
-        when(mDozeParameters.getAlwaysOn()).thenReturn(true);
-        when(mDozeParameters.getDisplayNeedsBlanking()).thenReturn(false);
-
-        // Take over when the keyguard is visible.
-        mDozeUi.getKeyguardCallback().onKeyguardVisibilityChanged(true);
-        verify(mHost).setAnimateScreenOff(eq(true));
-
-        // Do not animate screen-off when keyguard isn't visible - PowerManager will do it.
-        mDozeUi.getKeyguardCallback().onKeyguardVisibilityChanged(false);
-        verify(mHost).setAnimateScreenOff(eq(false));
-    }
-
-    @Test
-    public void neverAnimateScreenOff_whenNotSupported() {
-        // Re-initialize DozeParameters saying that the display requires blanking.
-        reset(mDozeParameters);
-        reset(mHost);
-        when(mDozeParameters.getDisplayNeedsBlanking()).thenReturn(true);
-        mDozeUi = new DozeUi(mContext, mAlarmManager, mMachine, mWakeLock, mHost, mHandler,
-                mDozeParameters, mKeyguardUpdateMonitor, mDozeLog);
-
-        // Never animate if display doesn't support it.
-        mDozeUi.getKeyguardCallback().onKeyguardVisibilityChanged(true);
-        mDozeUi.getKeyguardCallback().onKeyguardVisibilityChanged(false);
-        verify(mHost, never()).setAnimateScreenOff(eq(false));
+    public void transitionSetsAnimateWakeup_noAlwaysOn() {
+        mDozeUi.transitionTo(UNINITIALIZED, DOZE);
+        verify(mHost).setAnimateWakeup(eq(false));
     }
 
     @Test
@@ -151,24 +122,5 @@ public class DozeUiTest extends SysuiTestCase {
         when(mDozeParameters.getDisplayNeedsBlanking()).thenReturn(false);
         mDozeUi.transitionTo(UNINITIALIZED, DOZE);
         verify(mHost).setAnimateWakeup(eq(true));
-    }
-
-    @Test
-    public void keyguardVisibility_changesControlScreenOffAnimation() {
-        // Pre-condition
-        reset(mDozeParameters);
-        when(mDozeParameters.getAlwaysOn()).thenReturn(true);
-        when(mDozeParameters.getDisplayNeedsBlanking()).thenReturn(false);
-
-        mDozeUi.getKeyguardCallback().onKeyguardVisibilityChanged(false);
-        verify(mDozeParameters).setControlScreenOffAnimation(eq(false));
-        mDozeUi.getKeyguardCallback().onKeyguardVisibilityChanged(true);
-        verify(mDozeParameters).setControlScreenOffAnimation(eq(true));
-    }
-
-    @Test
-    public void transitionSetsAnimateWakeup_noAlwaysOn() {
-        mDozeUi.transitionTo(UNINITIALIZED, DOZE);
-        verify(mHost).setAnimateWakeup(eq(false));
     }
 }

@@ -22,13 +22,15 @@ import static com.android.internal.art.ArtStatsLog.ART_DATUM_REPORTED__COMPILATI
 import static com.android.internal.art.ArtStatsLog.ART_DATUM_REPORTED__COMPILE_FILTER__ART_COMPILATION_FILTER_FAKE_RUN_FROM_APK_FALLBACK;
 import static com.android.internal.art.ArtStatsLog.ART_DATUM_REPORTED__COMPILE_FILTER__ART_COMPILATION_FILTER_FAKE_RUN_FROM_VDEX_FALLBACK;
 
-import android.util.jar.StrictJarFile;
+import android.os.SystemClock;
 import android.util.Slog;
+import android.util.jar.StrictJarFile;
 
 import com.android.internal.art.ArtStatsLog;
 import com.android.server.pm.PackageManagerService;
 
 import java.io.IOException;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
@@ -41,8 +43,6 @@ public class ArtStatsLogUtils {
     private static final String TAG = ArtStatsLogUtils.class.getSimpleName();
     private static final String PROFILE_DEX_METADATA = "primary.prof";
     private static final String VDEX_DEX_METADATA = "primary.vdex";
-    private static final String BASE_APK= "base.apk";
-
 
     private static final int ART_COMPILATION_REASON_INSTALL_BULK_SECONDARY =
             ART_DATUM_REPORTED__COMPILATION_REASON__ART_COMPILATION_REASON_INSTALL_BULK_SECONDARY;
@@ -62,7 +62,7 @@ public class ArtStatsLogUtils {
         COMPILATION_REASON_MAP.put(PackageManagerService.REASON_FIRST_BOOT, ArtStatsLog.
                 ART_DATUM_REPORTED__COMPILATION_REASON__ART_COMPILATION_REASON_FIRST_BOOT);
         COMPILATION_REASON_MAP.put(PackageManagerService.REASON_BOOT_AFTER_OTA, ArtStatsLog.
-                ART_DATUM_REPORTED__COMPILATION_REASON__ART_COMPILATION_REASON_BOOT);
+                ART_DATUM_REPORTED__COMPILATION_REASON__ART_COMPILATION_REASON_BOOT_AFTER_OTA);
         COMPILATION_REASON_MAP.put(PackageManagerService.REASON_POST_BOOT, ArtStatsLog.
                 ART_DATUM_REPORTED__COMPILATION_REASON__ART_COMPILATION_REASON_POST_BOOT);
         COMPILATION_REASON_MAP.put(PackageManagerService.REASON_INSTALL, ArtStatsLog.
@@ -164,7 +164,7 @@ public class ArtStatsLogUtils {
                 uid,
                 compilationReason,
                 compilerFilter,
-                ArtStatsLog.ART_DATUM_REPORTED__KIND__ART_DATUM_DEX2OAT_DEX_CODE_BYTES,
+                ArtStatsLog.ART_DATUM_REPORTED__KIND__ART_DATUM_DEX2OAT_DEX_CODE_COUNTER_BYTES,
                 getDexBytes(apkPath),
                 dexMetadataType,
                 apkType,
@@ -174,18 +174,21 @@ public class ArtStatsLogUtils {
                 uid,
                 compilationReason,
                 compilerFilter,
-                ArtStatsLog.ART_DATUM_REPORTED__KIND__ART_DATUM_DEX2OAT_TOTAL_TIME,
+                ArtStatsLog.ART_DATUM_REPORTED__KIND__ART_DATUM_DEX2OAT_TOTAL_TIME_COUNTER_MILLIS,
                 compileTime,
                 dexMetadataType,
                 apkType,
                 isa);
     }
 
-    public static int getApkType(String path) {
-        if (path.equals(BASE_APK)) {
+    public static int getApkType(String path, String baseApkPath, String[] splitApkPaths) {
+        if (path.equals(baseApkPath)) {
             return ArtStatsLog.ART_DATUM_REPORTED__APK_TYPE__ART_APK_TYPE_BASE;
+        } else if(Arrays.stream(splitApkPaths).anyMatch(p->p.equals(path))) {
+            return ArtStatsLog.ART_DATUM_REPORTED__APK_TYPE__ART_APK_TYPE_SPLIT;
+        } else{
+            return ArtStatsLog.ART_DATUM_REPORTED__APK_TYPE__ART_APK_TYPE_UNKNOWN;
         }
-        return ArtStatsLog.ART_DATUM_REPORTED__APK_TYPE__ART_APK_TYPE_SPLIT;
     }
 
     private static long getDexBytes(String apkPath) {
@@ -286,14 +289,16 @@ public class ArtStatsLogUtils {
                             ART_DATUM_REPORTED__COMPILE_FILTER__ART_COMPILATION_FILTER_UNKNOWN),
                     COMPILATION_REASON_MAP.getOrDefault(compilationReason, ArtStatsLog.
                             ART_DATUM_REPORTED__COMPILATION_REASON__ART_COMPILATION_REASON_UNKNOWN),
-                    /*timestamp_millis=*/ 0L,
+                    /*timestamp_millis=*/ SystemClock.uptimeMillis(),
                     ArtStatsLog.ART_DATUM_REPORTED__THREAD_TYPE__ART_THREAD_MAIN,
                     kind,
                     value,
                     dexMetadataType,
                     apkType,
                     ISA_MAP.getOrDefault(isa,
-                            ArtStatsLog.ART_DATUM_REPORTED__ISA__ART_ISA_UNKNOWN));
+                            ArtStatsLog.ART_DATUM_REPORTED__ISA__ART_ISA_UNKNOWN),
+                    ArtStatsLog.ART_DATUM_REPORTED__GC__ART_GC_COLLECTOR_TYPE_UNKNOWN,
+                    ArtStatsLog.ART_DATUM_REPORTED__UFFD_SUPPORT__ART_UFFD_SUPPORT_UNKNOWN);
         }
     }
 }

@@ -1,20 +1,13 @@
 {
   "presubmit": [
     {
-      "name": "CtsUsageStatsTestCases",
-      "options": [
-        {"include-filter": "android.app.usage.cts.UsageStatsTest"},
-        {"exclude-annotation": "android.platform.test.annotations.FlakyTest"},
-        {"exclude-annotation": "androidx.test.filters.FlakyTest"}
-      ]
+      "name": "CtsUsageStatsTestCases_cts_usagestatstest"
     },
     {
-      "name": "FrameworksServicesTests",
-      "options": [
-        {"include-filter": "com.android.server.usage"},
-        {"exclude-annotation": "android.platform.test.annotations.FlakyTest"},
-        {"exclude-annotation": "androidx.test.filters.FlakyTest"}
-      ]
+      "name": "CtsBRSTestCases"
+    },
+    {
+      "name": "FrameworksServicesTests_com_android_server_usage"
     }
   ],
   "postsubmit": [
@@ -22,10 +15,7 @@
       "name": "CtsUsageStatsTestCases"
     },
     {
-      "name": "FrameworksServicesTests",
-      "options": [
-        {"include-filter": "com.android.server.usage"}
-      ]
+      "name": "FrameworksServicesTests_com_android_server_usage"
     }
   ]
 }

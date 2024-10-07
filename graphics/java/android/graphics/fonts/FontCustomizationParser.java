@@ -16,7 +16,11 @@
 
 package android.graphics.fonts;
 
+import static android.text.FontConfig.Alias;
+import static android.text.FontConfig.NamedFamilyList;
+
 import android.annotation.NonNull;
+import android.annotation.Nullable;
 import android.graphics.FontListParser;
 import android.text.FontConfig;
 import android.util.Xml;
@@ -24,10 +28,15 @@ import android.util.Xml;
 import org.xmlpull.v1.XmlPullParser;
 import org.xmlpull.v1.XmlPullParserException;
 
+import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.ArrayList;
-import java.util.HashSet;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 
 /**
  * Parser for font customization
@@ -35,12 +44,43 @@ import java.util.HashSet;
  * @hide
  */
 public class FontCustomizationParser {
+    private static final String TAG = "FontCustomizationParser";
+
     /**
      * Represents a customization XML
      */
     public static class Result {
-        ArrayList<FontConfig.Family> mAdditionalNamedFamilies = new ArrayList<>();
-        ArrayList<FontConfig.Alias> mAdditionalAliases = new ArrayList<>();
+        private final Map<String, NamedFamilyList> mAdditionalNamedFamilies;
+
+        private final List<Alias> mAdditionalAliases;
+
+        private final List<FontConfig.Customization.LocaleFallback> mLocaleFamilyCustomizations;
+
+        public Result() {
+            mAdditionalNamedFamilies = Collections.emptyMap();
+            mLocaleFamilyCustomizations = Collections.emptyList();
+            mAdditionalAliases = Collections.emptyList();
+        }
+
+        public Result(Map<String, NamedFamilyList> additionalNamedFamilies,
+                List<FontConfig.Customization.LocaleFallback> localeFamilyCustomizations,
+                List<Alias> additionalAliases) {
+            mAdditionalNamedFamilies = additionalNamedFamilies;
+            mLocaleFamilyCustomizations = localeFamilyCustomizations;
+            mAdditionalAliases = additionalAliases;
+        }
+
+        public Map<String, NamedFamilyList> getAdditionalNamedFamilies() {
+            return mAdditionalNamedFamilies;
+        }
+
+        public List<Alias> getAdditionalAliases() {
+            return mAdditionalAliases;
+        }
+
+        public List<FontConfig.Customization.LocaleFallback> getLocaleFamilyCustomizations() {
+            return mLocaleFamilyCustomizations;
+        }
     }
 
     /**
@@ -48,56 +88,125 @@ public class FontCustomizationParser {
      *
      * Caller must close the input stream
      */
-    public static Result parse(@NonNull InputStream in, @NonNull String fontDir)
-            throws XmlPullParserException, IOException {
+    public static Result parse(
+            @NonNull InputStream in,
+            @NonNull String fontDir,
+            @Nullable Map<String, File> updatableFontMap
+    ) throws XmlPullParserException, IOException {
         XmlPullParser parser = Xml.newPullParser();
         parser.setInput(in, null);
         parser.nextTag();
-        return readFamilies(parser, fontDir);
+        return readFamilies(parser, fontDir, updatableFontMap);
     }
 
-    private static void validate(Result result) {
-        HashSet<String> familyNames = new HashSet<>();
-        for (int i = 0; i < result.mAdditionalNamedFamilies.size(); ++i) {
-            final FontConfig.Family family = result.mAdditionalNamedFamilies.get(i);
+    private static Result validateAndTransformToResult(
+            List<NamedFamilyList> families,
+            List<FontConfig.Customization.LocaleFallback> outLocaleFamilies,
+            List<Alias> aliases) {
+        HashMap<String, NamedFamilyList> namedFamily = new HashMap<>();
+        for (int i = 0; i < families.size(); ++i) {
+            final NamedFamilyList family = families.get(i);
             final String name = family.getName();
-            if (name == null) {
-                throw new IllegalArgumentException("new-named-family requires name attribute");
-            }
-            if (!familyNames.add(name)) {
+            if (name != null) {
+                if (namedFamily.put(name, family) != null) {
+                    throw new IllegalArgumentException(
+                            "new-named-family requires unique name attribute");
+                }
+            } else {
                 throw new IllegalArgumentException(
-                        "new-named-family requires unique name attribute");
+                        "new-named-family requires name attribute or new-default-fallback-family"
+                                + "requires fallackTarget attribute");
             }
         }
+        return new Result(namedFamily, outLocaleFamilies, aliases);
     }
 
-    private static Result readFamilies(XmlPullParser parser, String fontDir)
-            throws XmlPullParserException, IOException {
-        Result out = new Result();
+    private static Result readFamilies(
+            @NonNull XmlPullParser parser,
+            @NonNull String fontDir,
+            @Nullable Map<String, File> updatableFontMap
+    ) throws XmlPullParserException, IOException {
+        List<NamedFamilyList> families = new ArrayList<>();
+        List<Alias> aliases = new ArrayList<>();
+        List<FontConfig.Customization.LocaleFallback> outLocaleFamilies = new ArrayList<>();
         parser.require(XmlPullParser.START_TAG, null, "fonts-modification");
         while (parser.next() != XmlPullParser.END_TAG) {
             if (parser.getEventType() != XmlPullParser.START_TAG) continue;
             String tag = parser.getName();
             if (tag.equals("family")) {
-                readFamily(parser, fontDir, out);
+                readFamily(parser, fontDir, families, outLocaleFamilies, updatableFontMap);
+            } else if (tag.equals("family-list")) {
+                readFamilyList(parser, fontDir, families, updatableFontMap);
             } else if (tag.equals("alias")) {
-                out.mAdditionalAliases.add(FontListParser.readAlias(parser));
+                aliases.add(FontListParser.readAlias(parser));
             } else {
                 FontListParser.skip(parser);
             }
         }
-        validate(out);
-        return out;
+        return validateAndTransformToResult(families, outLocaleFamilies, aliases);
     }
 
-    private static void readFamily(XmlPullParser parser, String fontDir, Result out)
+    private static void readFamily(
+            @NonNull XmlPullParser parser,
+            @NonNull String fontDir,
+            @NonNull List<NamedFamilyList> out,
+            @NonNull List<FontConfig.Customization.LocaleFallback> outCustomization,
+            @Nullable Map<String, File> updatableFontMap)
             throws XmlPullParserException, IOException {
         final String customizationType = parser.getAttributeValue(null, "customizationType");
         if (customizationType == null) {
             throw new IllegalArgumentException("customizationType must be specified");
         }
         if (customizationType.equals("new-named-family")) {
-            out.mAdditionalNamedFamilies.add(FontListParser.readFamily(parser, fontDir));
+            NamedFamilyList fontFamily = FontListParser.readNamedFamily(
+                    parser, fontDir, updatableFontMap, false);
+            if (fontFamily != null) {
+                out.add(fontFamily);
+            }
+        } else if (customizationType.equals("new-locale-family")) {
+            final String lang = parser.getAttributeValue(null, "lang");
+            final String op = parser.getAttributeValue(null, "operation");
+            final int intOp;
+            if (op.equals("append")) {
+                intOp = FontConfig.Customization.LocaleFallback.OPERATION_APPEND;
+            } else if (op.equals("prepend")) {
+                intOp = FontConfig.Customization.LocaleFallback.OPERATION_PREPEND;
+            } else if (op.equals("replace")) {
+                intOp = FontConfig.Customization.LocaleFallback.OPERATION_REPLACE;
+            } else {
+                throw new IllegalArgumentException("Unknown operation=" + op);
+            }
+
+            final FontConfig.FontFamily family = FontListParser.readFamily(
+                    parser, fontDir, updatableFontMap, false);
+
+            // For ignoring the customization, consume the new-locale-family element but don't
+            // register any customizations.
+            if (com.android.text.flags.Flags.vendorCustomLocaleFallback()) {
+                outCustomization.add(new FontConfig.Customization.LocaleFallback(
+                        Locale.forLanguageTag(lang), intOp, family));
+            }
+        } else {
+            throw new IllegalArgumentException("Unknown customizationType=" + customizationType);
+        }
+    }
+
+    private static void readFamilyList(
+            @NonNull XmlPullParser parser,
+            @NonNull String fontDir,
+            @NonNull List<NamedFamilyList> out,
+            @Nullable Map<String, File> updatableFontMap)
+            throws XmlPullParserException, IOException {
+        final String customizationType = parser.getAttributeValue(null, "customizationType");
+        if (customizationType == null) {
+            throw new IllegalArgumentException("customizationType must be specified");
+        }
+        if (customizationType.equals("new-named-family")) {
+            NamedFamilyList fontFamily = FontListParser.readNamedFamilyList(
+                    parser, fontDir, updatableFontMap, false);
+            if (fontFamily != null) {
+                out.add(fontFamily);
+            }
         } else {
             throw new IllegalArgumentException("Unknown customizationType=" + customizationType);
         }

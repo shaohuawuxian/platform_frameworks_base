@@ -37,13 +37,17 @@ public class PendingInsetsController implements WindowInsetsController {
     private final ArrayList<PendingRequest> mRequests = new ArrayList<>();
     private @Appearance int mAppearance;
     private @Appearance int mAppearanceMask;
+    private @Appearance int mAppearanceFromResource;
+    private @Appearance int mAppearanceFromResourceMask;
     private @Behavior int mBehavior = KEEP_BEHAVIOR;
     private boolean mAnimationsDisabled;
     private final InsetsState mDummyState = new InsetsState();
     private InsetsController mReplayedInsetsController;
     private ArrayList<OnControllableInsetsChangedListener> mControllableInsetsChangedListeners
             = new ArrayList<>();
-    private int mCaptionInsetsHeight = 0;
+    private int mImeCaptionBarInsetsHeight = 0;
+    private WindowInsetsAnimationControlListener mLoggingListener;
+    private @InsetsType int mRequestedVisibleTypes = WindowInsets.Type.defaultVisible();
 
     @Override
     public void show(int types) {
@@ -51,6 +55,7 @@ public class PendingInsetsController implements WindowInsetsController {
             mReplayedInsetsController.show(types);
         } else {
             mRequests.add(new ShowRequest(types));
+            mRequestedVisibleTypes |= types;
         }
     }
 
@@ -60,6 +65,7 @@ public class PendingInsetsController implements WindowInsetsController {
             mReplayedInsetsController.hide(types);
         } else {
             mRequests.add(new HideRequest(types));
+            mRequestedVisibleTypes &= ~types;
         }
     }
 
@@ -74,16 +80,26 @@ public class PendingInsetsController implements WindowInsetsController {
     }
 
     @Override
+    public void setSystemBarsAppearanceFromResource(int appearance, int mask) {
+        if (mReplayedInsetsController != null) {
+            mReplayedInsetsController.setSystemBarsAppearanceFromResource(appearance, mask);
+        } else {
+            mAppearanceFromResource = (mAppearanceFromResource & ~mask) | (appearance & mask);
+            mAppearanceFromResourceMask |= mask;
+        }
+    }
+
+    @Override
     public int getSystemBarsAppearance() {
         if (mReplayedInsetsController != null) {
             return mReplayedInsetsController.getSystemBarsAppearance();
         }
-        return mAppearance;
+        return mAppearance | (mAppearanceFromResource & ~mAppearanceMask);
     }
 
     @Override
-    public void setCaptionInsetsHeight(int height) {
-        mCaptionInsetsHeight = height;
+    public void setImeCaptionBarInsetsHeight(int height) {
+        mImeCaptionBarInsetsHeight = height;
     }
 
     @Override
@@ -99,6 +115,9 @@ public class PendingInsetsController implements WindowInsetsController {
     public int getSystemBarsBehavior() {
         if (mReplayedInsetsController != null) {
             return mReplayedInsetsController.getSystemBarsBehavior();
+        }
+        if (mBehavior == KEEP_BEHAVIOR) {
+            return BEHAVIOR_DEFAULT;
         }
         return mBehavior;
     }
@@ -118,11 +137,11 @@ public class PendingInsetsController implements WindowInsetsController {
     }
 
     @Override
-    public boolean isRequestedVisible(int type) {
-
-        // Method is only used once real insets controller is attached, so no need to traverse
-        // requests here.
-        return InsetsState.getDefaultVisibility(type);
+    public @InsetsType int getRequestedVisibleTypes() {
+        if (mReplayedInsetsController != null) {
+            return mReplayedInsetsController.getRequestedVisibleTypes();
+        }
+        return mRequestedVisibleTypes;
     }
 
     @Override
@@ -158,8 +177,12 @@ public class PendingInsetsController implements WindowInsetsController {
         if (mAppearanceMask != 0) {
             controller.setSystemBarsAppearance(mAppearance, mAppearanceMask);
         }
-        if (mCaptionInsetsHeight != 0) {
-            controller.setCaptionInsetsHeight(mCaptionInsetsHeight);
+        if (mAppearanceFromResourceMask != 0) {
+            controller.setSystemBarsAppearanceFromResource(
+                    mAppearanceFromResource, mAppearanceFromResourceMask);
+        }
+        if (mImeCaptionBarInsetsHeight != 0) {
+            controller.setImeCaptionBarInsetsHeight(mImeCaptionBarInsetsHeight);
         }
         if (mAnimationsDisabled) {
             controller.setAnimationsDisabled(true);
@@ -173,6 +196,9 @@ public class PendingInsetsController implements WindowInsetsController {
             controller.addOnControllableInsetsChangedListener(
                     mControllableInsetsChangedListeners.get(i));
         }
+        if (mLoggingListener != null) {
+            controller.setSystemDrivenInsetsAnimationLoggingListener(mLoggingListener);
+        }
 
         // Reset all state so it doesn't get applied twice just in case
         mRequests.clear();
@@ -180,8 +206,11 @@ public class PendingInsetsController implements WindowInsetsController {
         mBehavior = KEEP_BEHAVIOR;
         mAppearance = 0;
         mAppearanceMask = 0;
+        mAppearanceFromResource = 0;
+        mAppearanceFromResourceMask = 0;
         mAnimationsDisabled = false;
-
+        mLoggingListener = null;
+        mRequestedVisibleTypes = WindowInsets.Type.defaultVisible();
         // After replaying, we forward everything directly to the replayed instance.
         mReplayedInsetsController = controller;
     }
@@ -192,6 +221,16 @@ public class PendingInsetsController implements WindowInsetsController {
     @VisibleForTesting
     public void detach() {
         mReplayedInsetsController = null;
+    }
+
+    @Override
+    public void setSystemDrivenInsetsAnimationLoggingListener(
+            @Nullable WindowInsetsAnimationControlListener listener) {
+        if (mReplayedInsetsController != null) {
+            mReplayedInsetsController.setSystemDrivenInsetsAnimationLoggingListener(listener);
+        } else {
+            mLoggingListener = listener;
+        }
     }
 
     @Override

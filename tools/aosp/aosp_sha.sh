@@ -1,7 +1,7 @@
 #!/bin/bash
 LOCAL_DIR="$( dirname "${BASH_SOURCE}" )"
 
-if git branch -vv | grep -q -P "^\*[^\[]+\[aosp/"; then
+if git log -n 1 --format='%D' HEAD@{upstream} | grep -q aosp/; then
     # Change appears to be in AOSP
     exit 0
 elif git log -n 1 --format='%B' $1 | grep -q -E "^Ignore-AOSP-First: .+" ; then
@@ -28,13 +28,14 @@ else
         if (( count == 0 )); then
             echo
         fi
-        echo -e "\033[0;31mThe source of truth for '$file' is in AOSP.\033[0m"
+        echo -e "\033[0;31;47mThe source of truth for '$file' is in AOSP.\033[0m"
         (( count++ ))
     done < <(git show --name-only --pretty=format: $1 | grep -- "$2")
     if (( count != 0 )); then
         echo
         echo "If your change contains no confidential details (such as security fixes), please"
         echo "upload and merge this change at https://android-review.googlesource.com/."
+        echo "Else add a tag 'Ignore-AOSP-First:' with the reason to bypass AOSP."
         echo
         exit 1
     fi

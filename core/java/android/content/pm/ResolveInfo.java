@@ -16,9 +16,12 @@
 
 package android.content.pm;
 
+import android.annotation.NonNull;
+import android.annotation.Nullable;
 import android.annotation.SystemApi;
 import android.compat.annotation.UnsupportedAppUsage;
 import android.content.ComponentName;
+import android.content.Intent;
 import android.content.IntentFilter;
 import android.graphics.drawable.Drawable;
 import android.os.Build;
@@ -31,6 +34,7 @@ import android.util.Slog;
 
 import java.text.Collator;
 import java.util.Comparator;
+import java.util.Objects;
 
 /**
  * Information that is returned from resolving an intent
@@ -38,6 +42,7 @@ import java.util.Comparator;
  * information collected from the AndroidManifest.xml's
  * &lt;intent&gt; tags.
  */
+@android.ravenwood.annotation.RavenwoodKeepWholeClass
 public class ResolveInfo implements Parcelable {
     private static final String TAG = "ResolveInfo";
     private static final String INTENT_FORWARDER_ACTIVITY =
@@ -104,6 +109,14 @@ public class ResolveInfo implements Parcelable {
      * and {@link IntentFilter#MATCH_ADJUSTMENT_MASK IntentFiler.MATCH_ADJUSTMENT_MASK}.
      */
     public int match;
+
+    /**
+     * UserHandle of originating user for ResolveInfo. This will help caller distinguish cross
+     * profile results from intent resolution.
+     * @hide
+     */
+    @Nullable
+    public UserHandle userHandle;
 
     /**
      * Only set when returned by
@@ -183,6 +196,17 @@ public class ResolveInfo implements Parcelable {
     @SystemApi
     public boolean handleAllWebDataURI;
 
+    /**
+     * Whether the resolved {@link IntentFilter} declares {@link Intent#CATEGORY_BROWSABLE} and is
+     * thus allowed to automatically resolve an {@link Intent} as it's assumed the action is safe
+     * for the user.
+     *
+     * Note that the above doesn't apply when this is the only result is returned in the candidate
+     * set, as the system will not prompt before opening the result. It only applies when there are
+     * multiple candidates.
+     */
+    private final boolean mAutoResolutionAllowed;
+
     /** {@hide} */
     @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public ComponentInfo getComponentInfo() {
@@ -203,10 +227,18 @@ public class ResolveInfo implements Parcelable {
      * @return Returns a CharSequence containing the resolutions's label.  If the
      * item does not have a label, its name is returned.
      */
-    public CharSequence loadLabel(PackageManager pm) {
+    @NonNull
+    @android.ravenwood.annotation.RavenwoodThrow(blockedBy = android.content.res.Resources.class)
+    public CharSequence loadLabel(@NonNull PackageManager pm) {
         if (nonLocalizedLabel != null) {
             return nonLocalizedLabel;
         }
+
+        // In order to not change the original behavior. To add null check here to support backward
+        // compatible. If nonLocalizedLabel is not null, we also return nonLocalizedLabel even if pm
+        // is null.
+        Objects.requireNonNull(pm);
+
         CharSequence label;
         if (resolvePackageName != null && labelRes != 0) {
             label = pm.getText(resolvePackageName, labelRes, null);
@@ -274,6 +306,7 @@ public class ResolveInfo implements Parcelable {
      * @return Returns a Drawable containing the resolution's icon.  If the
      * item does not have an icon, the default activity icon is returned.
      */
+    @android.ravenwood.annotation.RavenwoodThrow(blockedBy = android.content.res.Resources.class)
     public Drawable loadIcon(PackageManager pm) {
         Drawable dr = null;
         if (resolvePackageName != null && iconResourceId != 0) {
@@ -364,8 +397,26 @@ public class ResolveInfo implements Parcelable {
                 && INTENT_FORWARDER_ACTIVITY.equals(activityInfo.targetActivity);
     }
 
+    /**
+     * @see #mAutoResolutionAllowed
+     * @hide
+     */
+    public boolean isAutoResolutionAllowed() {
+        return mAutoResolutionAllowed;
+    }
+
     public ResolveInfo() {
         targetUserId = UserHandle.USER_CURRENT;
+
+        // It's safer to assume that an unaware caller that constructs a ResolveInfo doesn't
+        // accidentally mark a result as auto resolveable.
+        mAutoResolutionAllowed = false;
+    }
+
+    /** @hide */
+    public ResolveInfo(boolean autoResolutionAllowed) {
+        targetUserId = UserHandle.USER_CURRENT;
+        mAutoResolutionAllowed = autoResolutionAllowed;
     }
 
     public ResolveInfo(ResolveInfo orig) {
@@ -386,7 +437,9 @@ public class ResolveInfo implements Parcelable {
         system = orig.system;
         targetUserId = orig.targetUserId;
         handleAllWebDataURI = orig.handleAllWebDataURI;
+        mAutoResolutionAllowed = orig.mAutoResolutionAllowed;
         isInstantAppAvailable = orig.isInstantAppAvailable;
+        userHandle = orig.userHandle;
     }
 
     public String toString() {
@@ -410,6 +463,10 @@ public class ResolveInfo implements Parcelable {
             sb.append(" targetUserId=");
             sb.append(targetUserId);
         }
+
+        sb.append(" userHandle=");
+        sb.append(userHandle);
+
         sb.append('}');
         return sb.toString();
     }
@@ -450,7 +507,9 @@ public class ResolveInfo implements Parcelable {
         dest.writeInt(noResourceId ? 1 : 0);
         dest.writeInt(iconResourceId);
         dest.writeInt(handleAllWebDataURI ? 1 : 0);
+        dest.writeInt(mAutoResolutionAllowed ? 1 : 0);
         dest.writeInt(isInstantAppAvailable ? 1 : 0);
+        dest.writeInt(userHandle != null ? userHandle.getIdentifier() : UserHandle.USER_CURRENT);
     }
 
     public static final @android.annotation.NonNull Creator<ResolveInfo> CREATOR
@@ -498,7 +557,12 @@ public class ResolveInfo implements Parcelable {
         noResourceId = source.readInt() != 0;
         iconResourceId = source.readInt();
         handleAllWebDataURI = source.readInt() != 0;
+        mAutoResolutionAllowed = source.readInt() != 0;
         isInstantAppAvailable = source.readInt() != 0;
+        int userHandleId = source.readInt();
+        if (userHandleId != UserHandle.USER_CURRENT) {
+            userHandle = UserHandle.of(userHandleId);
+        }
     }
 
     public static class DisplayNameComparator
@@ -525,6 +589,6 @@ public class ResolveInfo implements Parcelable {
         }
 
         private final Collator   mCollator = Collator.getInstance();
-        private PackageManager   mPM;
+        private final PackageManager mPM;
     }
 }

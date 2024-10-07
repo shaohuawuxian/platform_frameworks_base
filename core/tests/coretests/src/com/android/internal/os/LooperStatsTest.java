@@ -23,6 +23,7 @@ import android.os.HandlerThread;
 import android.os.Looper;
 import android.os.Message;
 import android.platform.test.annotations.Presubmit;
+import android.platform.test.ravenwood.RavenwoodRule;
 
 import androidx.test.filters.SmallTest;
 import androidx.test.runner.AndroidJUnit4;
@@ -30,6 +31,7 @@ import androidx.test.runner.AndroidJUnit4;
 import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
@@ -40,6 +42,9 @@ import java.util.List;
 @RunWith(AndroidJUnit4.class)
 @Presubmit
 public final class LooperStatsTest {
+    @Rule
+    public final RavenwoodRule mRavenwood = new RavenwoodRule();
+
     private HandlerThread mThreadFirst;
     private HandlerThread mThreadSecond;
     private Handler mHandlerFirst;
@@ -232,7 +237,7 @@ public final class LooperStatsTest {
         assertThat(entry3.handlerClassName).isEqualTo(
                 "com.android.internal.os.LooperStatsTest$TestHandlerSecond");
         assertThat(entry3.messageName).startsWith(
-                "com.android.internal.os.LooperStatsTest$$ExternalSyntheticLambda4");
+                "com.android.internal.os");
         assertThat(entry3.messageCount).isEqualTo(1);
         assertThat(entry3.recordedMessageCount).isEqualTo(1);
         assertThat(entry3.exceptionCount).isEqualTo(0);
@@ -319,6 +324,23 @@ public final class LooperStatsTest {
 
         List<LooperStats.ExportedEntry> entries = looperStats.getEntries();
         assertThat(entries).hasSize(0);
+    }
+
+    @Test
+    public void testDataCollectedIfIgnoreBatteryStatusFlagSet() {
+        TestableLooperStats looperStats = new TestableLooperStats(1, 100);
+        mDeviceState.setCharging(true);
+        looperStats.setIgnoreBatteryStatus(true);
+
+        Object token1 = looperStats.messageDispatchStarting();
+        looperStats.messageDispatched(token1, mHandlerFirst.obtainMessage(1000));
+        Object token2 = looperStats.messageDispatchStarting();
+        looperStats.dispatchingThrewException(token2, mHandlerFirst.obtainMessage(1000),
+                new IllegalArgumentException());
+
+        List<LooperStats.ExportedEntry> entries = looperStats.getEntries();
+        assertThat(entries).hasSize(1);
+
     }
 
     @Test

@@ -16,6 +16,7 @@
 
 package android.content.pm;
 
+import android.annotation.Nullable;
 import android.os.IBinder;
 import android.os.Parcel;
 import android.os.Parcelable;
@@ -28,7 +29,7 @@ import android.os.Parcelable;
  */
 public class KeySet implements Parcelable {
 
-    private IBinder token;
+    private final IBinder token;
 
     /** @hide */
     public KeySet(IBinder token) {
@@ -45,7 +46,7 @@ public class KeySet implements Parcelable {
 
     /** @hide */
     @Override
-    public boolean equals(Object o) {
+    public boolean equals(@Nullable Object o) {
         if (o instanceof KeySet) {
             KeySet ks = (KeySet) o;
             return token == ks.token;

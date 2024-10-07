@@ -16,7 +16,11 @@
 
 package android.widget;
 
+import static android.view.flags.Flags.enableArrowIconOnHoverWhenClickable;
+import static android.view.flags.Flags.FLAG_ENABLE_ARROW_ICON_ON_HOVER_WHEN_CLICKABLE;
+
 import android.annotation.DrawableRes;
+import android.annotation.FlaggedApi;
 import android.annotation.Nullable;
 import android.annotation.TestApi;
 import android.annotation.Widget;
@@ -38,6 +42,7 @@ import android.util.AttributeSet;
 import android.util.Log;
 import android.view.ContextThemeWrapper;
 import android.view.Gravity;
+import android.view.InputDevice;
 import android.view.MotionEvent;
 import android.view.PointerIcon;
 import android.view.View;
@@ -802,6 +807,21 @@ public class Spinner extends AbsSpinner implements OnClickListener {
         dialog.dismiss();
     }
 
+    /**
+     * Sets selection and dismisses the spinner's popup if it can be dismissed.
+     * For ease of use in tests, where publicly obtaining the spinner's popup is difficult.
+     *
+     * @param which index of the item to be selected.
+     * @hide
+     */
+    @TestApi
+    public void onClick(int which) {
+        setSelection(which);
+        if (mPopup != null && mPopup.isShowing()) {
+            mPopup.dismiss();
+        }
+    }
+
     @Override
     public CharSequence getAccessibilityClassName() {
         return Spinner.class.getName();
@@ -918,10 +938,15 @@ public class Spinner extends AbsSpinner implements OnClickListener {
         }
     }
 
+    @FlaggedApi(FLAG_ENABLE_ARROW_ICON_ON_HOVER_WHEN_CLICKABLE)
     @Override
     public PointerIcon onResolvePointerIcon(MotionEvent event, int pointerIndex) {
-        if (getPointerIcon() == null && isClickable() && isEnabled()) {
-            return PointerIcon.getSystemIcon(getContext(), PointerIcon.TYPE_HAND);
+        if (getPointerIcon() == null && isClickable() && isEnabled()
+                && event.isFromSource(InputDevice.SOURCE_MOUSE)) {
+            int pointerIcon = enableArrowIconOnHoverWhenClickable()
+                    ? PointerIcon.TYPE_ARROW
+                    : PointerIcon.TYPE_HAND;
+            return PointerIcon.getSystemIcon(getContext(), pointerIcon);
         }
         return super.onResolvePointerIcon(event, pointerIndex);
     }

@@ -136,11 +136,12 @@ public abstract class PowerManagerInternal {
      *
      * @param screenState The overridden screen state, or {@link Display#STATE_UNKNOWN}
      * to disable the override.
+     * @param reason The reason for overriding the screen state.
      * @param screenBrightness The overridden screen brightness, or
      * {@link PowerManager#BRIGHTNESS_DEFAULT} to disable the override.
      */
     public abstract void setDozeOverrideFromDreamManager(
-            int screenState, int screenBrightness);
+            int screenState, @Display.StateReason int reason, int screenBrightness);
 
     /**
      * Used by sidekick manager to tell the power manager if it shouldn't change the display state
@@ -184,6 +185,21 @@ public abstract class PowerManagerInternal {
 
     public abstract void setDeviceIdleTempWhitelist(int[] appids);
 
+    /**
+     * Updates the Low Power Standby allowlist.
+     *
+     * @param uids UIDs that are exempt from Low Power Standby restrictions
+     */
+    public abstract void setLowPowerStandbyAllowlist(int[] uids);
+
+    /**
+     * Used by LowPowerStandbyController to notify the power manager that Low Power Standby's
+     * active state has changed.
+     *
+     * @param active {@code true} to activate Low Power Standby, {@code false} to turn it off.
+     */
+    public abstract void setLowPowerStandbyActive(boolean active);
+
     public abstract void startUidChanges();
 
     public abstract void finishUidChanges();
@@ -195,12 +211,6 @@ public abstract class PowerManagerInternal {
     public abstract void uidActive(int uid);
 
     public abstract void uidIdle(int uid);
-
-    /**
-     * The hintId sent through this method should be in-line with the
-     * PowerHint defined in android/hardware/power/<version 1.0 & up>/IPower.h
-     */
-    public abstract void powerHint(int hintId, int data);
 
     /**
      * Boost: It is sent when user interacting with the device, for example,
@@ -306,6 +316,13 @@ public abstract class PowerManagerInternal {
     public static final int MODE_DISPLAY_INACTIVE = 9;
 
     /**
+     * Mode: It indicates that display is changing layout due to rotation or fold
+     * unfold behavior.
+     * Defined in hardware/interfaces/power/aidl/android/hardware/power/Mode.aidl
+     */
+    public static final int MODE_DISPLAY_CHANGE = 17;
+
+    /**
      * SetPowerMode() is called to enable/disable specific hint mode, which
      * may result in adjustment of power/performance parameters of the
      * cpufreq governor and other controls on device side.
@@ -321,6 +338,21 @@ public abstract class PowerManagerInternal {
     /** Returns information about the last wakeup event. */
     public abstract PowerManager.WakeData getLastWakeup();
 
+    /** Returns information about the last event to go to sleep. */
+    public abstract PowerManager.SleepData getLastGoToSleep();
+
     /** Allows power button to intercept a power key button press. */
     public abstract boolean interceptPowerKeyDown(KeyEvent event);
+
+    /**
+     * Internal version of {@link android.os.PowerManager#nap} which allows for napping while the
+     * device is not awake.
+     */
+    public abstract void nap(long eventTime, boolean allowWake);
+
+    /**
+     * Returns true if ambient display is suppressed by any app with any token. This method will
+     * return false if ambient display is not available.
+     */
+    public abstract boolean isAmbientDisplaySuppressed();
 }

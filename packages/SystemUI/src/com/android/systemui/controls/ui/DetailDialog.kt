@@ -16,32 +16,47 @@
 
 package com.android.systemui.controls.ui
 
-import android.app.ActivityView
+import android.app.Activity
+import android.app.ActivityOptions
+import android.app.ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED
 import android.app.Dialog
+import android.app.PendingIntent
+import android.content.ComponentName
+import android.content.Context
 import android.content.Intent
-import android.provider.Settings
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowInsets
 import android.view.WindowInsets.Type
 import android.view.WindowManager
 import android.widget.ImageView
-
+import androidx.annotation.VisibleForTesting
 import com.android.internal.policy.ScreenDecorationsUtils
-import com.android.systemui.R
+import com.android.systemui.res.R
+import com.android.systemui.broadcast.BroadcastSender
+import com.android.systemui.plugins.ActivityStarter
+import com.android.systemui.statusbar.policy.KeyguardStateController
+import com.android.systemui.util.boundsOnScreen
+import com.android.wm.shell.taskview.TaskView
 
 /**
- * A dialog that provides an {@link ActivityView}, allowing the application to provide
+ * A dialog that provides an {@link TaskView}, allowing the application to provide
  * additional information and actions pertaining to a {@link android.service.controls.Control}.
  * The activity being launched is specified by {@link android.service.controls.Control#getAppIntent}.
  */
 class DetailDialog(
-    val cvh: ControlViewHolder,
-    val intent: Intent
-) : Dialog(cvh.context, R.style.Theme_SystemUI_Dialog_Control_DetailPanel) {
-
+        val activityContext: Context,
+        val broadcastSender: BroadcastSender,
+        val taskView: TaskView,
+        val pendingIntent: PendingIntent,
+        val cvh: ControlViewHolder,
+        val keyguardStateController: KeyguardStateController,
+        val activityStarter: ActivityStarter
+) : Dialog(
+    activityContext,
+    R.style.Theme_SystemUI_Dialog_Control_DetailPanel
+) {
     companion object {
-        private const val PANEL_TOP_OFFSET = "systemui.controls_panel_top_offset"
         /*
          * Indicate to the activity that it is being rendered in a bottomsheet, and they
          * should optimize the layout for a smaller space.
@@ -49,33 +64,77 @@ class DetailDialog(
         private const val EXTRA_USE_PANEL = "controls.DISPLAY_IN_PANEL"
     }
 
-    var activityView = ActivityView(context, null, 0, false)
+    private lateinit var taskViewContainer: View
+    private lateinit var controlDetailRoot: View
+    private val taskWidthPercentWidth = activityContext.resources.getFloat(
+        R.dimen.controls_task_view_width_percentage
+    )
 
-    val stateCallback: ActivityView.StateCallback = object : ActivityView.StateCallback() {
-        override fun onActivityViewReady(view: ActivityView) {
-            val launchIntent = Intent(intent)
-            launchIntent.putExtra(EXTRA_USE_PANEL, true)
+    private val fillInIntent = Intent().apply {
+        putExtra(EXTRA_USE_PANEL, true)
 
-            // Apply flags to make behaviour match documentLaunchMode=always.
-            launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_DOCUMENT)
-            launchIntent.addFlags(Intent.FLAG_ACTIVITY_MULTIPLE_TASK)
+        // Apply flags to make behaviour match documentLaunchMode=always.
+        addFlags(Intent.FLAG_ACTIVITY_NEW_DOCUMENT)
+        addFlags(Intent.FLAG_ACTIVITY_MULTIPLE_TASK)
+    }
 
-            view.startActivity(launchIntent)
+    @VisibleForTesting
+    val stateCallback = object : TaskView.Listener {
+        override fun onInitialized() {
+            taskViewContainer.apply {
+                // For some devices, limit the overall width of the taskView
+                val lp = getLayoutParams()
+                lp.width = (getWidth() * taskWidthPercentWidth).toInt()
+                setLayoutParams(lp)
+            }
+
+            val options = ActivityOptions.makeCustomAnimation(
+                activityContext,
+                0 /* enterResId */,
+                0 /* exitResId */
+            ).apply {
+                pendingIntentBackgroundActivityStartMode = MODE_BACKGROUND_ACTIVITY_START_ALLOWED
+                isPendingIntentBackgroundActivityLaunchAllowedByPermission = true
+                taskAlwaysOnTop = true
+            }
+
+            taskView.startActivity(
+                pendingIntent,
+                fillInIntent,
+                options,
+                taskView.boundsOnScreen,
+            )
         }
 
-        override fun onActivityViewDestroyed(view: ActivityView) {}
-
         override fun onTaskRemovalStarted(taskId: Int) {
+            taskView.release()
+        }
+
+        override fun onTaskCreated(taskId: Int, name: ComponentName?) {
+            requireViewById<ViewGroup>(R.id.controls_activity_view).apply {
+                setAlpha(1f)
+            }
+        }
+        override fun onBackPressedOnTaskRoot(taskId: Int) {
             dismiss()
         }
     }
 
     init {
-        window.setType(WindowManager.LayoutParams.TYPE_VOLUME_OVERLAY)
+        // To pass touches to the task inside TaskView.
+        window?.addFlags(WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL)
+        window?.addPrivateFlags(WindowManager.LayoutParams.PRIVATE_FLAG_TRUSTED_OVERLAY)
+
         setContentView(R.layout.controls_detail_dialog)
 
+        taskViewContainer = requireViewById<ViewGroup>(R.id.control_task_view_container)
+        controlDetailRoot = requireViewById<View>(R.id.control_detail_root).apply {
+            setOnClickListener { _: View -> dismiss() }
+        }
+
         requireViewById<ViewGroup>(R.id.controls_activity_view).apply {
-            addView(activityView)
+            addView(taskView)
+            setAlpha(0f)
         }
 
         requireViewById<ImageView>(R.id.control_detail_close).apply {
@@ -85,56 +144,62 @@ class DetailDialog(
         requireViewById<ImageView>(R.id.control_detail_open_in_app).apply {
             setOnClickListener { v: View ->
                 dismiss()
-                context.sendBroadcast(Intent(Intent.ACTION_CLOSE_SYSTEM_DIALOGS))
-                v.context.startActivity(intent)
+
+                val action = ActivityStarter.OnDismissAction {
+                    // Remove the task explicitly, since onRelease() callback will be executed after
+                    // startActivity() below is called.
+                    broadcastSender.closeSystemDialogs()
+                    // not sent as interactive, lest the higher-importance activity launch
+                    // be impacted
+                    val options = ActivityOptions.makeBasic()
+                            .setPendingIntentBackgroundActivityStartMode(
+                                    ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED)
+                            .toBundle()
+                    pendingIntent.send(options)
+                    false
+                }
+                if (keyguardStateController.isUnlocked()) {
+                    action.onDismiss()
+                } else {
+                    activityStarter.dismissKeyguardThenExecute(
+                        action,
+                        null /* cancel */,
+                        true /* afterKeyguardGone */
+                    )
+                }
             }
         }
 
         // consume all insets to achieve slide under effect
-        window.getDecorView().setOnApplyWindowInsetsListener {
-            _: View, insets: WindowInsets ->
-                activityView.apply {
-                    val l = getPaddingLeft()
-                    val t = getPaddingTop()
-                    val r = getPaddingRight()
-                    setPadding(l, t, r, insets.getInsets(Type.systemBars()).bottom)
-                }
+        checkNotNull(window).decorView.setOnApplyWindowInsetsListener {
+            v: View, insets: WindowInsets ->
+                val l = v.getPaddingLeft()
+                val r = v.getPaddingRight()
+                val insets = insets.getInsets(Type.systemBars())
+                v.setPadding(l, insets.top, r, insets.bottom)
 
                 WindowInsets.CONSUMED
-        }
-
-        requireViewById<ViewGroup>(R.id.control_detail_root).apply {
-            // use flag only temporarily for testing
-            val resolver = cvh.context.contentResolver
-            val defaultOffsetInPx = cvh.context.resources
-                .getDimensionPixelSize(R.dimen.controls_activity_view_top_offset)
-            val offsetInPx = Settings.Secure.getInt(resolver, PANEL_TOP_OFFSET, defaultOffsetInPx)
-
-            val lp = getLayoutParams() as ViewGroup.MarginLayoutParams
-            lp.topMargin = offsetInPx
-            setLayoutParams(lp)
-
-            setOnClickListener { dismiss() }
-            (getParent() as View).setOnClickListener { dismiss() }
         }
 
         if (ScreenDecorationsUtils.supportsRoundedCornersOnWindows(context.getResources())) {
             val cornerRadius = context.resources
                 .getDimensionPixelSize(R.dimen.controls_activity_view_corner_radius)
-            activityView.setCornerRadius(cornerRadius.toFloat())
+            taskView.setCornerRadius(cornerRadius.toFloat())
         }
-    }
 
-    override fun show() {
-        activityView.setCallback(stateCallback)
-
-        super.show()
+        taskView.setListener(cvh.uiExecutor, stateCallback)
     }
 
     override fun dismiss() {
         if (!isShowing()) return
-        activityView.release()
+        taskView.removeTask()
 
+        val isActivityFinishing =
+            (activityContext as? Activity)?.let { it.isFinishing || it.isDestroyed }
+        if (isActivityFinishing == true) {
+            // Don't dismiss the dialog if the activity is finishing, it will get removed
+            return
+        }
         super.dismiss()
     }
 }

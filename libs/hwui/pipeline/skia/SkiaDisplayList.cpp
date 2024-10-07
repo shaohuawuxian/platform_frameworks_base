@@ -15,21 +15,18 @@
  */
 
 #include "SkiaDisplayList.h"
-#include "FunctorDrawable.h"
-
-#include "DumpOpsCanvas.h"
-#ifdef __ANDROID__ // Layoutlib does not support SkiaPipeline
-#include "SkiaPipeline.h"
-#else
-#include "DamageAccumulator.h"
-#endif
-#include "VectorDrawable.h"
-#ifdef __ANDROID__
-#include "renderthread/CanvasContext.h"
-#endif
 
 #include <SkImagePriv.h>
 #include <SkPathOps.h>
+
+// clang-format off
+#include "FunctorDrawable.h" // Must be included before DumpOpsCanvas.h
+#include "DumpOpsCanvas.h"
+// clang-format on
+#include "SkiaPipeline.h"
+#include "TreeInfo.h"
+#include "VectorDrawable.h"
+#include "renderthread/CanvasContext.h"
 
 namespace android {
 namespace uirenderer {
@@ -47,7 +44,13 @@ void SkiaDisplayList::syncContents(const WebViewSyncData& data) {
     }
 }
 
-bool SkiaDisplayList::reuseDisplayList(RenderNode* node, renderthread::CanvasContext* context) {
+void SkiaDisplayList::onRemovedFromTree() {
+    for (auto& functor : mChildFunctors) {
+        functor->onRemovedFromTree();
+    }
+}
+
+bool SkiaDisplayList::reuseDisplayList(RenderNode* node) {
     reset();
     node->attachAvailableList(this);
     return true;
@@ -56,6 +59,12 @@ bool SkiaDisplayList::reuseDisplayList(RenderNode* node, renderthread::CanvasCon
 void SkiaDisplayList::updateChildren(std::function<void(RenderNode*)> updateFn) {
     for (auto& child : mChildNodes) {
         updateFn(child.getRenderNode());
+    }
+}
+
+void SkiaDisplayList::visit(std::function<void(const RenderNode&)> func) const {
+    for (auto& child : mChildNodes) {
+        child.getRenderNode()->visit(func);
     }
 }
 
@@ -88,13 +97,18 @@ bool SkiaDisplayList::prepareListAndChildren(
     // If the prepare tree is triggered by the UI thread and no previous call to
     // pinImages has failed then we must pin all mutable images in the GPU cache
     // until the next UI thread draw.
-#ifdef __ANDROID__ // Layoutlib does not support CanvasContext
     if (info.prepareTextures && !info.canvasContext.pinImages(mMutableImages)) {
         // In the event that pinning failed we prevent future pinImage calls for the
         // remainder of this tree traversal and also unpin any currently pinned images
         // to free up GPU resources.
         info.prepareTextures = false;
         info.canvasContext.unpinImages();
+    }
+
+#ifdef __ANDROID__
+    auto grContext = info.canvasContext.getGrContext();
+    for (const auto& bufferData : mMeshBufferData) {
+        bufferData->updateBuffers(grContext);
     }
 #endif
 
@@ -162,6 +176,7 @@ void SkiaDisplayList::reset() {
 
     mDisplayList.reset();
 
+    mMeshBufferData.clear();
     mMutableImages.clear();
     mVectorDrawables.clear();
     mAnimatedImages.clear();
@@ -172,7 +187,7 @@ void SkiaDisplayList::reset() {
     new (&allocator) LinearAllocator();
 }
 
-void SkiaDisplayList::output(std::ostream& output, uint32_t level) {
+void SkiaDisplayList::output(std::ostream& output, uint32_t level) const {
     DumpOpsCanvas canvas(output, level, *this);
     mDisplayList.draw(&canvas);
 }

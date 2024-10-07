@@ -16,14 +16,17 @@
 
 package com.android.settingslib.applications;
 
+import static android.content.pm.Flags.FLAG_PROVIDE_INFO_OF_APK_IN_APEX;
 import static android.os.UserHandle.MU_ENABLED;
+import static android.os.UserHandle.USER_SYSTEM;
 
 import static com.google.common.truth.Truth.assertThat;
 
 import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Matchers.any;
-import static org.mockito.Matchers.anyInt;
-import static org.mockito.Matchers.anyString;
+import static org.mockito.Mockito.any;
+import static org.mockito.Mockito.anyInt;
+import static org.mockito.Mockito.anyLong;
+import static org.mockito.Mockito.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.spy;
@@ -32,6 +35,7 @@ import static org.mockito.Mockito.when;
 import static org.robolectric.shadow.api.Shadow.extract;
 
 import android.annotation.UserIdInt;
+import android.app.Application;
 import android.app.ApplicationPackageManager;
 import android.app.usage.StorageStats;
 import android.app.usage.StorageStatsManager;
@@ -46,15 +50,20 @@ import android.content.pm.ModuleInfo;
 import android.content.pm.PackageManager;
 import android.content.pm.ParceledListSlice;
 import android.content.pm.ResolveInfo;
+import android.content.pm.UserProperties;
 import android.content.res.Resources;
 import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.Drawable;
+import android.os.Build;
 import android.os.Handler;
 import android.os.RemoteException;
 import android.os.UserHandle;
 import android.os.UserManager;
+import android.platform.test.flag.junit.SetFlagsRule;
 import android.text.TextUtils;
 import android.util.IconDrawableFactory;
+
+import androidx.test.core.app.ApplicationProvider;
 
 import com.android.settingslib.applications.ApplicationsState.AppEntry;
 import com.android.settingslib.applications.ApplicationsState.Callbacks;
@@ -63,12 +72,15 @@ import com.android.settingslib.testutils.shadow.ShadowUserManager;
 
 import org.junit.After;
 import org.junit.Before;
+import org.junit.Ignore;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Captor;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
+import org.mockito.Spy;
 import org.robolectric.RobolectricTestRunner;
 import org.robolectric.RuntimeEnvironment;
 import org.robolectric.annotation.Config;
@@ -77,9 +89,12 @@ import org.robolectric.annotation.Implements;
 import org.robolectric.shadow.api.Shadow;
 import org.robolectric.shadows.ShadowContextImpl;
 import org.robolectric.shadows.ShadowLooper;
+import org.robolectric.util.ReflectionHelpers;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.UUID;
 
@@ -93,6 +108,7 @@ public class ApplicationsStateRoboTest {
     private final static String LAUNCHABLE_PACKAGE_NAME = "com.android.launchable";
 
     private static final int PROFILE_USERID = 10;
+    private static final int PROFILE_USERID2 = 11;
 
     private static final String PKG_1 = "PKG1";
     private static final int OWNER_UID_1 = 1001;
@@ -104,12 +120,19 @@ public class ApplicationsStateRoboTest {
 
     private static final String PKG_3 = "PKG3";
     private static final int OWNER_UID_3 = 1003;
+    private static final int PROFILE_UID_3 = UserHandle.getUid(PROFILE_USERID2, OWNER_UID_3);
+
+    private static final String CLONE_USER = "clone_user";
+    private static final String RANDOM_USER = "random_user";
 
     /** Class under test */
     private ApplicationsState mApplicationsState;
     private Session mSession;
 
+    private Application mApplication;
 
+    @Spy
+    Context mContext = ApplicationProvider.getApplicationContext();
     @Mock
     private Callbacks mCallbacks;
     @Captor
@@ -118,6 +141,9 @@ public class ApplicationsStateRoboTest {
     private StorageStatsManager mStorageStatsManager;
     @Mock
     private IPackageManager mPackageManagerService;
+
+    @Rule
+    public final SetFlagsRule mSetFlagsRule = new SetFlagsRule();
 
     @Implements(value = IconDrawableFactory.class)
     public static class ShadowIconDrawableFactory {
@@ -151,14 +177,16 @@ public class ApplicationsStateRoboTest {
         public List<ModuleInfo> getInstalledModules(int flags) {
             if (mInstalledModules.isEmpty()) {
                 for (String moduleName : mModuleNames) {
-                    mInstalledModules.add(createModuleInfo(moduleName));
+                    mInstalledModules.add(
+                            createModuleInfo(moduleName,
+                                    TextUtils.concat(moduleName, ".apex").toString()));
                 }
             }
             return mInstalledModules;
         }
 
         public List<ResolveInfo> queryIntentActivitiesAsUser(Intent intent,
-                @PackageManager.ResolveInfoFlags int flags, @UserIdInt int userId) {
+                @PackageManager.ResolveInfoFlagsBits int flags, @UserIdInt int userId) {
             List<ResolveInfo> resolveInfos = new ArrayList<>();
             ResolveInfo resolveInfo = new ResolveInfo();
             resolveInfo.activityInfo = new ActivityInfo();
@@ -170,10 +198,11 @@ public class ApplicationsStateRoboTest {
             return resolveInfos;
         }
 
-        private ModuleInfo createModuleInfo(String packageName) {
+        private ModuleInfo createModuleInfo(String packageName, String apexPackageName) {
             final ModuleInfo info = new ModuleInfo();
             info.setName(packageName);
             info.setPackageName(packageName);
+            info.setApkInApexPackageNames(Collections.singletonList(apexPackageName));
             // will treat any app with package name that contains "hidden" as hidden module
             info.setHidden(!TextUtils.isEmpty(packageName) && packageName.contains("hidden"));
             return info;
@@ -189,6 +218,7 @@ public class ApplicationsStateRoboTest {
         ShadowContextImpl shadowContext = Shadow.extract(
                 RuntimeEnvironment.application.getBaseContext());
         shadowContext.setSystemService(Context.STORAGE_STATS_SERVICE, mStorageStatsManager);
+        mApplication = spy(RuntimeEnvironment.application);
         StorageStats storageStats = new StorageStats();
         storageStats.codeBytes = 10;
         storageStats.cacheBytes = 30;
@@ -203,11 +233,10 @@ public class ApplicationsStateRoboTest {
         infos.add(createApplicationInfo("test.hidden.module.2"));
         infos.add(createApplicationInfo("test.package.3"));
         when(mPackageManagerService.getInstalledApplications(
-            anyInt() /* flags */, anyInt() /* userId */)).thenReturn(new ParceledListSlice(infos));
+            anyLong() /* flags */, anyInt() /* userId */)).thenReturn(new ParceledListSlice(infos));
 
         ApplicationsState.sInstance = null;
-        mApplicationsState =
-            ApplicationsState.getInstance(RuntimeEnvironment.application, mPackageManagerService);
+        mApplicationsState = ApplicationsState.getInstance(mApplication, mPackageManagerService);
         mApplicationsState.clearEntries();
 
         mSession = mApplicationsState.newSession(mCallbacks);
@@ -471,6 +500,7 @@ public class ApplicationsStateRoboTest {
         verify(mApplicationsState, never()).clearEntries();
     }
 
+    @Ignore("b/328332487")
     @Test
     public void removeProfileApp_workprofileExists_doResumeIfNeededLocked_shouldClearEntries()
             throws RemoteException {
@@ -545,6 +575,7 @@ public class ApplicationsStateRoboTest {
         verify(mApplicationsState).clearEntries();
     }
 
+    @Ignore("b/328332487")
     @Test
     public void removeOwnerApp_workprofileExists_doResumeIfNeededLocked_shouldClearEntries()
             throws RemoteException {
@@ -626,6 +657,7 @@ public class ApplicationsStateRoboTest {
         verify(mApplicationsState).clearEntries();
     }
 
+    @Ignore("b/328332487")
     @Test
     public void noAppRemoved_workprofileExists_doResumeIfNeededLocked_shouldNotClearEntries()
             throws RemoteException {
@@ -702,20 +734,135 @@ public class ApplicationsStateRoboTest {
         verify(mApplicationsState, never()).clearEntries();
     }
 
+    @Test
+    public void testDefaultSession_enabledAppIconCache_shouldSkipPreloadIcon() {
+        when(mApplication.getPackageName()).thenReturn("com.android.settings");
+        mSession.onResume();
+
+        addApp(HOME_PACKAGE_NAME, 1);
+        addApp(LAUNCHABLE_PACKAGE_NAME, 2);
+        mSession.rebuild(ApplicationsState.FILTER_EVERYTHING, ApplicationsState.SIZE_COMPARATOR);
+        processAllMessages();
+        verify(mCallbacks).onRebuildComplete(mAppEntriesCaptor.capture());
+
+        List<AppEntry> appEntries = mAppEntriesCaptor.getValue();
+        for (AppEntry appEntry : appEntries) {
+            assertThat(appEntry.icon).isNull();
+        }
+    }
+
     private void setupDoResumeIfNeededLocked(ArrayList<ApplicationInfo> ownerApps,
             ArrayList<ApplicationInfo> profileApps)
             throws RemoteException {
 
         if (ownerApps != null) {
-            when(mApplicationsState.mIpm.getInstalledApplications(anyInt(), eq(0)))
+            when(mApplicationsState.mIpm.getInstalledApplications(anyLong(), eq(0)))
                 .thenReturn(new ParceledListSlice<>(ownerApps));
         }
         if (profileApps != null) {
-            when(mApplicationsState.mIpm.getInstalledApplications(anyInt(), eq(PROFILE_USERID)))
+            when(mApplicationsState.mIpm.getInstalledApplications(anyLong(), eq(PROFILE_USERID)))
                 .thenReturn(new ParceledListSlice<>(profileApps));
         }
         final InterestingConfigChanges configChanges = mock(InterestingConfigChanges.class);
         when(configChanges.applyNewConfig(any(Resources.class))).thenReturn(false);
         mApplicationsState.setInterestingConfigChanges(configChanges);
+    }
+
+    @Test
+    public void shouldShowInPersonalTab_forCurrentUser_returnsTrue() {
+        UserManager um = RuntimeEnvironment.application.getSystemService(UserManager.class);
+        ApplicationInfo appInfo = createApplicationInfo(PKG_1);
+        AppEntry primaryUserApp = createAppEntry(appInfo, 1);
+
+        assertThat(primaryUserApp.shouldShowInPersonalTab(um, appInfo.uid)).isTrue();
+    }
+
+    @Ignore("b/328332487")
+    @Test
+    public void shouldShowInPersonalTab_userProfilePreU_returnsFalse() {
+        UserManager um = RuntimeEnvironment.application.getSystemService(UserManager.class);
+        ReflectionHelpers.setStaticField(Build.VERSION.class, "SDK_INT",
+                Build.VERSION_CODES.TIRAMISU);
+        // Create an app (and subsequent AppEntry) in a non-primary user profile.
+        ApplicationInfo appInfo1 = createApplicationInfo(PKG_1, PROFILE_UID_1);
+        AppEntry nonPrimaryUserApp = createAppEntry(appInfo1, 1);
+
+        assertThat(nonPrimaryUserApp.shouldShowInPersonalTab(um, appInfo1.uid)).isFalse();
+    }
+
+    @Test
+    public void shouldShowInPersonalTab_currentUserIsParent_returnsAsPerUserPropertyOfProfile1() {
+        // Mark system user as parent for both profile users.
+        UserManager um = RuntimeEnvironment.application.getSystemService(UserManager.class);
+        ShadowUserManager shadowUserManager = Shadow.extract(um);
+        shadowUserManager.addProfile(USER_SYSTEM, PROFILE_USERID,
+                CLONE_USER, 0);
+        shadowUserManager.addProfile(USER_SYSTEM, PROFILE_USERID2,
+                RANDOM_USER, 0);
+        shadowUserManager.setupUserProperty(PROFILE_USERID,
+                /*showInSettings*/ UserProperties.SHOW_IN_SETTINGS_WITH_PARENT);
+        shadowUserManager.setupUserProperty(PROFILE_USERID2,
+                /*showInSettings*/ UserProperties.SHOW_IN_SETTINGS_NO);
+
+        ReflectionHelpers.setStaticField(Build.VERSION.class, "SDK_INT",
+                Build.VERSION_CODES.UPSIDE_DOWN_CAKE);
+
+        // Treat PROFILE_USERID as a clone user profile and create an app PKG_1 in it.
+        ApplicationInfo appInfo1 = createApplicationInfo(PKG_1, PROFILE_UID_1);
+        // Treat PROFILE_USERID2 as a random non-primary profile and create an app PKG_3 in it.
+        ApplicationInfo appInfo2 = createApplicationInfo(PKG_3, PROFILE_UID_3);
+        AppEntry nonPrimaryUserApp1 = createAppEntry(appInfo1, 1);
+        AppEntry nonPrimaryUserApp2 = createAppEntry(appInfo2, 2);
+
+        assertThat(nonPrimaryUserApp1.shouldShowInPersonalTab(um, appInfo1.uid)).isTrue();
+        assertThat(nonPrimaryUserApp2.shouldShowInPersonalTab(um, appInfo2.uid)).isFalse();
+    }
+
+    @Test
+    public void getEntry_hasCache_shouldReturnCacheEntry() {
+        mApplicationsState.mEntriesMap.put(/* userId= */ 0, new HashMap<>());
+        addApp(PKG_1, /* id= */ 1);
+
+        assertThat(mApplicationsState.getEntry(PKG_1, /* userId= */ 0).info.packageName)
+                .isEqualTo(PKG_1);
+    }
+
+    @Test
+    public void getEntry_hasNoCache_shouldReturnEntry() {
+        mApplicationsState.mEntriesMap.clear();
+        ApplicationInfo appInfo = createApplicationInfo(PKG_1, /* uid= */ 0);
+        mApplicationsState.mApplications.add(appInfo);
+        mApplicationsState.mSystemModules.put(PKG_1, /* value= */ false);
+
+        assertThat(mApplicationsState.getEntry(PKG_1, /* userId= */ 0).info.packageName)
+                .isEqualTo(PKG_1);
+    }
+
+    @Test
+    public void isHiddenModule_hasApkInApexInfo_shouldSupportHiddenApexPackage() {
+        mSetFlagsRule.enableFlags(FLAG_PROVIDE_INFO_OF_APK_IN_APEX);
+        ApplicationsState.sInstance = null;
+        mApplicationsState = ApplicationsState.getInstance(mApplication, mPackageManagerService);
+        String normalModulePackage = "test.module.1";
+        String hiddenModulePackage = "test.hidden.module.2";
+        String hiddenApexPackage = "test.hidden.module.2.apex";
+
+        assertThat(mApplicationsState.isHiddenModule(normalModulePackage)).isFalse();
+        assertThat(mApplicationsState.isHiddenModule(hiddenModulePackage)).isTrue();
+        assertThat(mApplicationsState.isHiddenModule(hiddenApexPackage)).isTrue();
+    }
+
+    @Test
+    public void isHiddenModule_noApkInApexInfo_onlySupportHiddenModule() {
+        mSetFlagsRule.disableFlags(FLAG_PROVIDE_INFO_OF_APK_IN_APEX);
+        ApplicationsState.sInstance = null;
+        mApplicationsState = ApplicationsState.getInstance(mApplication, mPackageManagerService);
+        String normalModulePackage = "test.module.1";
+        String hiddenModulePackage = "test.hidden.module.2";
+        String hiddenApexPackage = "test.hidden.module.2.apex";
+
+        assertThat(mApplicationsState.isHiddenModule(normalModulePackage)).isFalse();
+        assertThat(mApplicationsState.isHiddenModule(hiddenModulePackage)).isTrue();
+        assertThat(mApplicationsState.isHiddenModule(hiddenApexPackage)).isFalse();
     }
 }

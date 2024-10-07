@@ -49,6 +49,7 @@ class QuaresActivity : Activity() {
     private lateinit var label: Button
     private lateinit var grid: GridLayout
 
+    @Suppress("DEPRECATION")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -59,8 +60,8 @@ class QuaresActivity : Activity() {
 
         setContentView(R.layout.activity_quares)
 
-        grid = findViewById(R.id.grid)
-        label = findViewById(R.id.label)
+        grid = requireViewById(R.id.grid)
+        label = requireViewById(R.id.label)
 
         if (savedInstanceState != null) {
             Log.v(TAG, "restoring puzzle from state")
@@ -134,7 +135,7 @@ class QuaresActivity : Activity() {
         if (q.check()) {
             val dp = resources.displayMetrics.density
 
-            val label: Button = findViewById(R.id.label)
+            val label: Button = requireViewById(R.id.label)
             label.text = resName.replace(Regex("^.*/"), "")
             val drawable = icon?.loadDrawable(this)?.also {
                 it.setBounds(0, 0, (32 * dp).toInt(), (32 * dp).toInt())
@@ -292,7 +293,7 @@ class ClueView(context: Context) : View(context) {
         return correct
     }
 
-    override fun onDraw(canvas: Canvas?) {
+    override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
         if (!showText) return
         canvas?.let {

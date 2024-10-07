@@ -20,7 +20,6 @@
 #include <gui/DisplayEventReceiver.h>
 #include <input/DisplayViewport.h>
 #include <input/Input.h>
-#include <ui/DisplayInfo.h>
 #include <utils/BitSet.h>
 #include <utils/Looper.h>
 #include <utils/RefBase.h>
@@ -44,18 +43,20 @@ public:
     MouseCursorController(PointerControllerContext& context);
     ~MouseCursorController();
 
-    bool getBounds(float* outMinX, float* outMinY, float* outMaxX, float* outMaxY) const;
+    std::optional<FloatRect> getBounds() const;
     void move(float deltaX, float deltaY);
-    void setButtonState(int32_t buttonState);
-    int32_t getButtonState() const;
     void setPosition(float x, float y);
-    void getPosition(float* outX, float* outY) const;
-    int32_t getDisplayId() const;
+    FloatPoint getPosition() const;
+    ui::LogicalDisplayId getDisplayId() const;
     void fade(PointerControllerInterface::Transition transition);
     void unfade(PointerControllerInterface::Transition transition);
     void setDisplayViewport(const DisplayViewport& viewport, bool getAdditionalMouseResources);
+    void setStylusHoverMode(bool stylusHoverMode);
 
-    void updatePointerIcon(int32_t iconId);
+    // Set/Unset flag to hide the mouse cursor on the mirrored display
+    void setSkipScreenshot(bool skip);
+
+    void updatePointerIcon(PointerIconStyle iconId);
     void setCustomPointerIcon(const SpriteIcon& icon);
     void reloadPointerResources(bool getAdditionalMouseResources);
 
@@ -75,6 +76,7 @@ private:
 
     struct Locked {
         DisplayViewport viewport;
+        bool stylusHoverMode;
 
         size_t animationFrameIndex;
         nsecs_t lastFrameUpdatedTime;
@@ -89,18 +91,18 @@ private:
 
         bool resourcesLoaded;
 
-        std::map<int32_t, SpriteIcon> additionalMouseResources;
-        std::map<int32_t, PointerAnimation> animationResources;
+        std::map<PointerIconStyle, SpriteIcon> additionalMouseResources;
+        std::map<PointerIconStyle, PointerAnimation> animationResources;
 
-        int32_t requestedPointerType;
+        PointerIconStyle requestedPointerType;
+        PointerIconStyle resolvedPointerType;
 
-        int32_t buttonState;
-
+        bool skipScreenshot{false};
         bool animating{false};
 
     } mLocked GUARDED_BY(mLock);
 
-    bool getBoundsLocked(float* outMinX, float* outMinY, float* outMaxX, float* outMaxY) const;
+    std::optional<FloatRect> getBoundsLocked() const;
     void setPositionLocked(float x, float y);
 
     void updatePointerLocked();

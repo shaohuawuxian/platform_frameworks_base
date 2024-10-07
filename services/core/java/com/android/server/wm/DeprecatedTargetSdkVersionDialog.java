@@ -16,31 +16,23 @@
 
 package com.android.server.wm;
 
-import static com.android.server.wm.ActivityTaskManagerDebugConfig.TAG_ATM;
-import static com.android.server.wm.ActivityTaskManagerDebugConfig.TAG_WITH_CLASS_NAME;
-
 import android.app.AlertDialog;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageItemInfo;
 import android.content.pm.PackageManager;
-import android.util.Log;
 import android.view.Window;
 import android.view.WindowManager;
 
 import com.android.internal.R;
 import com.android.server.utils.AppInstallerUtil;
 
-public class DeprecatedTargetSdkVersionDialog {
-    private static final String TAG = TAG_WITH_CLASS_NAME ? "DeprecatedTargetSdkVersionDialog" : TAG_ATM;
+class DeprecatedTargetSdkVersionDialog extends AppWarnings.BaseDialog {
 
-    private final AlertDialog mDialog;
-    private final String mPackageName;
-
-    public DeprecatedTargetSdkVersionDialog(final AppWarnings manager, Context context,
-            ApplicationInfo appInfo) {
-        mPackageName = appInfo.packageName;
+    DeprecatedTargetSdkVersionDialog(final AppWarnings manager, Context context,
+            ApplicationInfo appInfo, int userId) {
+        super(manager, context, appInfo.packageName, userId);
 
         final PackageManager pm = context.getPackageManager();
         final CharSequence label = appInfo.loadSafeLabel(pm,
@@ -52,7 +44,7 @@ public class DeprecatedTargetSdkVersionDialog {
         final AlertDialog.Builder builder = new AlertDialog.Builder(context)
                 .setPositiveButton(R.string.ok, (dialog, which) ->
                     manager.setPackageFlag(
-                            mPackageName, AppWarnings.FLAG_HIDE_DEPRECATED_SDK, true))
+                            mUserId, mPackageName, AppWarnings.FLAG_HIDE_DEPRECATED_SDK, true))
                 .setMessage(message)
                 .setTitle(label);
 
@@ -74,18 +66,5 @@ public class DeprecatedTargetSdkVersionDialog {
 
         // DO NOT MODIFY. Used by CTS to verify the dialog is displayed.
         window.getAttributes().setTitle("DeprecatedTargetSdkVersionDialog");
-    }
-
-    public String getPackageName() {
-        return mPackageName;
-    }
-
-    public void show() {
-        Log.w(TAG, "Showing SDK deprecation warning for package " + mPackageName);
-        mDialog.show();
-    }
-
-    public void dismiss() {
-        mDialog.dismiss();
     }
 }

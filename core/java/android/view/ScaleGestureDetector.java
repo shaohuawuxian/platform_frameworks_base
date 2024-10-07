@@ -16,6 +16,8 @@
 
 package android.view;
 
+import android.annotation.NonNull;
+import android.annotation.Nullable;
 import android.compat.annotation.UnsupportedAppUsage;
 import android.content.Context;
 import android.os.Build;
@@ -67,7 +69,7 @@ public class ScaleGestureDetector {
          *          only wants to update scaling factors if the change is
          *          greater than 0.01.
          */
-        public boolean onScale(ScaleGestureDetector detector);
+        public boolean onScale(@NonNull ScaleGestureDetector detector);
 
         /**
          * Responds to the beginning of a scaling gesture. Reported by
@@ -81,7 +83,7 @@ public class ScaleGestureDetector {
          *          sense, onScaleBegin() may return false to ignore the
          *          rest of the gesture.
          */
-        public boolean onScaleBegin(ScaleGestureDetector detector);
+        public boolean onScaleBegin(@NonNull ScaleGestureDetector detector);
 
         /**
          * Responds to the end of a scale gesture. Reported by existing
@@ -94,7 +96,7 @@ public class ScaleGestureDetector {
          * @param detector The detector reporting the event - use this to
          *          retrieve extended info about event state.
          */
-        public void onScaleEnd(ScaleGestureDetector detector);
+        public void onScaleEnd(@NonNull ScaleGestureDetector detector);
     }
 
     /**
@@ -109,15 +111,15 @@ public class ScaleGestureDetector {
      */
     public static class SimpleOnScaleGestureListener implements OnScaleGestureListener {
 
-        public boolean onScale(ScaleGestureDetector detector) {
+        public boolean onScale(@NonNull ScaleGestureDetector detector) {
             return false;
         }
 
-        public boolean onScaleBegin(ScaleGestureDetector detector) {
+        public boolean onScaleBegin(@NonNull ScaleGestureDetector detector) {
             return true;
         }
 
-        public void onScaleEnd(ScaleGestureDetector detector) {
+        public void onScaleEnd(@NonNull ScaleGestureDetector detector) {
             // Intentionally empty
         }
     }
@@ -180,7 +182,8 @@ public class ScaleGestureDetector {
      *
      * @throws NullPointerException if {@code listener} is null.
      */
-    public ScaleGestureDetector(Context context, OnScaleGestureListener listener) {
+    public ScaleGestureDetector(@NonNull Context context,
+            @NonNull OnScaleGestureListener listener) {
         this(context, listener, null);
     }
 
@@ -195,13 +198,34 @@ public class ScaleGestureDetector {
      *
      * @throws NullPointerException if {@code listener} is null.
      */
-    public ScaleGestureDetector(Context context, OnScaleGestureListener listener,
-                                Handler handler) {
+    public ScaleGestureDetector(@NonNull Context context, @NonNull OnScaleGestureListener listener,
+            @Nullable Handler handler) {
+        this(context, ViewConfiguration.get(context).getScaledTouchSlop() * 2,
+                ViewConfiguration.get(context).getScaledMinimumScalingSpan(), handler, listener);
+    }
+
+    /**
+     * Creates a ScaleGestureDetector with span slop and min span.
+     *
+     * @param context the application's context.
+     * @param spanSlop the threshold for interpreting a touch movement as scaling.
+     * @param minSpan the minimum threshold of scaling span. The span could be
+     *                overridden by other usages to specify a different scaling span, for instance,
+     *                if you need pinch gestures to continue closer together than the default.
+     * @param listener the listener invoked for all the callbacks, this must not be null.
+     * @param handler the handler to use for running deferred listener events.
+     *
+     * @throws NullPointerException if {@code listener} is null.
+     *
+     * @hide
+     */
+    public ScaleGestureDetector(@NonNull Context context, @NonNull int spanSlop,
+            @NonNull int minSpan, @Nullable Handler handler,
+            @NonNull OnScaleGestureListener listener) {
         mContext = context;
         mListener = listener;
-        final ViewConfiguration viewConfiguration = ViewConfiguration.get(context);
-        mSpanSlop = viewConfiguration.getScaledTouchSlop() * 2;
-        mMinSpan = viewConfiguration.getScaledMinimumScalingSpan();
+        mSpanSlop = spanSlop;
+        mMinSpan = minSpan;
         mHandler = handler;
         // Quick scale is enabled by default after JB_MR2
         final int targetSdkVersion = context.getApplicationInfo().targetSdkVersion;
@@ -226,7 +250,7 @@ public class ScaleGestureDetector {
      * @return true if the event was processed and the detector wants to receive the
      *         rest of the MotionEvents in this event stream.
      */
-    public boolean onTouchEvent(MotionEvent event) {
+    public boolean onTouchEvent(@NonNull MotionEvent event) {
         if (mInputEventConsistencyVerifier != null) {
             mInputEventConsistencyVerifier.onTouchEvent(event, 0);
         }

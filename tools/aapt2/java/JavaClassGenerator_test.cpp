@@ -34,7 +34,6 @@ namespace aapt {
 TEST(JavaClassGeneratorTest, FailWhenEntryIsJavaKeyword) {
   std::unique_ptr<ResourceTable> table =
       test::ResourceTableBuilder()
-          .SetPackageId("android", 0x01)
           .AddSimple("android:id/class", ResourceId(0x01020000))
           .Build();
 
@@ -54,7 +53,6 @@ TEST(JavaClassGeneratorTest, FailWhenEntryIsJavaKeyword) {
 TEST(JavaClassGeneratorTest, TransformInvalidJavaIdentifierCharacter) {
   std::unique_ptr<ResourceTable> table =
       test::ResourceTableBuilder()
-          .SetPackageId("android", 0x01)
           .AddSimple("android:id/hey-man", ResourceId(0x01020000))
           .AddValue("android:attr/cool.attr", ResourceId(0x01010000),
                     test::AttributeBuilder().Build())
@@ -84,7 +82,6 @@ TEST(JavaClassGeneratorTest, TransformInvalidJavaIdentifierCharacter) {
 TEST(JavaClassGeneratorTest, CorrectPackageNameIsUsed) {
   std::unique_ptr<ResourceTable> table =
       test::ResourceTableBuilder()
-          .SetPackageId("android", 0x01)
           .AddSimple("android:id/one", ResourceId(0x01020000))
           .AddSimple("android:id/com.foo$two", ResourceId(0x01020001))
           .Build();
@@ -110,8 +107,6 @@ TEST(JavaClassGeneratorTest, CorrectPackageNameIsUsed) {
 TEST(JavaClassGeneratorTest, StyleableAttributesWithDifferentPackageName) {
   std::unique_ptr<ResourceTable> table =
       test::ResourceTableBuilder()
-          .SetPackageId("android", 0x01)
-          .SetPackageId("app", 0x7f)
           .AddValue("app:attr/foo", ResourceId(0x7f010000),
                     test::AttributeBuilder().Build())
           .AddValue("app:attr/bar", ResourceId(0x7f010001),
@@ -159,7 +154,6 @@ TEST(JavaClassGeneratorTest, StyleableAttributesWithDifferentPackageName) {
 TEST(JavaClassGeneratorTest, AttrPrivateIsWrittenAsAttr) {
   std::unique_ptr<ResourceTable> table =
       test::ResourceTableBuilder()
-          .SetPackageId("android", 0x01)
           .AddSimple("android:attr/two", ResourceId(0x01010001))
           .AddSimple("android:^attr-private/one", ResourceId(0x01010000))
           .Build();
@@ -184,7 +178,6 @@ TEST(JavaClassGeneratorTest, OnlyWritePublicResources) {
   StdErrDiagnostics diag;
   std::unique_ptr<ResourceTable> table =
       test::ResourceTableBuilder()
-          .SetPackageId("android", 0x01)
           .AddSimple("android:id/one", ResourceId(0x01020000))
           .AddSimple("android:id/two", ResourceId(0x01020001))
           .AddSimple("android:id/three", ResourceId(0x01020002))
@@ -276,8 +269,6 @@ ResourceId>()),
 TEST(JavaClassGeneratorTest, EmitOtherPackagesAttributesInStyleable) {
   std::unique_ptr<ResourceTable> table =
       test::ResourceTableBuilder()
-          .SetPackageId("android", 0x01)
-          .SetPackageId("com.lib", 0x02)
           .AddValue("android:attr/bar", ResourceId(0x01010000), test::AttributeBuilder().Build())
           .AddValue("com.lib:attr/bar", ResourceId(0x02010000), test::AttributeBuilder().Build())
           .AddValue("android:styleable/foo", ResourceId(0x01030000),
@@ -306,7 +297,6 @@ TEST(JavaClassGeneratorTest, EmitOtherPackagesAttributesInStyleable) {
 TEST(JavaClassGeneratorTest, CommentsForSimpleResourcesArePresent) {
   std::unique_ptr<ResourceTable> table =
       test::ResourceTableBuilder()
-          .SetPackageId("android", 0x01)
           .AddSimple("android:id/foo", ResourceId(0x01010000))
           .Build();
   test::GetValue<Id>(table.get(), "android:id/foo")
@@ -334,7 +324,58 @@ TEST(JavaClassGeneratorTest, CommentsForSimpleResourcesArePresent) {
   EXPECT_THAT(output, HasSubstr(expected_text));
 }
 
-TEST(JavaClassGeneratorTest, CommentsForEnumAndFlagAttributesArePresent) {}
+TEST(JavaClassGeneratorTest, CommentsForEnumAndFlagAttributesArePresent) {
+  std::unique_ptr<Attribute> flagAttr =
+      test::AttributeBuilder()
+          .SetTypeMask(android::ResTable_map::TYPE_FLAGS)
+          .SetComment("Flag attribute")
+          .AddItemWithComment("flagOne", 0x01, "Flag comment 1")
+          .AddItemWithComment("flagTwo", 0x02, "@deprecated Flag comment 2")
+          .Build();
+  std::unique_ptr<Attribute> enumAttr =
+      test::AttributeBuilder()
+          .SetTypeMask(android::ResTable_map::TYPE_ENUM)
+          .SetComment("Enum attribute")
+          .AddItemWithComment("enumOne", 0x01, "@TestApi Enum comment 1")
+          .AddItemWithComment("enumTwo", 0x02, "Enum comment 2")
+          .Build();
+
+  std::unique_ptr<ResourceTable> table = test::ResourceTableBuilder()
+                                             .AddValue("android:attr/one", std::move(flagAttr))
+                                             .AddValue("android:attr/two", std::move(enumAttr))
+                                             .Build();
+
+  std::unique_ptr<IAaptContext> context =
+      test::ContextBuilder()
+          .AddSymbolSource(util::make_unique<ResourceTableSymbolSource>(table.get()))
+          .SetNameManglerPolicy(NameManglerPolicy{"android"})
+          .Build();
+  JavaClassGeneratorOptions options;
+  options.use_final = false;
+  JavaClassGenerator generator(context.get(), table.get(), options);
+
+  std::string output;
+  StringOutputStream out(&output);
+  ASSERT_TRUE(generator.Generate("android", &out));
+  out.Flush();
+
+  // Special annotations from the enum/flag values should NOT generate
+  // annotations for the attribute value.
+  EXPECT_THAT(output, Not(HasSubstr("@Deprecated")));
+  EXPECT_THAT(output, Not(HasSubstr("@android.annotation.TestApi")));
+
+  EXPECT_THAT(output, HasSubstr("Flag attribute"));
+  EXPECT_THAT(output, HasSubstr("flagOne"));
+  EXPECT_THAT(output, HasSubstr("Flag comment 1"));
+  EXPECT_THAT(output, HasSubstr("flagTwo"));
+  EXPECT_THAT(output, HasSubstr("@deprecated Flag comment 2"));
+
+  EXPECT_THAT(output, HasSubstr("Enum attribute"));
+  EXPECT_THAT(output, HasSubstr("enumOne"));
+  EXPECT_THAT(output, HasSubstr("@TestApi Enum comment 1"));
+  EXPECT_THAT(output, HasSubstr("enumTwo"));
+  EXPECT_THAT(output, HasSubstr("Enum comment 2"));
+}
 
 TEST(JavaClassGeneratorTest, CommentsForStyleablesAndNestedAttributesArePresent) {
   Attribute attr;
@@ -344,12 +385,12 @@ TEST(JavaClassGeneratorTest, CommentsForStyleablesAndNestedAttributesArePresent)
   styleable.entries.push_back(Reference(test::ParseNameOrDie("android:attr/one")));
   styleable.SetComment(StringPiece("This is a styleable"));
 
+  CloningValueTransformer cloner(nullptr);
   std::unique_ptr<ResourceTable> table =
       test::ResourceTableBuilder()
-          .SetPackageId("android", 0x01)
           .AddValue("android:attr/one", util::make_unique<Attribute>(attr))
           .AddValue("android:styleable/Container",
-                    std::unique_ptr<Styleable>(styleable.Clone(nullptr)))
+                    std::unique_ptr<Styleable>(styleable.Transform(cloner)))
           .Build();
 
   std::unique_ptr<IAaptContext> context =
@@ -382,12 +423,12 @@ TEST(JavaClassGeneratorTest, CommentsForStyleableHiddenAttributesAreNotPresent) 
   styleable.entries.push_back(Reference(test::ParseNameOrDie("android:attr/one")));
   styleable.SetComment(StringPiece("This is a styleable"));
 
+  CloningValueTransformer cloner(nullptr);
   std::unique_ptr<ResourceTable> table =
       test::ResourceTableBuilder()
-          .SetPackageId("android", 0x01)
           .AddValue("android:attr/one", util::make_unique<Attribute>(attr))
           .AddValue("android:styleable/Container",
-                    std::unique_ptr<Styleable>(styleable.Clone(nullptr)))
+                    std::unique_ptr<Styleable>(styleable.Transform(cloner)))
           .Build();
 
   std::unique_ptr<IAaptContext> context =
@@ -415,7 +456,6 @@ TEST(JavaClassGeneratorTest, CommentsForStyleableHiddenAttributesAreNotPresent) 
 TEST(JavaClassGeneratorTest, StyleableAndIndicesAreColocated) {
   std::unique_ptr<ResourceTable> table =
       test::ResourceTableBuilder()
-          .SetPackageId("android", 0x01)
           .AddValue("android:attr/layout_gravity", util::make_unique<Attribute>())
           .AddValue("android:attr/background", util::make_unique<Attribute>())
           .AddValue("android:styleable/ActionBar",
@@ -467,7 +507,6 @@ TEST(JavaClassGeneratorTest, CommentsForRemovedAttributesAreNotPresentInClass) {
 
   std::unique_ptr<ResourceTable> table =
       test::ResourceTableBuilder()
-          .SetPackageId("android", 0x01)
           .AddValue("android:attr/one", util::make_unique<Attribute>(attr))
           .Build();
 
@@ -499,7 +538,6 @@ TEST(JavaClassGeneratorTest, CommentsForRemovedAttributesAreNotPresentInClass) {
 TEST(JavaClassGeneratorTest, GenerateOnResourcesLoadedCallbackForSharedLibrary) {
   std::unique_ptr<ResourceTable> table =
       test::ResourceTableBuilder()
-          .SetPackageId("android", 0x00)
           .AddValue("android:attr/foo", ResourceId(0x00010000), util::make_unique<Attribute>())
           .AddValue("android:id/foo", ResourceId(0x00020000), util::make_unique<Id>())
           .AddValue(
@@ -536,7 +574,6 @@ TEST(JavaClassGeneratorTest, GenerateOnResourcesLoadedCallbackForSharedLibrary) 
 TEST(JavaClassGeneratorTest, OnlyGenerateRText) {
   std::unique_ptr<ResourceTable> table =
       test::ResourceTableBuilder()
-          .SetPackageId("android", 0x01)
           .AddValue("android:attr/foo", ResourceId(0x01010000), util::make_unique<Attribute>())
           .AddValue("android:styleable/hey.dude", ResourceId(0x01020000),
                     test::StyleableBuilder()
@@ -549,6 +586,60 @@ TEST(JavaClassGeneratorTest, OnlyGenerateRText) {
   JavaClassGenerator generator(context.get(), table.get(), {});
 
   ASSERT_TRUE(generator.Generate("android", nullptr));
+}
+
+TEST(JavaClassGeneratorTest, SortsDynamicAttributesAfterFrameworkAttributes) {
+  std::unique_ptr<ResourceTable> table =
+      test::ResourceTableBuilder()
+          .AddValue("android:attr/framework_attr", ResourceId(0x01010000),
+                    test::AttributeBuilder().Build())
+          .AddValue("lib:attr/dynamic_attr", ResourceId(0x00010000),
+                    test::AttributeBuilder().Build())
+          .AddValue("lib:styleable/MyStyleable", ResourceId(0x00030000),
+                    test::StyleableBuilder()
+                        .AddItem("android:attr/framework_attr", ResourceId(0x01010000))
+                        .AddItem("lib:attr/dynamic_attr", ResourceId(0x00010000))
+                        .Build())
+          .Build();
+
+  std::unique_ptr<IAaptContext> context =
+      test::ContextBuilder()
+          .AddSymbolSource(util::make_unique<ResourceTableSymbolSource>(table.get()))
+          .SetNameManglerPolicy(NameManglerPolicy{"custom"})
+          .SetCompilationPackage("custom")
+          .Build();
+  JavaClassGenerator generator(context.get(), table.get(), {});
+
+  std::string output;
+  StringOutputStream out(&output);
+  EXPECT_TRUE(generator.Generate("lib", &out));
+  out.Flush();
+
+  EXPECT_THAT(output, HasSubstr("public static final int[] MyStyleable={"));
+  EXPECT_THAT(output, HasSubstr("0x01010000, lib.R.attr.dynamic_attr"));
+  EXPECT_THAT(output, HasSubstr("public static final int MyStyleable_android_framework_attr=0;"));
+  EXPECT_THAT(output, HasSubstr("public static final int MyStyleable_dynamic_attr=1;"));
+}
+
+TEST(JavaClassGeneratorTest, SkipMacros) {
+  std::unique_ptr<ResourceTable> table =
+      test::ResourceTableBuilder()
+          .AddValue("android:macro/bar", ResourceId(0x01010000), test::AttributeBuilder().Build())
+          .Build();
+
+  std::unique_ptr<IAaptContext> context =
+      test::ContextBuilder()
+          .AddSymbolSource(util::make_unique<ResourceTableSymbolSource>(table.get()))
+          .SetNameManglerPolicy(NameManglerPolicy{"android"})
+          .Build();
+  JavaClassGenerator generator(context.get(), table.get(), {});
+
+  std::string output;
+  StringOutputStream out(&output);
+  EXPECT_TRUE(generator.Generate("android", &out));
+  out.Flush();
+
+  EXPECT_THAT(output, Not(HasSubstr("bar")));
 }
 
 }  // namespace aapt

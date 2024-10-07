@@ -34,6 +34,7 @@ oneway interface IAccessibilityInteractionConnectionCallback {
      * @param interactionId The interaction id to match the result with the request.
      */
     @UnsupportedAppUsage(maxTargetSdk = 30, trackingBug = 170729553)
+    @RequiresNoPermission
     void setFindAccessibilityNodeInfoResult(in AccessibilityNodeInfo info, int interactionId);
 
     /**
@@ -43,8 +44,19 @@ oneway interface IAccessibilityInteractionConnectionCallback {
      * @param interactionId The interaction id to match the result with the request.
      */
     @UnsupportedAppUsage(maxTargetSdk = 30, trackingBug = 170729553)
+    @RequiresNoPermission
     void setFindAccessibilityNodeInfosResult(in List<AccessibilityNodeInfo> infos,
         int interactionId);
+
+    /**
+     * Sets the result of a prefetch request that returns {@link AccessibilityNodeInfo}s.
+     *
+     * @param root The {@link AccessibilityNodeInfo} for which the prefetching is based off of.
+     * @param infos The result {@link AccessibilityNodeInfo}s.
+     */
+     @RequiresNoPermission
+    void setPrefetchAccessibilityNodeInfoResult(
+        in List<AccessibilityNodeInfo> infos, int interactionId);
 
     /**
      * Sets the result of a request to perform an accessibility action.
@@ -53,5 +65,18 @@ oneway interface IAccessibilityInteractionConnectionCallback {
      * @param interactionId The interaction id to match the result with the request.
      */
     @UnsupportedAppUsage(maxTargetSdk = 30, trackingBug = 170729553)
+    @RequiresNoPermission
     void setPerformAccessibilityActionResult(boolean succeeded, int interactionId);
+
+    /**
+    * Sends an error code for a window screenshot request to the requesting client.
+    */
+    @RequiresNoPermission
+    void sendTakeScreenshotOfWindowError(int errorCode, int interactionId);
+
+    /**
+    * Sends an result code for an attach overlay request to the requesting client.
+    */
+    @RequiresNoPermission
+    void sendAttachOverlayResult(int result, int interactionId);
 }

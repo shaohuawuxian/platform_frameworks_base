@@ -19,26 +19,48 @@ package com.android.server.pm;
 import static com.android.server.devicepolicy.DpmTestUtils.assertRestrictions;
 import static com.android.server.devicepolicy.DpmTestUtils.newRestrictions;
 
+import static junit.framework.Assert.assertFalse;
+
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertSame;
+import static org.junit.Assert.assertThrows;
+import static org.junit.Assert.assertTrue;
+
 import android.os.Bundle;
-import android.os.UserHandle;
 import android.os.UserManager;
-import android.test.AndroidTestCase;
-import android.test.suitebuilder.annotation.SmallTest;
+import android.platform.test.annotations.Presubmit;
+import android.platform.test.flag.junit.SetFlagsRule;
 import android.util.SparseArray;
+
+import androidx.test.filters.SmallTest;
+import androidx.test.runner.AndroidJUnit4;
+
+import org.junit.Before;
+import org.junit.Rule;
+import org.junit.Test;
+import org.junit.runner.RunWith;
 
 /**
  * Tests for {@link com.android.server.pm.UserRestrictionsUtils}.
  *
  * <p>Run with:<pre>
-   m FrameworksServicesTests &&
-   adb install \
-     -r out/target/product/hammerhead/data/app/FrameworksServicesTests/FrameworksServicesTests.apk &&
-   adb shell am instrument -e class com.android.server.pm.UserRestrictionsUtilsTest \
-     -w com.android.frameworks.servicestests/androidx.test.runner.AndroidJUnitRunner
+   atest UserRestrictionsUtilsTest
  * </pre>
  */
+@Presubmit
+@RunWith(AndroidJUnit4.class)
 @SmallTest
-public class UserRestrictionsUtilsTest extends AndroidTestCase {
+public class UserRestrictionsUtilsTest {
+    @Rule
+    public final SetFlagsRule mSetFlagsRule = new SetFlagsRule();
+
+    @Before
+    public void setUp() {
+        mSetFlagsRule.enableFlags(android.app.admin.flags.Flags.FLAG_ESIM_MANAGEMENT_ENABLED);
+    }
+
+    @Test
     public void testNonNull() {
         Bundle out = UserRestrictionsUtils.nonNull(null);
         assertNotNull(out);
@@ -48,23 +70,7 @@ public class UserRestrictionsUtilsTest extends AndroidTestCase {
         assertSame(in, UserRestrictionsUtils.nonNull(in));
     }
 
-    public void testIsEmpty() {
-        assertTrue(UserRestrictionsUtils.isEmpty(null));
-        assertTrue(UserRestrictionsUtils.isEmpty(new Bundle()));
-        assertFalse(UserRestrictionsUtils.isEmpty(newRestrictions("a")));
-    }
-
-    public void testClone() {
-        Bundle in = new Bundle();
-        Bundle out = UserRestrictionsUtils.clone(in);
-        assertNotSame(in, out);
-        assertRestrictions(out, new Bundle());
-
-        out = UserRestrictionsUtils.clone(null);
-        assertNotNull(out);
-        out.putBoolean("a", true); // Should not be Bundle.EMPTY.
-    }
-
+    @Test
     public void testMerge() {
         Bundle a = newRestrictions("a", "d");
         Bundle b = newRestrictions("b", "d", "e");
@@ -77,13 +83,10 @@ public class UserRestrictionsUtilsTest extends AndroidTestCase {
 
         assertRestrictions(newRestrictions("a", "b", "d", "e"), a);
 
-        try {
-            UserRestrictionsUtils.merge(a, a);
-            fail();
-        } catch (IllegalArgumentException expected) {
-        }
+        assertThrows(IllegalArgumentException.class, () -> UserRestrictionsUtils.merge(a, a));
     }
 
+    @Test
     public void testCanDeviceOwnerChange() {
         assertFalse(UserRestrictionsUtils.canDeviceOwnerChange(UserManager.DISALLOW_RECORD_AUDIO));
         assertFalse(UserRestrictionsUtils.canDeviceOwnerChange(UserManager.DISALLOW_WALLPAPER));
@@ -91,32 +94,121 @@ public class UserRestrictionsUtilsTest extends AndroidTestCase {
         assertTrue(UserRestrictionsUtils.canDeviceOwnerChange(UserManager.DISALLOW_USER_SWITCH));
     }
 
-    public void testCanProfileOwnerChange() {
-        int user = UserHandle.USER_SYSTEM;
+    @Test
+    public void testCanProfileOwnerChange_mainUser() {
         assertFalse(UserRestrictionsUtils.canProfileOwnerChange(
-                UserManager.DISALLOW_RECORD_AUDIO, user));
+                UserManager.DISALLOW_RECORD_AUDIO,
+                true,
+                false));
         assertFalse(UserRestrictionsUtils.canProfileOwnerChange(
-                UserManager.DISALLOW_WALLPAPER, user));
+                UserManager.DISALLOW_WALLPAPER,
+                true,
+                false));
         assertFalse(UserRestrictionsUtils.canProfileOwnerChange(
-                UserManager.DISALLOW_USER_SWITCH, user));
+                UserManager.DISALLOW_USER_SWITCH,
+                true,
+                false));
         assertTrue(UserRestrictionsUtils.canProfileOwnerChange(
-                UserManager.DISALLOW_ADD_USER, user));
+                UserManager.DISALLOW_ADD_USER,
+                true,
+                false));
         assertTrue(UserRestrictionsUtils.canProfileOwnerChange(
-                UserManager.DISALLOW_ADJUST_VOLUME, user));
-
-        user = 10;
-        assertFalse(UserRestrictionsUtils.canProfileOwnerChange(
-                UserManager.DISALLOW_RECORD_AUDIO, user));
-        assertFalse(UserRestrictionsUtils.canProfileOwnerChange(
-                UserManager.DISALLOW_WALLPAPER, user));
-        assertFalse(UserRestrictionsUtils.canProfileOwnerChange(
-                UserManager.DISALLOW_ADD_USER, user));
-        assertFalse(UserRestrictionsUtils.canProfileOwnerChange(
-                UserManager.DISALLOW_USER_SWITCH, user));
-        assertTrue(UserRestrictionsUtils.canProfileOwnerChange(
-                UserManager.DISALLOW_ADJUST_VOLUME, user));
+                UserManager.DISALLOW_ADJUST_VOLUME,
+                true,
+                false));
     }
 
+    @Test
+    public void testCanProfileOwnerChange_notMainUser() {
+        assertFalse(UserRestrictionsUtils.canProfileOwnerChange(
+                UserManager.DISALLOW_RECORD_AUDIO,
+                false,
+                false));
+        assertFalse(UserRestrictionsUtils.canProfileOwnerChange(
+                UserManager.DISALLOW_WALLPAPER,
+                false,
+                false));
+        assertFalse(UserRestrictionsUtils.canProfileOwnerChange(
+                UserManager.DISALLOW_ADD_USER,
+                false,
+                false));
+        assertFalse(UserRestrictionsUtils.canProfileOwnerChange(
+                UserManager.DISALLOW_USER_SWITCH,
+                false,
+                false));
+        assertTrue(UserRestrictionsUtils.canProfileOwnerChange(
+                UserManager.DISALLOW_ADJUST_VOLUME,
+                false,
+                false));
+    }
+
+    @Test
+    public void testCanProfileOwnerChange_restrictionRequiresOrgOwnedDevice_orgOwned() {
+        mSetFlagsRule.enableFlags(android.app.admin.flags.Flags.FLAG_ESIM_MANAGEMENT_ENABLED);
+        assertTrue(UserRestrictionsUtils.canProfileOwnerChange(
+                UserManager.DISALLOW_SIM_GLOBALLY,
+                false,
+                true));
+        assertTrue(UserRestrictionsUtils.canProfileOwnerChange(
+                UserManager.DISALLOW_SIM_GLOBALLY,
+                true,
+                true));
+    }
+
+    @Test
+    public void testCanProfileOwnerChange_restrictionRequiresOrgOwnedDevice_notOrgOwned() {
+        mSetFlagsRule.enableFlags(android.app.admin.flags.Flags.FLAG_ESIM_MANAGEMENT_ENABLED);
+        assertFalse(UserRestrictionsUtils.canProfileOwnerChange(
+                UserManager.DISALLOW_SIM_GLOBALLY,
+                false,
+                false));
+        assertFalse(UserRestrictionsUtils.canProfileOwnerChange(
+                UserManager.DISALLOW_SIM_GLOBALLY,
+                true,
+                false));
+    }
+
+    @Test
+    public void
+            testCanProfileOwnerChange_disabled_restrictionRequiresOrgOwnedDevice_notOrgOwned() {
+        mSetFlagsRule.disableFlags(android.app.admin.flags.Flags.FLAG_ESIM_MANAGEMENT_ENABLED);
+        assertTrue(UserRestrictionsUtils.canProfileOwnerChange(
+                UserManager.DISALLOW_SIM_GLOBALLY,
+                false,
+                false));
+        assertTrue(UserRestrictionsUtils.canProfileOwnerChange(
+                UserManager.DISALLOW_SIM_GLOBALLY,
+                true,
+                false));
+    }
+
+    @Test
+    public void testCanProfileOwnerChange_restrictionNotRequiresOrgOwnedDevice_orgOwned() {
+        mSetFlagsRule.enableFlags(android.app.admin.flags.Flags.FLAG_ESIM_MANAGEMENT_ENABLED);
+        assertTrue(UserRestrictionsUtils.canProfileOwnerChange(
+                UserManager.DISALLOW_ADJUST_VOLUME,
+                false,
+                true));
+        assertTrue(UserRestrictionsUtils.canProfileOwnerChange(
+                UserManager.DISALLOW_ADJUST_VOLUME,
+                true,
+                true));
+    }
+
+    @Test
+    public void testCanProfileOwnerChange_restrictionNotRequiresOrgOwnedDevice_notOrgOwned() {
+        mSetFlagsRule.enableFlags(android.app.admin.flags.Flags.FLAG_ESIM_MANAGEMENT_ENABLED);
+        assertTrue(UserRestrictionsUtils.canProfileOwnerChange(
+                UserManager.DISALLOW_ADJUST_VOLUME,
+                false,
+                false));
+        assertTrue(UserRestrictionsUtils.canProfileOwnerChange(
+                UserManager.DISALLOW_ADJUST_VOLUME,
+                true,
+                false));
+    }
+
+    @Test
     public void testMoveRestriction() {
         SparseArray<RestrictionsSet> localRestrictions = new SparseArray<>();
         RestrictionsSet globalRestrictions = new RestrictionsSet();
@@ -156,6 +248,7 @@ public class UserRestrictionsUtilsTest extends AndroidTestCase {
                 globalRestrictions.getRestrictions(2));
     }
 
+    @Test
     public void testAreEqual() {
         assertTrue(UserRestrictionsUtils.areEqual(
                 null,

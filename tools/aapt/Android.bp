@@ -50,7 +50,10 @@ cc_defaults {
         "libbase",
         "libz",
     ],
-    group_static_libs: true,
+
+    whole_static_libs: [
+        "libandroidfw_pathutils",
+    ],
 
     cflags: [
         "-Wall",
@@ -60,16 +63,6 @@ cc_defaults {
     target: {
         windows: {
             enabled: true,
-        },
-    },
-
-    // This tool is prebuilt if we're doing an app-only build.
-    product_variables: {
-        pdk: {
-            enabled: false,
-        },
-        unbundled_build: {
-            enabled: false,
         },
     },
 }
@@ -108,6 +101,7 @@ cc_library_host_static {
         "ResourceTable.cpp",
         "SourcePos.cpp",
         "StringPool.cpp",
+        "Utils.cpp",
         "WorkQueue.cpp",
         "XMLNode.cpp",
         "ZipEntry.cpp",
@@ -124,6 +118,9 @@ cc_binary_host {
     srcs: ["Main.cpp"],
     use_version_lib: true,
     static_libs: ["libaapt"],
+    dist: {
+        targets: ["aapt2_artifacts"],
+    },
 }
 
 // ==========================================================

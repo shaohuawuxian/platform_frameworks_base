@@ -35,7 +35,9 @@
 #include "android_media_MediaDataSource.h"
 #include "android_media_Streams.h"
 #include "android_util_Binder.h"
+#include <com_android_media_playback_flags.h>
 
+namespace playback_flags = com::android::media::playback::flags;
 using namespace android;
 
 struct fields_t {
@@ -126,7 +128,7 @@ android_media_MediaMetadataRetriever_setDataSourceAndHeaders(
     tmp = NULL;
 
     // Don't let somebody trick us in to reading some random block of memory
-    if (strncmp("mem://", pathStr.string(), 6) == 0) {
+    if (strncmp("mem://", pathStr.c_str(), 6) == 0) {
         jniThrowException(
                 env, "java/lang/IllegalArgumentException", "Invalid pathname");
         return;
@@ -149,7 +151,7 @@ android_media_MediaMetadataRetriever_setDataSourceAndHeaders(
             env,
             retriever->setDataSource(
                 httpService,
-                pathStr.string(),
+                pathStr.c_str(),
                 headersVector.size() > 0 ? &headersVector : NULL),
 
             "java/lang/RuntimeException",
@@ -374,9 +376,12 @@ static jobject android_media_MediaMetadataRetriever_getFrameAtTime(
         jniThrowException(env, "java/lang/IllegalStateException", "No retriever available");
         return NULL;
     }
-    // For getFrameAtTime family of calls, default to ANDROID_BITMAP_FORMAT_RGB_565
-    // to keep the behavior consistent with older releases
-    AndroidBitmapFormat colorFormat = getColorFormat(env, params, ANDROID_BITMAP_FORMAT_RGB_565);
+
+    AndroidBitmapFormat defaultColorFormat =
+            playback_flags::mediametadataretriever_default_rgba8888()
+            ? ANDROID_BITMAP_FORMAT_RGBA_8888
+            : ANDROID_BITMAP_FORMAT_RGB_565;
+    AndroidBitmapFormat colorFormat = getColorFormat(env, params, defaultColorFormat);
 
     // Call native method to retrieve a video frame
     VideoFrame *videoFrame = NULL;
@@ -464,11 +469,13 @@ static jobject android_media_MediaMetadataRetriever_getThumbnailImageAtIndex(
                 || thumbPixels * 6 >= maxPixels) {
             frameMemory = retriever->getImageAtIndex(
                     index, colorFormat, false /*metaOnly*/, true /*thumbnail*/);
-            // TODO: Using unsecurePointer() has some associated security pitfalls
-            //       (see declaration for details).
-            //       Either document why it is safe in this case or address the
-            //       issue (e.g. by copying).
-            videoFrame = static_cast<VideoFrame *>(frameMemory->unsecurePointer());
+            if (frameMemory != 0) {
+                // TODO: Using unsecurePointer() has some associated security pitfalls
+                //       (see declaration for details).
+                //       Either document why it is safe in this case or address the
+                //       issue (e.g. by copying).
+                videoFrame = static_cast<VideoFrame *>(frameMemory->unsecurePointer());
+            }
 
             if (thumbPixels > maxPixels) {
                 int downscale = ceil(sqrt(thumbPixels / (float)maxPixels));
@@ -704,7 +711,7 @@ static const JNINativeMethod nativeMethods[] = {
             (void *)android_media_MediaMetadataRetriever_setDataSourceAndHeaders
         },
 
-        {"setDataSource",   "(Ljava/io/FileDescriptor;JJ)V",
+        {"_setDataSource",   "(Ljava/io/FileDescriptor;JJ)V",
                 (void *)android_media_MediaMetadataRetriever_setDataSourceFD},
         {"_setDataSource",   "(Landroid/media/MediaDataSource;)V",
                 (void *)android_media_MediaMetadataRetriever_setDataSourceCallback},

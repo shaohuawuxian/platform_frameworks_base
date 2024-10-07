@@ -19,6 +19,7 @@
     <string name="keyboard_layout_swiss_german_label" msgid="2305520941993314258">"瑞士德语"</string>
     <string name="keyboard_layout_belgian" msgid="2011984572838651558">"比利时语"</string>
     <string name="keyboard_layout_bulgarian" msgid="8951224309972028398">"保加利亚语"</string>
+    <string name="keyboard_layout_bulgarian_phonetic" msgid="7568914730360106653">"保加利亚语，注音"</string>
     <string name="keyboard_layout_italian" msgid="6497079660449781213">"意大利语"</string>
     <string name="keyboard_layout_danish" msgid="8036432066627127851">"丹麦语"</string>
     <string name="keyboard_layout_norwegian" msgid="9090097917011040937">"挪威语"</string>
@@ -49,4 +50,10 @@
     <string name="keyboard_layout_belarusian" msgid="7619281752698687588">"白俄罗斯语"</string>
     <string name="keyboard_layout_mongolian" msgid="7678483495823936626">"蒙古语"</string>
     <string name="keyboard_layout_georgian" msgid="4596185456863747454">"格鲁吉亚语"</string>
+    <string name="keyboard_layout_thai_kedmanee" msgid="6637147314580760938">"泰语 (Kedmanee)"</string>
+    <string name="keyboard_layout_thai_pattachote" msgid="2547992342794252205">"泰语 (Pattachote)"</string>
+    <string name="keyboard_layout_serbian_latin" msgid="3128791759390046571">"塞尔维亚语（拉丁字母）"</string>
+    <string name="keyboard_layout_montenegrin_latin" msgid="1467832503378949945">"黑山语（拉丁字母）"</string>
+    <string name="keyboard_layout_serbian_cyrillic" msgid="7013541044323542196">"塞尔维亚语（西里尔字母）"</string>
+    <string name="keyboard_layout_montenegrin_cyrillic" msgid="2391253952894077421">"黑山语（西里尔字母）"</string>
 </resources>

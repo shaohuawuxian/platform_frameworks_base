@@ -3,7 +3,7 @@
     xmlns:xliff="urn:oasis:names:tc:xliff:document:1.2">
     <string name="app_label" msgid="8016145283189546017">"Syöttölaitteet"</string>
     <string name="keyboard_layouts_label" msgid="6688773268302087545">"Android-näppäimistö"</string>
-    <string name="keyboard_layout_english_uk_label" msgid="6664258463319999632">"englanti (Iso-Britannia)"</string>
+    <string name="keyboard_layout_english_uk_label" msgid="6664258463319999632">"englanti (Yhdistynyt kuningaskunta)"</string>
     <string name="keyboard_layout_english_us_label" msgid="8994890249649106291">"englanti (Yhdysvallat)"</string>
     <string name="keyboard_layout_english_us_intl" msgid="3705168594034233583">"englanti (Yhdysvallat), kansainvälinen"</string>
     <string name="keyboard_layout_english_us_colemak_label" msgid="4194969610343455380">"englanti (Yhdysvallat), Colemak"</string>
@@ -19,6 +19,7 @@
     <string name="keyboard_layout_swiss_german_label" msgid="2305520941993314258">"sveitsinsaksa"</string>
     <string name="keyboard_layout_belgian" msgid="2011984572838651558">"belgialainen"</string>
     <string name="keyboard_layout_bulgarian" msgid="8951224309972028398">"bulgaria"</string>
+    <string name="keyboard_layout_bulgarian_phonetic" msgid="7568914730360106653">"bulgaria, foneettinen"</string>
     <string name="keyboard_layout_italian" msgid="6497079660449781213">"italia"</string>
     <string name="keyboard_layout_danish" msgid="8036432066627127851">"tanska"</string>
     <string name="keyboard_layout_norwegian" msgid="9090097917011040937">"norja"</string>
@@ -49,4 +50,10 @@
     <string name="keyboard_layout_belarusian" msgid="7619281752698687588">"valkovenäjä"</string>
     <string name="keyboard_layout_mongolian" msgid="7678483495823936626">"mongoli"</string>
     <string name="keyboard_layout_georgian" msgid="4596185456863747454">"georgia"</string>
+    <string name="keyboard_layout_thai_kedmanee" msgid="6637147314580760938">"thai (kedmanee)"</string>
+    <string name="keyboard_layout_thai_pattachote" msgid="2547992342794252205">"thai (pattachote)"</string>
+    <string name="keyboard_layout_serbian_latin" msgid="3128791759390046571">"serbia (latinalainen)"</string>
+    <string name="keyboard_layout_montenegrin_latin" msgid="1467832503378949945">"montenegro (latinalainen)"</string>
+    <string name="keyboard_layout_serbian_cyrillic" msgid="7013541044323542196">"serbia (kyrillinen)"</string>
+    <string name="keyboard_layout_montenegrin_cyrillic" msgid="2391253952894077421">"montenegro (kyrillinen)"</string>
 </resources>

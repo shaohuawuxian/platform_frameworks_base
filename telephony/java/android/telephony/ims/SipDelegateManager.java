@@ -21,6 +21,7 @@ import android.annotation.IntDef;
 import android.annotation.IntRange;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
+import android.annotation.RequiresFeature;
 import android.annotation.RequiresPermission;
 import android.annotation.SystemApi;
 import android.content.Context;
@@ -30,12 +31,14 @@ import android.os.ServiceSpecificException;
 import android.telephony.BinderCacheManager;
 import android.telephony.ims.aidl.IImsRcsController;
 import android.telephony.ims.aidl.SipDelegateConnectionAidlWrapper;
+import android.telephony.ims.feature.ImsFeature;
 import android.telephony.ims.stub.DelegateConnectionMessageCallback;
 import android.telephony.ims.stub.DelegateConnectionStateCallback;
 import android.telephony.ims.stub.SipDelegate;
 import android.util.ArrayMap;
 
 import com.android.internal.annotations.VisibleForTesting;
+import com.android.internal.telephony.ITelephony;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
@@ -55,6 +58,7 @@ import java.util.concurrent.Executor;
  * @hide
  */
 @SystemApi
+@RequiresFeature(PackageManager.FEATURE_TELEPHONY_IMS_SINGLE_REGISTRATION)
 public class SipDelegateManager {
 
     /**
@@ -281,6 +285,7 @@ public class SipDelegateManager {
     private final Context mContext;
     private final int mSubId;
     private final BinderCacheManager<IImsRcsController> mBinderCache;
+    private final BinderCacheManager<ITelephony> mTelephonyBinderCache;
 
     /**
      * Only visible for testing. To instantiate an instance of this class, please use
@@ -289,10 +294,12 @@ public class SipDelegateManager {
      */
     @VisibleForTesting
     public SipDelegateManager(Context context, int subId,
-            BinderCacheManager<IImsRcsController> binderCache) {
+            BinderCacheManager<IImsRcsController> binderCache,
+            BinderCacheManager<ITelephony> telephonyBinderCache) {
         mContext = context;
         mSubId = subId;
         mBinderCache = binderCache;
+        mTelephonyBinderCache = telephonyBinderCache;
     }
 
     /**
@@ -443,6 +450,137 @@ public class SipDelegateManager {
         } else {
             throw new IllegalArgumentException("Unknown SipDelegateConnection implementation passed"
                     + " into this method");
+        }
+    }
+
+    /**
+     * Register a new callback, which is used to notify the registrant of changes to
+     * the state of the underlying  IMS service that is attached to telephony to
+     * implement IMS functionality. If the manager is created for
+     * the {@link android.telephony.SubscriptionManager#DEFAULT_SUBSCRIPTION_ID},
+     * this throws an {@link ImsException}.
+     *
+     * <p>Requires Permission:
+     * {@link android.Manifest.permission#READ_PRECISE_PHONE_STATE READ_PRECISE_PHONE_STATE}
+     * or that the calling app has carrier privileges
+     * (see {@link android.telephony.TelephonyManager#hasCarrierPrivileges}).
+     *
+     * @param executor the Executor that will be used to call the {@link ImsStateCallback}.
+     * @param callback The callback instance being registered.
+     * @throws ImsException in the case that the callback can not be registered.
+     * See {@link ImsException#getCode} for more information on when this is called.
+     */
+    @RequiresPermission(anyOf = {Manifest.permission.READ_PRIVILEGED_PHONE_STATE,
+            Manifest.permission.PERFORM_IMS_SINGLE_REGISTRATION})
+    public void registerImsStateCallback(@NonNull Executor executor,
+            @NonNull ImsStateCallback callback) throws ImsException {
+        Objects.requireNonNull(callback, "Must include a non-null ImsStateCallback.");
+        Objects.requireNonNull(executor, "Must include a non-null Executor.");
+
+        callback.init(executor);
+        ITelephony telephony = mTelephonyBinderCache.listenOnBinder(callback, callback::binderDied);
+        if (telephony == null) {
+            throw new ImsException("Telephony server is down",
+                    ImsException.CODE_ERROR_SERVICE_UNAVAILABLE);
+        }
+
+        try {
+            telephony.registerImsStateCallback(
+                    mSubId, ImsFeature.FEATURE_RCS,
+                    callback.getCallbackBinder(), mContext.getOpPackageName());
+        } catch (ServiceSpecificException e) {
+            throw new ImsException(e.getMessage(), e.errorCode);
+        } catch (RemoteException | IllegalStateException e) {
+            throw new ImsException(e.getMessage(), ImsException.CODE_ERROR_SERVICE_UNAVAILABLE);
+        }
+    }
+
+    /**
+     * Unregisters a previously registered callback.
+     *
+     * @param callback The callback instance to be unregistered.
+     */
+    public void unregisterImsStateCallback(@NonNull ImsStateCallback callback) {
+        Objects.requireNonNull(callback, "Must include a non-null ImsStateCallback.");
+
+        ITelephony telephony = mTelephonyBinderCache.removeRunnable(callback);
+
+        try {
+            if (telephony != null) {
+                telephony.unregisterImsStateCallback(callback.getCallbackBinder());
+            }
+        } catch (RemoteException ignore) {
+            // ignore it
+        }
+    }
+
+    /**
+     * Register a new callback, which is used to notify the registrant of changes
+     * to the state of the Sip Sessions managed remotely by the IMS stack.
+     *
+     * <p>Requires Permission:
+     * {@link android.Manifest.permission#READ_PRIVILEGED_PHONE_STATE}
+     *
+     * @param executor the Executor that will be used to call the {@link SipDialogStateCallback}.
+     * @param callback The callback instance being registered.
+     * @throws ImsException in the case that the callback can not be registered.
+     * See {@link ImsException#getCode} for more information on when this is called.
+     * @throws UnsupportedOperationException If the device does not have
+     *          {@link PackageManager#FEATURE_TELEPHONY_IMS_SINGLE_REGISTRATION}.
+     */
+    @RequiresPermission(Manifest.permission.READ_PRIVILEGED_PHONE_STATE)
+    public void registerSipDialogStateCallback(@NonNull Executor executor,
+            @NonNull SipDialogStateCallback callback) throws ImsException {
+        Objects.requireNonNull(callback, "Must include a non-null SipDialogStateCallback.");
+        Objects.requireNonNull(executor, "Must include a non-null Executor.");
+
+        callback.attachExecutor(executor);
+        try {
+            IImsRcsController controller = mBinderCache.listenOnBinder(
+                    callback, callback::binderDied);
+            if (controller == null) {
+                throw new ImsException("Telephony server is down",
+                        ImsException.CODE_ERROR_SERVICE_UNAVAILABLE);
+            }
+            controller.registerSipDialogStateCallback(mSubId, callback.getCallbackBinder());
+        } catch (ServiceSpecificException e) {
+            throw new ImsException(e.getMessage(), e.errorCode);
+        } catch (RemoteException e) {
+            throw new ImsException(e.getMessage(), ImsException.CODE_ERROR_SERVICE_UNAVAILABLE);
+        } catch (IllegalStateException e) {
+            throw new IllegalStateException(e.getMessage());
+        }
+    }
+
+    /**
+     * Unregisters a previously registered callback.
+     *
+     *  <p>Requires Permission:
+     * {@link android.Manifest.permission#READ_PRIVILEGED_PHONE_STATE}
+     *
+     * @param callback The callback instance to be unregistered.
+     *
+     * @throws UnsupportedOperationException If the device does not have
+     *          {@link PackageManager#FEATURE_TELEPHONY_IMS_SINGLE_REGISTRATION}.
+     */
+    @RequiresPermission(Manifest.permission.READ_PRIVILEGED_PHONE_STATE)
+    public void unregisterSipDialogStateCallback(@NonNull SipDialogStateCallback callback)
+            throws ImsException {
+        Objects.requireNonNull(callback, "Must include a non-null SipDialogStateCallback.");
+
+        IImsRcsController controller = mBinderCache.removeRunnable(callback);
+        try {
+            if (controller == null) {
+                throw new ImsException("Telephony server is down",
+                        ImsException.CODE_ERROR_SERVICE_UNAVAILABLE);
+            }
+            controller.unregisterSipDialogStateCallback(mSubId, callback.getCallbackBinder());
+        } catch (ServiceSpecificException e) {
+            throw new ImsException(e.getMessage(), e.errorCode);
+        } catch (RemoteException e) {
+            throw new ImsException(e.getMessage(), ImsException.CODE_ERROR_SERVICE_UNAVAILABLE);
+        } catch (IllegalStateException e) {
+            throw new IllegalStateException(e.getMessage());
         }
     }
 }

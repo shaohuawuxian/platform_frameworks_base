@@ -17,10 +17,10 @@
 package android.view;
 
 import static android.view.InsetsController.DEBUG;
-import static android.view.WindowManager.LayoutParams.PRIVATE_FLAG_APPEARANCE_CONTROLLED;
-import static android.view.WindowManager.LayoutParams.PRIVATE_FLAG_BEHAVIOR_CONTROLLED;
 
 import android.annotation.NonNull;
+import android.content.Context;
+import android.content.res.CompatibilityInfo;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.RemoteException;
@@ -109,6 +109,10 @@ public class ViewRootInsetsControllerHost implements InsetsController.Host {
     @Override
     public void dispatchWindowInsetsAnimationEnd(@NonNull WindowInsetsAnimation animation) {
         if (DEBUG) Log.d(TAG, "windowInsetsAnimation ended");
+        if (mViewRoot.mView == null) {
+            // The view has already detached from window.
+            return;
+        }
         mViewRoot.mView.dispatchWindowInsetsAnimationEnd(animation);
     }
 
@@ -120,13 +124,16 @@ public class ViewRootInsetsControllerHost implements InsetsController.Host {
         if (mApplier == null) {
             mApplier = new SyncRtSurfaceTransactionApplier(mViewRoot.mView);
         }
-        if (mViewRoot.mView.isHardwareAccelerated()) {
+        if (mViewRoot.mView.isHardwareAccelerated() && isVisibleToUser()) {
             mApplier.scheduleApply(params);
         } else {
-            // Window doesn't support hardware acceleration, no synchronization for now.
+            // Synchronization requires hardware acceleration for now.
+            // If the window isn't visible, drawing is paused and the applier won't run.
             // TODO(b/149342281): use mViewRoot.mSurface.getNextFrameNumber() to sync on every
             //  frame instead.
-            mApplier.applyParams(new SurfaceControl.Transaction(), -1 /* frame */, params);
+            final SurfaceControl.Transaction t = new SurfaceControl.Transaction();
+            mApplier.applyParams(t, params);
+            t.apply();
         }
     }
 
@@ -137,14 +144,18 @@ public class ViewRootInsetsControllerHost implements InsetsController.Host {
     }
 
     @Override
-    public void updateCompatSysUiVisibility(int type, boolean visible, boolean hasControl) {
-        mViewRoot.updateCompatSysUiVisibility(type, visible, hasControl);
+    public void updateCompatSysUiVisibility(int visibleTypes, int requestedVisibleTypes,
+            int controllableTypes) {
+        mViewRoot.updateCompatSysUiVisibility(visibleTypes, requestedVisibleTypes,
+                controllableTypes);
     }
 
     @Override
-    public void onInsetsModified(InsetsState insetsState) {
+    public void updateRequestedVisibleTypes(@WindowInsets.Type.InsetsType int types) {
         try {
-            mViewRoot.mWindowSession.insetsModified(mViewRoot.mWindow, insetsState);
+            if (mViewRoot.mAdded) {
+                mViewRoot.mWindowSession.updateRequestedVisibleTypes(mViewRoot.mWindow, types);
+            }
         } catch (RemoteException e) {
             Log.e(TAG, "Failed to call insetsModified", e);
         }
@@ -160,10 +171,10 @@ public class ViewRootInsetsControllerHost implements InsetsController.Host {
 
     @Override
     public void setSystemBarsAppearance(int appearance, int mask) {
-        mViewRoot.mWindowAttributes.privateFlags |= PRIVATE_FLAG_APPEARANCE_CONTROLLED;
         final InsetsFlags insetsFlags = mViewRoot.mWindowAttributes.insetsFlags;
-        if (insetsFlags.appearance != appearance) {
-            insetsFlags.appearance = (insetsFlags.appearance & ~mask) | (appearance & mask);
+        final int newAppearance = (insetsFlags.appearance & ~mask) | (appearance & mask);
+        if (insetsFlags.appearance != newAppearance) {
+            insetsFlags.appearance = newAppearance;
             mViewRoot.mWindowAttributesChanged = true;
             mViewRoot.scheduleTraversals();
         }
@@ -171,16 +182,11 @@ public class ViewRootInsetsControllerHost implements InsetsController.Host {
 
     @Override
     public int getSystemBarsAppearance() {
-        if ((mViewRoot.mWindowAttributes.privateFlags & PRIVATE_FLAG_APPEARANCE_CONTROLLED) == 0) {
-            // We only return the requested appearance, not the implied one.
-            return 0;
-        }
         return mViewRoot.mWindowAttributes.insetsFlags.appearance;
     }
 
     @Override
     public void setSystemBarsBehavior(int behavior) {
-        mViewRoot.mWindowAttributes.privateFlags |= PRIVATE_FLAG_BEHAVIOR_CONTROLLED;
         if (mViewRoot.mWindowAttributes.insetsFlags.behavior != behavior) {
             mViewRoot.mWindowAttributes.insetsFlags.behavior = behavior;
             mViewRoot.mWindowAttributesChanged = true;
@@ -190,10 +196,6 @@ public class ViewRootInsetsControllerHost implements InsetsController.Host {
 
     @Override
     public int getSystemBarsBehavior() {
-        if ((mViewRoot.mWindowAttributes.privateFlags & PRIVATE_FLAG_BEHAVIOR_CONTROLLED) == 0) {
-            // We only return the requested behavior, not the implied one.
-            return 0;
-        }
         return mViewRoot.mWindowAttributes.insetsFlags.behavior;
     }
 
@@ -231,6 +233,11 @@ public class ViewRootInsetsControllerHost implements InsetsController.Host {
     }
 
     @Override
+    public Context getRootViewContext() {
+        return mViewRoot != null ? mViewRoot.mContext : null;
+    }
+
+    @Override
     public int dipToPx(int dips) {
         if (mViewRoot != null) {
             return mViewRoot.dipToPx(dips);
@@ -248,5 +255,29 @@ public class ViewRootInsetsControllerHost implements InsetsController.Host {
             return null;
         }
         return view.getWindowToken();
+    }
+
+    @Override
+    public CompatibilityInfo.Translator getTranslator() {
+        if (mViewRoot != null) {
+            return mViewRoot.mTranslator;
+        }
+        return null;
+    }
+
+    @Override
+    public void notifyAnimationRunningStateChanged(boolean running) {
+        if (mViewRoot != null) {
+            mViewRoot.notifyInsetsAnimationRunningStateChanged(running);
+        }
+    }
+
+    @Override
+    public boolean isHandlingPointerEvent() {
+        return mViewRoot != null && mViewRoot.isHandlingPointerEvent();
+    }
+
+    private boolean isVisibleToUser() {
+        return mViewRoot.getHostVisibility() == View.VISIBLE;
     }
 }

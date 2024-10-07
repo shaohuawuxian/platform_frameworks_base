@@ -24,8 +24,6 @@ public interface NotificationLockscreenUserManager {
     String NOTIFICATION_UNLOCKED_BY_WORK_CHALLENGE_ACTION
             = "com.android.systemui.statusbar.work_challenge_unlocked_notification_action";
 
-    boolean shouldAllowLockscreenRemoteInput();
-
     /**
      * @param userId user Id
      * @return true if we re on a secure lock screen
@@ -46,6 +44,13 @@ public interface NotificationLockscreenUserManager {
 
     boolean isCurrentProfile(int userId);
 
+    /**
+     *
+     * @param userId user Id
+     * @return true if user profile is running.
+     */
+    boolean isProfileAvailable(int userId);
+
     /** Adds a listener to be notified when the current user changes. */
     void addUserChangedListener(UserChangedListener listener);
 
@@ -57,13 +62,7 @@ public interface NotificationLockscreenUserManager {
 
     SparseArray<UserInfo> getCurrentProfiles();
 
-    void setLockscreenPublicMode(boolean isProfilePublic, int userId);
-
     boolean shouldShowLockscreenNotifications();
-
-    boolean shouldHideNotifications(int userId);
-    boolean shouldHideNotifications(String key);
-    boolean shouldShowOnKeyguard(NotificationEntry entry);
 
     boolean isAnyProfilePublicMode();
 
@@ -83,9 +82,30 @@ public interface NotificationLockscreenUserManager {
      */
     boolean userAllowsNotificationsInPublic(int userId);
 
+    /**
+     * Adds a {@link NotificationStateChangedListener} to be notified of any state changes that
+     * would affect presentation of notifications.
+     */
+    void addNotificationStateChangedListener(NotificationStateChangedListener listener);
+
+    /**
+     * Removes a {@link NotificationStateChangedListener} that was previously registered with
+     * {@link #addNotificationStateChangedListener(NotificationStateChangedListener)}.
+     */
+    void removeNotificationStateChangedListener(NotificationStateChangedListener listener);
+
     /** Notified when the current user changes. */
     interface UserChangedListener {
         default void onUserChanged(int userId) {}
         default void onCurrentProfilesChanged(SparseArray<UserInfo> currentProfiles) {}
+        default void onUserRemoved(int userId) {}
+    }
+
+    /**
+     * Notified when any state pertaining to Notifications has changed; any methods pertaining to
+     * notifications should be re-queried.
+     */
+    interface NotificationStateChangedListener {
+        void onNotificationStateChanged();
     }
 }

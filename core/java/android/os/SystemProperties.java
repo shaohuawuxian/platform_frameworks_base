@@ -20,6 +20,7 @@ import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.annotation.SystemApi;
 import android.compat.annotation.UnsupportedAppUsage;
+import android.ravenwood.annotation.RavenwoodKeepWholeClass;
 import android.util.Log;
 import android.util.MutableInt;
 
@@ -51,6 +52,7 @@ import java.util.HashMap;
  * {@hide}
  */
 @SystemApi
+@RavenwoodKeepWholeClass
 public class SystemProperties {
     private static final String TAG = "SystemProperties";
     private static final boolean TRACK_KEY_ACCESS = false;
@@ -218,16 +220,18 @@ public class SystemProperties {
     /**
      * Set the value for the given {@code key} to {@code val}.
      *
-     * @throws IllegalArgumentException if the {@code val} exceeds 91 characters
+     * @throws IllegalArgumentException for non read-only properties if the {@code val} exceeds
+     * 91 characters
      * @throws RuntimeException if the property cannot be set, for example, if it was blocked by
      * SELinux. libc will log the underlying reason.
      * @hide
      */
     @UnsupportedAppUsage
     public static void set(@NonNull String key, @Nullable String val) {
-        if (val != null && !val.startsWith("ro.") && val.length() > PROP_VALUE_MAX) {
+        if (val != null && !key.startsWith("ro.") && val.getBytes(StandardCharsets.UTF_8).length
+                > PROP_VALUE_MAX) {
             throw new IllegalArgumentException("value of system property '" + key
-                    + "' is longer than " + PROP_VALUE_MAX + " characters: " + val);
+                    + "' is longer than " + PROP_VALUE_MAX + " bytes: " + val);
         }
         if (TRACK_KEY_ACCESS) onKeyAccess(key);
         native_set(key, val);
@@ -288,6 +292,16 @@ public class SystemProperties {
             }
         } finally {
             Binder.restoreCallingIdentity(token);
+        }
+    }
+
+    /**
+     * Clear all callback changes.
+     * @hide
+     */
+    public static void clearChangeCallbacksForTest() {
+        synchronized (sChangeCallbacks) {
+            sChangeCallbacks.clear();
         }
     }
 

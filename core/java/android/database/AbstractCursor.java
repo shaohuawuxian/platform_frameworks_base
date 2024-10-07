@@ -24,6 +24,8 @@ import android.os.Build;
 import android.os.Bundle;
 import android.util.Log;
 
+import dalvik.system.CloseGuard;
+
 import java.lang.ref.WeakReference;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -31,11 +33,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
-
 /**
  * This is an abstract cursor class that handles a lot of the common code
  * that all cursors need to deal with and is provided for convenience reasons.
  */
+@android.ravenwood.annotation.RavenwoodKeepWholeClass
 public abstract class AbstractCursor implements CrossProcessCursor {
     private static final String TAG = "Cursor";
 
@@ -85,6 +87,9 @@ public abstract class AbstractCursor implements CrossProcessCursor {
 
     @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.P, trackingBug = 115609023)
     private Bundle mExtras = Bundle.EMPTY;
+
+    /** CloseGuard to detect leaked cursor **/
+    private final CloseGuard mCloseGuard;
 
     /* -------------------------------------------------------- */
     /* These need to be implemented by subclasses */
@@ -179,6 +184,9 @@ public abstract class AbstractCursor implements CrossProcessCursor {
         mClosed = true;
         mContentObservable.unregisterAll();
         onDeactivateOrClose();
+        if (mCloseGuard != null) {
+            mCloseGuard.close();
+        }
     }
 
     /**
@@ -218,6 +226,19 @@ public abstract class AbstractCursor implements CrossProcessCursor {
     /* Implementation */
     public AbstractCursor() {
         mPos = -1;
+        mCloseGuard = initCloseGuard();
+        if (mCloseGuard != null) {
+            mCloseGuard.open("AbstractCursor.close");
+        }
+    }
+
+    @android.ravenwood.annotation.RavenwoodReplace
+    private CloseGuard initCloseGuard() {
+        return CloseGuard.get();
+    }
+
+    private CloseGuard initCloseGuard$ravenwood() {
+        return null;
     }
 
     @Override
@@ -521,6 +542,7 @@ public abstract class AbstractCursor implements CrossProcessCursor {
             mContentResolver.unregisterContentObserver(mSelfObserver);
         }
         try {
+            if (mCloseGuard != null) mCloseGuard.warnIfOpen();
             if (!mClosed) close();
         } catch(Exception e) { }
     }

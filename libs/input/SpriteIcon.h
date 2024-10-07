@@ -19,6 +19,7 @@
 
 #include <android/graphics/bitmap.h>
 #include <gui/Surface.h>
+#include <input/Input.h>
 
 namespace android {
 
@@ -26,25 +27,20 @@ namespace android {
  * Icon that a sprite displays, including its hotspot.
  */
 struct SpriteIcon {
-    inline SpriteIcon() : style(0), hotSpotX(0), hotSpotY(0) {}
-    inline SpriteIcon(const graphics::Bitmap& bitmap, int32_t style, float hotSpotX, float hotSpotY)
-          : bitmap(bitmap), style(style), hotSpotX(hotSpotX), hotSpotY(hotSpotY) {}
+    explicit SpriteIcon() = default;
+    explicit SpriteIcon(const graphics::Bitmap& bitmap, PointerIconStyle style, float hotSpotX,
+                        float hotSpotY, bool drawNativeDropShadow)
+          : bitmap(bitmap),
+            style(style),
+            hotSpotX(hotSpotX),
+            hotSpotY(hotSpotY),
+            drawNativeDropShadow(drawNativeDropShadow) {}
 
-    graphics::Bitmap bitmap;
-    int32_t style;
-    float hotSpotX;
-    float hotSpotY;
-
-    inline SpriteIcon copy() const {
-        return SpriteIcon(bitmap.copy(ANDROID_BITMAP_FORMAT_RGBA_8888), style, hotSpotX, hotSpotY);
-    }
-
-    inline void reset() {
-        bitmap.reset();
-        style = 0;
-        hotSpotX = 0;
-        hotSpotY = 0;
-    }
+    graphics::Bitmap bitmap{};
+    PointerIconStyle style{PointerIconStyle::TYPE_NULL};
+    float hotSpotX{};
+    float hotSpotY{};
+    bool drawNativeDropShadow{};
 
     inline bool isValid() const { return bitmap.isValid() && !bitmap.isEmpty(); }
 

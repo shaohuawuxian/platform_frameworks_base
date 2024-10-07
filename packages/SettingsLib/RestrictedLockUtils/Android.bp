@@ -7,8 +7,18 @@ package {
     default_applicable_licenses: ["frameworks_base_license"],
 }
 
+filegroup {
+    name: "SettingsLibRestrictedLockUtilsSrc",
+    srcs: ["src/**/*.java"],
+    visibility: ["//frameworks/base/services/accessibility"],
+}
+
 android_library {
     name: "SettingsLibRestrictedLockUtils",
+    use_resource_processor: true,
+    defaults: [
+        "SettingsLintDefaults",
+    ],
 
     srcs: ["src/**/*.java"],
     resource_dirs: ["res"],
@@ -19,4 +29,11 @@ android_library {
 
     sdk_version: "system_current",
     min_sdk_version: "21",
+    apex_available: [
+        "//apex_available:platform",
+        "com.android.permission",
+    ],
+    lint: {
+        baseline_filename: "lint-baseline.xml",
+    },
 }

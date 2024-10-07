@@ -16,6 +16,8 @@
 
 package com.android.server.uri;
 
+import static android.platform.test.flag.junit.SetFlagsRule.DefaultInitValueType.NULL_DEFAULT;
+
 import static com.android.server.uri.UriGrantsMockContext.FLAG_PERSISTABLE;
 import static com.android.server.uri.UriGrantsMockContext.FLAG_PREFIX;
 import static com.android.server.uri.UriGrantsMockContext.FLAG_READ;
@@ -55,33 +57,64 @@ import android.content.ClipData;
 import android.content.Intent;
 import android.content.pm.ProviderInfo;
 import android.net.Uri;
+import android.os.Process;
 import android.os.UserHandle;
+import android.platform.test.flag.junit.FlagsParameterization;
+import android.platform.test.flag.junit.SetFlagsRule;
+import android.platform.test.ravenwood.RavenwoodRule;
 import android.util.ArraySet;
 
-import androidx.test.InstrumentationRegistry;
-
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.junit.runners.Parameterized;
+import org.junit.runners.Parameterized.Parameters;
 
 import java.util.Arrays;
+import java.util.List;
 import java.util.Set;
 
+@RunWith(Parameterized.class)
 public class UriGrantsManagerServiceTest {
+    @Rule
+    public final RavenwoodRule mRavenwood = new RavenwoodRule();
+
+    /**
+     * Why this class needs to test all combinations of
+     * {@link android.security.Flags#FLAG_CONTENT_URI_PERMISSION_APIS}:
+     *
+     * <p>Although tests in this class don't directly query the flag, its value
+     * is needed for {@link UriGrantsManagerInternal#checkGrantUriPermissionFromIntent}. This is
+     * particularly important for host side tests (Ravenwood), which cannot read flag values from
+     * the device and must have them set explicitly.
+     */
+    @Parameters(name = "{0}")
+    public static List<FlagsParameterization> getFlags() {
+        return FlagsParameterization.allCombinationsOf(
+                android.security.Flags.FLAG_CONTENT_URI_PERMISSION_APIS);
+    }
+
+    public UriGrantsManagerServiceTest(FlagsParameterization flags) {
+        mSetFlagsRule = new SetFlagsRule(NULL_DEFAULT, flags);
+    }
+
+    @Rule
+    public final SetFlagsRule mSetFlagsRule;
+
     private UriGrantsMockContext mContext;
     private UriGrantsManagerInternal mService;
 
     // we expect the following only during grant if a grant is expected
     private void verifyNoVisibilityGrant() {
-        verify(mContext.mPmInternal, never())
-                .grantImplicitAccess(anyInt(), any(), anyInt(), anyInt(), anyBoolean());
+        verify(mContext.mPmInternal, never()).grantImplicitAccess(
+                anyInt(), any(), anyInt(), anyInt(), anyBoolean(), anyBoolean());
     }
 
     @Before
     public void setUp() throws Exception {
-        mContext = new UriGrantsMockContext(InstrumentationRegistry.getContext());
-        mService = UriGrantsManagerService
-            .createForTest(mContext, mContext.getFilesDir())
-            .getLocalService();
+        mContext = new UriGrantsMockContext();
+        mService = UriGrantsManagerService.createForTest(mContext.getFilesDir()).getLocalService();
     }
 
     /**
@@ -294,23 +327,29 @@ public class UriGrantsManagerServiceTest {
         intent.setClipData(clip);
 
         {
-            // When granting towards primary, persistable can't be honored so
-            // the entire grant fails
-            try {
-                mService.checkGrantUriPermissionFromIntent(
-                        intent, UID_PRIMARY_CAMERA, PKG_SOCIAL, USER_PRIMARY);
-                fail();
-            } catch (SecurityException expected) {
+            // The camera package shouldn't be able to see other packages or their providers,
+            // so make sure the grant only succeeds for the camera's URIs.
+            final NeededUriGrants nug = mService.checkGrantUriPermissionFromIntent(
+                    intent, UID_PRIMARY_CAMERA, PKG_SOCIAL, USER_PRIMARY);
+            if (nug != null && nug.uris != null) {
+                for (GrantUri gu : nug.uris) {
+                    if (!gu.uri.getAuthority().equals(PKG_CAMERA)) {
+                        fail();
+                    }
+                }
             }
         }
         {
-            // When granting towards secondary, persistable can't be honored so
-            // the entire grant fails
-            try {
-                mService.checkGrantUriPermissionFromIntent(
-                        intent, UID_PRIMARY_CAMERA, PKG_SOCIAL, USER_SECONDARY);
-                fail();
-            } catch (SecurityException expected) {
+            // The camera package shouldn't be able to see other packages or their providers,
+            // so make sure the grant only succeeds for the camera's URIs.
+            final NeededUriGrants nug = mService.checkGrantUriPermissionFromIntent(
+                    intent, UID_PRIMARY_CAMERA, PKG_SOCIAL, USER_SECONDARY);
+            if (nug != null && nug.uris != null) {
+                for (GrantUri gu : nug.uris) {
+                    if (!gu.uri.getAuthority().equals(PKG_CAMERA)) {
+                        fail();
+                    }
+                }
             }
         }
     }
@@ -335,15 +374,18 @@ public class UriGrantsManagerServiceTest {
                 intent, UID_PRIMARY_CAMERA, PKG_SOCIAL, USER_PRIMARY), service);
 
         // Verify that everything is good with the world
-        assertTrue(mService.checkUriPermission(expectedGrant, UID_PRIMARY_SOCIAL, FLAG_READ));
+        assertTrue(mService.checkUriPermission(expectedGrant, UID_PRIMARY_SOCIAL, FLAG_READ,
+                /* isFullAccessForContentUri */ false));
 
         // Finish activity; service should hold permission
         activity.removeUriPermissions();
-        assertTrue(mService.checkUriPermission(expectedGrant, UID_PRIMARY_SOCIAL, FLAG_READ));
+        assertTrue(mService.checkUriPermission(expectedGrant, UID_PRIMARY_SOCIAL, FLAG_READ,
+                /* isFullAccessForContentUri */ false));
 
         // And finishing service should wrap things up
         service.removeUriPermissions();
-        assertFalse(mService.checkUriPermission(expectedGrant, UID_PRIMARY_SOCIAL, FLAG_READ));
+        assertFalse(mService.checkUriPermission(expectedGrant, UID_PRIMARY_SOCIAL, FLAG_READ,
+                /* isFullAccessForContentUri */ false));
     }
 
     @Test
@@ -352,7 +394,7 @@ public class UriGrantsManagerServiceTest {
         final UriPermissionOwner owner = new UriPermissionOwner(mService, "primary");
 
         final ProviderInfo cameraInfo = mContext.mPmInternal.resolveContentProvider(
-                PKG_CAMERA, 0, USER_PRIMARY);
+                PKG_CAMERA, 0, USER_PRIMARY, Process.SYSTEM_UID);
 
         // By default no social can see any camera
         assertFalse(mService.checkAuthorityGrants(UID_PRIMARY_SOCIAL,

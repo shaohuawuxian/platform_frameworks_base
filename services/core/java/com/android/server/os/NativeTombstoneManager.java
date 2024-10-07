@@ -56,11 +56,13 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileNotFoundException;
 import java.io.IOException;
+import java.lang.ref.Reference;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * A class to manage native tombstones.
@@ -72,7 +74,12 @@ public final class NativeTombstoneManager {
 
     private final Context mContext;
     private final Handler mHandler;
+    // TODO(b/339371242): The garbage collector is misbehaving, and we must have
+    // a reference to this member outside the constructor. More details in the
+    // corresponding comment elsewhere in this class.
     private final TombstoneWatcher mWatcher;
+
+    private final ReentrantLock mTmpFileLock = new ReentrantLock();
 
     private final Object mLock = new Object();
 
@@ -96,6 +103,8 @@ public final class NativeTombstoneManager {
         registerForUserRemoval();
         registerForPackageRemoval();
 
+        BootReceiver.initDropboxRateLimiter();
+
         // Scan existing tombstones.
         mHandler.post(() -> {
             final File[] tombstoneFiles = TOMBSTONE_DIR.listFiles();
@@ -109,23 +118,46 @@ public final class NativeTombstoneManager {
 
     private void handleTombstone(File path) {
         final String filename = path.getName();
+
+        // Clean up temporary files if they made it this far (e.g. if system server crashes).
+        if (filename.endsWith(".tmp")) {
+            mTmpFileLock.lock();
+            try {
+                path.delete();
+            } finally {
+                mTmpFileLock.unlock();
+            }
+            return;
+        }
+
         if (!filename.startsWith("tombstone_")) {
             return;
         }
 
-        if (filename.endsWith(".pb")) {
-            handleProtoTombstone(path);
-            BootReceiver.addTombstoneToDropBox(mContext, path, true);
-        } else {
-            BootReceiver.addTombstoneToDropBox(mContext, path, false);
+        String processName = "UNKNOWN";
+        final boolean isProtoFile = filename.endsWith(".pb");
+        File protoPath = isProtoFile ? path : new File(path.getAbsolutePath() + ".pb");
+
+        Optional<TombstoneFile> parsedTombstone = handleProtoTombstone(protoPath, isProtoFile);
+        if (parsedTombstone.isPresent()) {
+            processName = parsedTombstone.get().getProcessName();
         }
+        BootReceiver.addTombstoneToDropBox(mContext, path, isProtoFile, processName, mTmpFileLock);
+
+        // TODO(b/339371242): An optimizer on WearOS is misbehaving and this member is being garbage
+        // collected as it's never referenced inside this class outside of the constructor. But,
+        // it's a file watcher, and needs to stay alive to do its job. So, add a cheap check here to
+        // force the GC to behave itself. From a technical perspective, it's possible that we need
+        // to add this trick to every single member function, but this seems to work correctly in
+        // practice and avoids polluting a lot more of this class.
+        Reference.reachabilityFence(mWatcher);
     }
 
-    private void handleProtoTombstone(File path) {
+    private Optional<TombstoneFile> handleProtoTombstone(File path, boolean addToList) {
         final String filename = path.getName();
         if (!filename.endsWith(".pb")) {
             Slog.w(TAG, "unexpected tombstone name: " + path);
-            return;
+            return Optional.empty();
         }
 
         final String suffix = filename.substring("tombstone_".length());
@@ -136,11 +168,11 @@ public final class NativeTombstoneManager {
             number = Integer.parseInt(numberStr);
             if (number < 0 || number > 99) {
                 Slog.w(TAG, "unexpected tombstone name: " + path);
-                return;
+                return Optional.empty();
             }
         } catch (NumberFormatException ex) {
             Slog.w(TAG, "unexpected tombstone name: " + path);
-            return;
+            return Optional.empty();
         }
 
         ParcelFileDescriptor pfd;
@@ -148,23 +180,27 @@ public final class NativeTombstoneManager {
             pfd = ParcelFileDescriptor.open(path, MODE_READ_WRITE);
         } catch (FileNotFoundException ex) {
             Slog.w(TAG, "failed to open " + path, ex);
-            return;
+            return Optional.empty();
         }
 
         final Optional<TombstoneFile> parsedTombstone = TombstoneFile.parse(pfd);
         if (!parsedTombstone.isPresent()) {
             IoUtils.closeQuietly(pfd);
-            return;
+            return Optional.empty();
         }
 
-        synchronized (mLock) {
-            TombstoneFile previous = mTombstones.get(number);
-            if (previous != null) {
-                previous.dispose();
+        if (addToList) {
+            synchronized (mLock) {
+                TombstoneFile previous = mTombstones.get(number);
+                if (previous != null) {
+                    previous.dispose();
+                }
+
+                mTombstones.put(number, parsedTombstone.get());
             }
-
-            mTombstones.put(number, parsedTombstone.get());
         }
+
+        return parsedTombstone;
     }
 
     /**
@@ -356,11 +392,15 @@ public final class NativeTombstoneManager {
                 return false;
             }
 
-            if (Math.abs(exitInfo.getTimestamp() - mTimestampMs) > 1000) {
+            if (Math.abs(exitInfo.getTimestamp() - mTimestampMs) > 10000) {
                 return false;
             }
 
             return true;
+        }
+
+        public String getProcessName() {
+            return mProcessName;
         }
 
         public void dispose() {
@@ -549,7 +589,15 @@ public final class NativeTombstoneManager {
 
         @Override
         public void onEvent(int event, @Nullable String path) {
+            if (path == null) {
+                Slog.w(TAG, "path is null at TombstoneWatcher.onEvent()");
+                return;
+            }
             mHandler.post(() -> {
+                // Ignore .tmp files.
+                if (path.endsWith(".tmp")) {
+                    return;
+                }
                 handleTombstone(new File(TOMBSTONE_DIR, path));
             });
         }

@@ -30,13 +30,15 @@ import static com.android.internal.widget.LockSettingsInternal.ARM_REBOOT_ERROR_
 import static com.android.internal.widget.LockSettingsInternal.ARM_REBOOT_ERROR_NO_PROVIDER;
 
 import android.annotation.IntDef;
+import android.annotation.Nullable;
 import android.apex.CompressedApexInfo;
 import android.apex.CompressedApexInfoList;
 import android.content.Context;
 import android.content.IntentSender;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
-import android.hardware.boot.V1_0.IBootControl;
+import android.hardware.boot.IBootControl;
+import android.hardware.security.secretkeeper.ISecretkeeper;
 import android.net.LocalSocket;
 import android.net.LocalSocketAddress;
 import android.os.Binder;
@@ -48,10 +50,11 @@ import android.os.Process;
 import android.os.RecoverySystem;
 import android.os.RemoteException;
 import android.os.ResultReceiver;
+import android.os.ServiceManager;
 import android.os.ShellCallback;
 import android.os.SystemProperties;
 import android.provider.DeviceConfig;
-import android.sysprop.ApexProperties;
+import android.security.AndroidKeyStoreMaintenance;
 import android.util.ArrayMap;
 import android.util.ArraySet;
 import android.util.FastImmutableArraySet;
@@ -65,7 +68,10 @@ import com.android.internal.widget.LockSettingsInternal;
 import com.android.internal.widget.RebootEscrowListener;
 import com.android.server.LocalServices;
 import com.android.server.SystemService;
+import com.android.server.Watchdog;
 import com.android.server.pm.ApexManager;
+import com.android.server.recoverysystem.hal.BootControlHIDL;
+import com.android.server.utils.Slogf;
 
 import libcore.io.IoUtils;
 
@@ -111,11 +117,16 @@ public class RecoverySystemService extends IRecoverySystem.Stub implements Reboo
 
     private static final int SOCKET_CONNECTION_MAX_RETRY = 30;
 
+    /** How long to pause the watchdog for when rebooting the device. */
+    private static final int REBOOT_WATCHDOG_PAUSE_DURATION_MS = 20_000;
+
     static final String REQUEST_LSKF_TIMESTAMP_PREF_SUFFIX = "_request_lskf_timestamp";
     static final String REQUEST_LSKF_COUNT_PREF_SUFFIX = "_request_lskf_count";
 
     static final String LSKF_CAPTURED_TIMESTAMP_PREF = "lskf_captured_timestamp";
     static final String LSKF_CAPTURED_COUNT_PREF = "lskf_captured_count";
+
+    static final String RECOVERY_WIPE_DATA_COMMAND = "--wipe_data";
 
     private final Injector mInjector;
     private final Context mContext;
@@ -155,18 +166,20 @@ public class RecoverySystemService extends IRecoverySystem.Stub implements Reboo
     /**
      * The action to perform upon new resume on reboot prepare request for a given client.
      */
-    @IntDef({ ROR_NEED_PREPARATION,
+    @IntDef({ROR_NEED_PREPARATION,
             ROR_SKIP_PREPARATION_AND_NOTIFY,
-            ROR_SKIP_PREPARATION_NOT_NOTIFY })
-    private @interface ResumeOnRebootActionsOnRequest {}
+            ROR_SKIP_PREPARATION_NOT_NOTIFY})
+    private @interface ResumeOnRebootActionsOnRequest {
+    }
 
     /**
      * The action to perform upon resume on reboot clear request for a given client.
      */
-    @IntDef({ ROR_NOT_REQUESTED,
+    @IntDef({ROR_NOT_REQUESTED,
             ROR_REQUESTED_NEED_CLEAR,
-            ROR_REQUESTED_SKIP_CLEAR })
-    private @interface ResumeOnRebootActionsOnClear {}
+            ROR_REQUESTED_SKIP_CLEAR})
+    private @interface ResumeOnRebootActionsOnClear {
+    }
 
     /**
      * Fatal arm escrow errors from lock settings that means the RoR is in a bad state. So clients
@@ -306,19 +319,26 @@ public class RecoverySystemService extends IRecoverySystem.Stub implements Reboo
          * Throws remote exception if there's an error getting the boot control HAL.
          * Returns null if the boot control HAL's version is older than V1_2.
          */
-        public android.hardware.boot.V1_2.IBootControl getBootControl() throws RemoteException {
-            IBootControl bootControlV10 = IBootControl.getService(true);
-            if (bootControlV10 == null) {
-                throw new RemoteException("Failed to get boot control HAL V1_0.");
+        public IBootControl getBootControl() throws RemoteException {
+            String serviceName = IBootControl.DESCRIPTOR + "/default";
+            if (ServiceManager.isDeclared(serviceName)) {
+                Slog.i(TAG,
+                        "AIDL version of BootControl HAL present, using instance " + serviceName);
+                return IBootControl.Stub.asInterface(
+                        ServiceManager.waitForDeclaredService(serviceName));
             }
 
-            android.hardware.boot.V1_2.IBootControl bootControlV12 =
-                    android.hardware.boot.V1_2.IBootControl.castFrom(bootControlV10);
-            if (bootControlV12 == null) {
+            IBootControl bootcontrol = BootControlHIDL.getService();
+            if (!BootControlHIDL.isServicePresent()) {
+                Slog.e(TAG, "Neither AIDL nor HIDL version of the BootControl HAL is present.");
+                return null;
+            }
+
+            if (!BootControlHIDL.isV1_2ServicePresent()) {
                 Slog.w(TAG, "Device doesn't implement boot control HAL V1_2.");
                 return null;
             }
-            return bootControlV12;
+            return bootcontrol;
         }
 
         public void threadSleep(long millis) throws InterruptedException {
@@ -511,9 +531,18 @@ public class RecoverySystemService extends IRecoverySystem.Stub implements Reboo
     @Override // Binder call
     public void rebootRecoveryWithCommand(String command) {
         if (DEBUG) Slog.d(TAG, "rebootRecoveryWithCommand: [" + command + "]");
+
+        boolean isForcedWipe = command != null && command.contains(RECOVERY_WIPE_DATA_COMMAND);
         synchronized (sRequestLock) {
             if (!setupOrClearBcb(true, command)) {
+                Slog.e(TAG, "rebootRecoveryWithCommand failed to setup BCB");
                 return;
+            }
+
+            if (isForcedWipe) {
+                deleteSecrets();
+                // TODO: consider adding a dedicated forced-wipe-reboot method to PowerManager and
+                // calling here.
             }
 
             // Having set up the BCB, go ahead and reboot.
@@ -522,11 +551,42 @@ public class RecoverySystemService extends IRecoverySystem.Stub implements Reboo
         }
     }
 
+    private static void deleteSecrets() {
+        Slogf.w(TAG, "deleteSecrets");
+        try {
+            AndroidKeyStoreMaintenance.deleteAllKeys();
+        } catch (android.security.KeyStoreException e) {
+            Log.wtf(TAG, "Failed to delete all keys from keystore.", e);
+        }
+
+        try {
+            ISecretkeeper secretKeeper = getSecretKeeper();
+            if (secretKeeper != null) {
+                Slogf.i(TAG, "ISecretkeeper.deleteAll();");
+                secretKeeper.deleteAll();
+            }
+        } catch (RemoteException e) {
+            Log.wtf(TAG, "Failed to delete all secrets from secretkeeper.", e);
+        }
+    }
+
+    private static @Nullable ISecretkeeper getSecretKeeper() {
+        ISecretkeeper result = null;
+        try {
+            result = ISecretkeeper.Stub.asInterface(
+                ServiceManager.waitForDeclaredService(ISecretkeeper.DESCRIPTOR + "/default"));
+        } catch (SecurityException e) {
+            Slog.w(TAG, "Does not have permissions to get AIDL secretkeeper service");
+        }
+
+        return result;
+    }
+
     private void enforcePermissionForResumeOnReboot() {
         if (mContext.checkCallingOrSelfPermission(android.Manifest.permission.RECOVERY)
                 != PackageManager.PERMISSION_GRANTED
                 && mContext.checkCallingOrSelfPermission(android.Manifest.permission.REBOOT)
-                    != PackageManager.PERMISSION_GRANTED) {
+                != PackageManager.PERMISSION_GRANTED) {
             throw new SecurityException("Caller must have " + android.Manifest.permission.RECOVERY
                     + " or " + android.Manifest.permission.REBOOT + " for resume on reboot.");
         }
@@ -738,7 +798,7 @@ public class RecoverySystemService extends IRecoverySystem.Stub implements Reboo
             return true;
         }
 
-        android.hardware.boot.V1_2.IBootControl bootControl;
+        IBootControl bootControl;
         try {
             bootControl = mInjector.getBootControl();
         } catch (RemoteException e) {
@@ -889,16 +949,18 @@ public class RecoverySystemService extends IRecoverySystem.Stub implements Reboo
 
         // Clear the metrics prefs after a successful RoR reboot.
         mInjector.getMetricsPrefs().deletePrefsFile();
-
+        Watchdog.getInstance().pauseWatchingCurrentThreadFor(
+                REBOOT_WATCHDOG_PAUSE_DURATION_MS, "reboot can be slow");
         PowerManager pm = mInjector.getPowerManager();
         pm.reboot(reason);
         return RESUME_ON_REBOOT_REBOOT_ERROR_UNSPECIFIED;
     }
 
+    @android.annotation.EnforcePermission(android.Manifest.permission.RECOVERY)
     @Override // Binder call for the legacy rebootWithLskf
     public @ResumeOnRebootRebootErrorCode int rebootWithLskfAssumeSlotSwitch(String packageName,
             String reason) {
-        mContext.enforceCallingOrSelfPermission(android.Manifest.permission.RECOVERY, null);
+        rebootWithLskfAssumeSlotSwitch_enforcePermission();
         return rebootWithLskfImpl(packageName, reason, true);
     }
 
@@ -907,10 +969,6 @@ public class RecoverySystemService extends IRecoverySystem.Stub implements Reboo
             boolean slotSwitch) {
         enforcePermissionForResumeOnReboot();
         return rebootWithLskfImpl(packageName, reason, slotSwitch);
-    }
-
-    public static boolean isUpdatableApexSupported() {
-        return ApexProperties.updatable().orElse(false);
     }
 
     // Metadata should be no more than few MB, if it's larger than 100MB something is wrong.
@@ -959,15 +1017,19 @@ public class RecoverySystemService extends IRecoverySystem.Stub implements Reboo
         }
     }
 
+    @android.annotation.EnforcePermission(android.Manifest.permission.RECOVERY)
     @Override
     public boolean allocateSpaceForUpdate(String packageFile) {
-        if (!isUpdatableApexSupported()) {
-            Log.i(TAG, "Updatable Apex not supported, "
-                    + "allocateSpaceForUpdate does nothing.");
-            return true;
-        }
+        allocateSpaceForUpdate_enforcePermission();
+        final long token = Binder.clearCallingIdentity();
         try {
             CompressedApexInfoList apexInfoList = getCompressedApexInfoList(packageFile);
+            if (apexInfoList == null) {
+                Log.i(TAG, "apex_info.pb not present in OTA package. "
+                        + "Assuming device doesn't support compressed"
+                        + "APEX, continueing without allocating space.");
+                return true;
+            }
             ApexManager apexManager = ApexManager.getInstance();
             apexManager.reserveSpaceForCompressedApex(apexInfoList);
             return true;
@@ -975,6 +1037,8 @@ public class RecoverySystemService extends IRecoverySystem.Stub implements Reboo
             e.rethrowAsRuntimeException();
         } catch (IOException | UnsupportedOperationException e) {
             Slog.e(TAG, "Failed to reserve space for compressed apex: ", e);
+        } finally {
+            Binder.restoreCallingIdentity(token);
         }
         return false;
     }
@@ -1150,6 +1214,7 @@ public class RecoverySystemService extends IRecoverySystem.Stub implements Reboo
 
         /**
          * Reads the status from the uncrypt service which is usually represented as a percentage.
+         *
          * @return an integer representing the percentage completed
          * @throws IOException if there was an error reading the socket
          */
@@ -1159,6 +1224,7 @@ public class RecoverySystemService extends IRecoverySystem.Stub implements Reboo
 
         /**
          * Sends a confirmation to the uncrypt service.
+         *
          * @throws IOException if there was an error writing to the socket
          */
         public void sendAck() throws IOException {

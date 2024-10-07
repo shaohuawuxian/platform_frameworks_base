@@ -16,11 +16,14 @@
 
 package com.android.systemui.shared.system;
 
-import android.app.ActivityManager.TaskSnapshot;
 import android.os.RemoteException;
 import android.util.Log;
 import android.view.IRecentsAnimationController;
+import android.view.SurfaceControl;
+import android.window.PictureInPictureSurfaceTransaction;
+import android.window.TaskSnapshot;
 
+import com.android.internal.os.IResultReceiver;
 import com.android.systemui.shared.recents.model.ThumbnailData;
 
 public class RecentsAnimationControllerCompat {
@@ -37,12 +40,14 @@ public class RecentsAnimationControllerCompat {
 
     public ThumbnailData screenshotTask(int taskId) {
         try {
-            TaskSnapshot snapshot = mAnimationController.screenshotTask(taskId);
-            return snapshot != null ? new ThumbnailData(snapshot) : new ThumbnailData();
+            final TaskSnapshot snapshot = mAnimationController.screenshotTask(taskId);
+            if (snapshot != null) {
+                return ThumbnailData.fromSnapshot(snapshot);
+            }
         } catch (RemoteException e) {
             Log.e(TAG, "Failed to screenshot task", e);
-            return new ThumbnailData();
         }
+        return new ThumbnailData();
     }
 
     public void setInputConsumerEnabled(boolean enabled) {
@@ -61,11 +66,21 @@ public class RecentsAnimationControllerCompat {
         }
     }
 
-    public void hideCurrentInputMethod() {
+    /**
+     * Sets the final surface transaction on a Task. This is used by Launcher to notify the system
+     * that animating Activity to PiP has completed and the associated task surface should be
+     * updated accordingly. This should be called before `finish`
+     * @param taskId Task id of the Activity in PiP mode.
+     * @param finishTransaction leash operations for the final transform.
+     * @param overlay the surface control for an overlay being shown above the pip (can be null)
+     */
+    public void setFinishTaskTransaction(int taskId,
+            PictureInPictureSurfaceTransaction finishTransaction,
+            SurfaceControl overlay) {
         try {
-            mAnimationController.hideCurrentInputMethod();
+            mAnimationController.setFinishTaskTransaction(taskId, finishTransaction, overlay);
         } catch (RemoteException e) {
-            Log.e(TAG, "Failed to set hide input method", e);
+            Log.d(TAG, "Failed to set finish task bounds", e);
         }
     }
 
@@ -75,11 +90,16 @@ public class RecentsAnimationControllerCompat {
      * @param sendUserLeaveHint determines whether userLeaveHint will be set true to the previous
      *                          app.
      */
-    public void finish(boolean toHome, boolean sendUserLeaveHint) {
+    public void finish(boolean toHome, boolean sendUserLeaveHint, IResultReceiver finishCb) {
         try {
-            mAnimationController.finish(toHome, sendUserLeaveHint);
+            mAnimationController.finish(toHome, sendUserLeaveHint, finishCb);
         } catch (RemoteException e) {
             Log.e(TAG, "Failed to finish recents animation", e);
+            try {
+                finishCb.send(0, null);
+            } catch (Exception ex) {
+                // Local call, can ignore
+            }
         }
     }
 
@@ -119,6 +139,28 @@ public class RecentsAnimationControllerCompat {
         } catch (RemoteException e) {
             Log.e(TAG, "Failed to remove remote animation target", e);
             return false;
+        }
+    }
+
+    /**
+     * @see IRecentsAnimationController#detachNavigationBarFromApp
+     */
+    public void detachNavigationBarFromApp(boolean moveHomeToTop) {
+        try {
+            mAnimationController.detachNavigationBarFromApp(moveHomeToTop);
+        } catch (RemoteException e) {
+            Log.e(TAG, "Failed to detach the navigation bar from app", e);
+        }
+    }
+
+    /**
+     * @see IRecentsAnimationController#animateNavigationBarToApp(long)
+     */
+    public void animateNavigationBarToApp(long duration) {
+        try {
+            mAnimationController.animateNavigationBarToApp(duration);
+        } catch (RemoteException e) {
+            Log.e(TAG, "Failed to animate the navigation bar to app", e);
         }
     }
 }

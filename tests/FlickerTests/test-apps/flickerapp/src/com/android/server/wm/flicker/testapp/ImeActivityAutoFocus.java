@@ -16,15 +16,12 @@
 
 package com.android.server.wm.flicker.testapp;
 
-import android.widget.EditText;
-
 public class ImeActivityAutoFocus extends ImeActivity {
-
     @Override
     protected void onStart() {
         super.onStart();
 
-        EditText editTextField = findViewById(R.id.plain_text_input);
+        final var editTextField = findViewById(R.id.plain_text_input);
         editTextField.requestFocus();
     }
 }

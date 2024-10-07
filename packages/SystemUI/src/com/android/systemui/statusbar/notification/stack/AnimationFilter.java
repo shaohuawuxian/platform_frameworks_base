@@ -30,12 +30,10 @@ public class AnimationFilter {
     public static final int NO_DELAY = -1;
     boolean animateAlpha;
     boolean animateX;
-    boolean animateY;
-    ArraySet<View> animateYViews = new ArraySet<>();
+    public boolean animateY;
     boolean animateZ;
     boolean animateHeight;
     boolean animateTopInset;
-    boolean animateDimmed;
     boolean animateHideSensitive;
     boolean hasDelays;
     boolean hasGoToFullShadeEvent;
@@ -83,23 +81,13 @@ public class AnimationFilter {
         return this;
     }
 
-    public AnimationFilter animateDimmed() {
-        animateDimmed = true;
-        return this;
-    }
-
     public AnimationFilter animateHideSensitive() {
         animateHideSensitive = true;
         return this;
     }
 
-    public AnimationFilter animateY(View view) {
-        animateYViews.add(view);
-        return this;
-    }
-
     public boolean shouldAnimateY(View view) {
-        return animateY || animateYViews.contains(view);
+        return animateY;
     }
 
     /**
@@ -117,16 +105,6 @@ public class AnimationFilter {
                     NotificationStackScrollLayout.AnimationEvent.ANIMATION_TYPE_GO_TO_FULL_SHADE) {
                 hasGoToFullShadeEvent = true;
             }
-            if (ev.animationType == NotificationStackScrollLayout.AnimationEvent
-                    .ANIMATION_TYPE_HEADS_UP_DISAPPEAR) {
-                customDelay = StackStateAnimator.ANIMATION_DELAY_HEADS_UP;
-            } else if (ev.animationType == NotificationStackScrollLayout.AnimationEvent
-                    .ANIMATION_TYPE_HEADS_UP_DISAPPEAR_CLICK) {
-                // We need both timeouts when clicking, one to delay it and one for the animation
-                // to look nice
-                customDelay = StackStateAnimator.ANIMATION_DELAY_HEADS_UP_CLICKED
-                        + StackStateAnimator.ANIMATION_DELAY_HEADS_UP;
-            }
         }
     }
 
@@ -134,11 +112,9 @@ public class AnimationFilter {
         animateAlpha |= filter.animateAlpha;
         animateX |= filter.animateX;
         animateY |= filter.animateY;
-        animateYViews.addAll(filter.animateYViews);
         animateZ |= filter.animateZ;
         animateHeight |= filter.animateHeight;
         animateTopInset |= filter.animateTopInset;
-        animateDimmed |= filter.animateDimmed;
         animateHideSensitive |= filter.animateHideSensitive;
         hasDelays |= filter.hasDelays;
         mAnimatedProperties.addAll(filter.mAnimatedProperties);
@@ -148,11 +124,9 @@ public class AnimationFilter {
         animateAlpha = false;
         animateX = false;
         animateY = false;
-        animateYViews.clear();
         animateZ = false;
         animateHeight = false;
         animateTopInset = false;
-        animateDimmed = false;
         animateHideSensitive = false;
         hasDelays = false;
         hasGoToFullShadeEvent = false;

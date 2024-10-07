@@ -28,7 +28,9 @@ import static android.app.admin.DevicePolicyManager.PASSWORD_QUALITY_UNSPECIFIED
 import static com.android.internal.widget.LockPatternUtils.CREDENTIAL_TYPE_NONE;
 import static com.android.internal.widget.LockPatternUtils.CREDENTIAL_TYPE_PASSWORD;
 import static com.android.internal.widget.LockPatternUtils.CREDENTIAL_TYPE_PATTERN;
+import static com.android.internal.widget.LockPatternUtils.CREDENTIAL_TYPE_PIN;
 import static com.android.internal.widget.LockPatternUtils.MIN_LOCK_PASSWORD_SIZE;
+import static com.android.internal.widget.LockPatternUtils.MIN_LOCK_PATTERN_SIZE;
 import static com.android.internal.widget.PasswordValidationError.CONTAINS_INVALID_CHARACTERS;
 import static com.android.internal.widget.PasswordValidationError.CONTAINS_SEQUENCE;
 import static com.android.internal.widget.PasswordValidationError.NOT_ENOUGH_DIGITS;
@@ -40,10 +42,12 @@ import static com.android.internal.widget.PasswordValidationError.NOT_ENOUGH_SYM
 import static com.android.internal.widget.PasswordValidationError.NOT_ENOUGH_UPPER_CASE;
 import static com.android.internal.widget.PasswordValidationError.TOO_LONG;
 import static com.android.internal.widget.PasswordValidationError.TOO_SHORT;
+import static com.android.internal.widget.PasswordValidationError.TOO_SHORT_WHEN_ALL_NUMERIC;
 import static com.android.internal.widget.PasswordValidationError.WEAK_CREDENTIAL_TYPE;
 
 import android.annotation.IntDef;
 import android.annotation.NonNull;
+import android.annotation.Nullable;
 import android.app.admin.DevicePolicyManager.PasswordComplexity;
 import android.os.Parcel;
 import android.os.Parcelable;
@@ -73,11 +77,8 @@ public final class PasswordMetrics implements Parcelable {
     // consider it a complex PIN/password.
     public static final int MAX_ALLOWED_SEQUENCE = 3;
 
-    // One of CREDENTIAL_TYPE_NONE, CREDENTIAL_TYPE_PATTERN or CREDENTIAL_TYPE_PASSWORD.
-    // Note that this class still uses CREDENTIAL_TYPE_PASSWORD to represent both numeric PIN
-    // and alphabetic password. This is OK as long as this definition is only used internally,
-    // and the value never gets mixed up with credential types from other parts of the framework.
-    // TODO: fix this (ideally after we move logic to PasswordPolicy)
+    // One of CREDENTIAL_TYPE_NONE, CREDENTIAL_TYPE_PATTERN, CREDENTIAL_TYPE_PIN or
+    // CREDENTIAL_TYPE_PASSWORD.
     public @CredentialType int credType;
     // Fields below only make sense when credType is PASSWORD.
     public int length = 0;
@@ -134,17 +135,6 @@ public final class PasswordMetrics implements Parcelable {
         }
     }
 
-    private static boolean hasInvalidCharacters(byte[] password) {
-        // Allow non-control Latin-1 characters only.
-        for (byte b : password) {
-            char c = (char) b;
-            if (c < 32 || c > 127) {
-                return true;
-            }
-        }
-        return false;
-    }
-
     @Override
     public int describeContents() {
         return 0;
@@ -189,17 +179,15 @@ public final class PasswordMetrics implements Parcelable {
     };
 
     /**
-     * Returns the {@code PasswordMetrics} for a given credential.
-     *
-     * If the credential is a pin or a password, equivalent to {@link #computeForPassword(byte[])}.
-     * {@code credential} cannot be null when {@code type} is
-     * {@link com.android.internal.widget.LockPatternUtils#CREDENTIAL_TYPE_PASSWORD}.
+     * Returns the {@code PasswordMetrics} for the given credential.
      */
     public static PasswordMetrics computeForCredential(LockscreenCredential credential) {
         if (credential.isPassword() || credential.isPin()) {
-            return PasswordMetrics.computeForPassword(credential.getCredential());
+            return computeForPasswordOrPin(credential.getCredential(), credential.isPin());
         } else if (credential.isPattern())  {
-            return new PasswordMetrics(CREDENTIAL_TYPE_PATTERN);
+            PasswordMetrics metrics = new PasswordMetrics(CREDENTIAL_TYPE_PATTERN);
+            metrics.length = credential.size();
+            return metrics;
         } else if (credential.isNone()) {
             return new PasswordMetrics(CREDENTIAL_TYPE_NONE);
         } else {
@@ -208,10 +196,10 @@ public final class PasswordMetrics implements Parcelable {
     }
 
     /**
-     * Returns the {@code PasswordMetrics} for a given password
+     * Returns the {@code PasswordMetrics} for the given password or pin.
      */
-    public static PasswordMetrics computeForPassword(@NonNull byte[] password) {
-        // Analyse the characters used
+    private static PasswordMetrics computeForPasswordOrPin(byte[] credential, boolean isPin) {
+        // Analyze the characters used.
         int letters = 0;
         int upperCase = 0;
         int lowerCase = 0;
@@ -219,8 +207,8 @@ public final class PasswordMetrics implements Parcelable {
         int symbols = 0;
         int nonLetter = 0;
         int nonNumeric = 0;
-        final int length = password.length;
-        for (byte b : password) {
+        final int length = credential.length;
+        for (byte b : credential) {
             switch (categoryChar((char) b)) {
                 case CHAR_LOWER_CASE:
                     letters++;
@@ -244,8 +232,9 @@ public final class PasswordMetrics implements Parcelable {
             }
         }
 
-        final int seqLength = maxLengthSequence(password);
-        return new PasswordMetrics(CREDENTIAL_TYPE_PASSWORD, length, letters, upperCase, lowerCase,
+        final int credType = isPin ? CREDENTIAL_TYPE_PIN : CREDENTIAL_TYPE_PASSWORD;
+        final int seqLength = maxLengthSequence(credential);
+        return new PasswordMetrics(credType, length, letters, upperCase, lowerCase,
                 numeric, symbols, nonLetter, nonNumeric, seqLength);
     }
 
@@ -352,7 +341,7 @@ public final class PasswordMetrics implements Parcelable {
      */
     public void maxWith(PasswordMetrics other) {
         credType = Math.max(credType, other.credType);
-        if (credType != CREDENTIAL_TYPE_PASSWORD) {
+        if (credType != CREDENTIAL_TYPE_PASSWORD && credType != CREDENTIAL_TYPE_PIN) {
             return;
         }
         length = Math.max(length, other.length);
@@ -406,13 +395,8 @@ public final class PasswordMetrics implements Parcelable {
             }
 
             @Override
-            boolean allowsNumericPassword() {
-                return false;
-            }
-
-            @Override
             boolean allowsCredType(int credType) {
-                return credType == CREDENTIAL_TYPE_PASSWORD;
+                return credType == CREDENTIAL_TYPE_PASSWORD || credType == CREDENTIAL_TYPE_PIN;
             }
         },
         BUCKET_MEDIUM(PASSWORD_COMPLEXITY_MEDIUM) {
@@ -427,13 +411,8 @@ public final class PasswordMetrics implements Parcelable {
             }
 
             @Override
-            boolean allowsNumericPassword() {
-                return false;
-            }
-
-            @Override
             boolean allowsCredType(int credType) {
-                return credType == CREDENTIAL_TYPE_PASSWORD;
+                return credType == CREDENTIAL_TYPE_PASSWORD || credType == CREDENTIAL_TYPE_PIN;
             }
         },
         BUCKET_LOW(PASSWORD_COMPLEXITY_LOW) {
@@ -445,11 +424,6 @@ public final class PasswordMetrics implements Parcelable {
             @Override
             int getMinimumLength(boolean containsNonNumeric) {
                 return 0;
-            }
-
-            @Override
-            boolean allowsNumericPassword() {
-                return true;
             }
 
             @Override
@@ -469,11 +443,6 @@ public final class PasswordMetrics implements Parcelable {
             }
 
             @Override
-            boolean allowsNumericPassword() {
-                return true;
-            }
-
-            @Override
             boolean allowsCredType(int credType) {
                 return true;
             }
@@ -483,7 +452,6 @@ public final class PasswordMetrics implements Parcelable {
 
         abstract boolean canHaveSequence();
         abstract int getMinimumLength(boolean containsNonNumeric);
-        abstract boolean allowsNumericPassword();
         abstract boolean allowsCredType(int credType);
 
         ComplexityBucket(int complexityLevel) {
@@ -509,7 +477,7 @@ public final class PasswordMetrics implements Parcelable {
         if (!bucket.allowsCredType(credType)) {
             return false;
         }
-        if (credType != CREDENTIAL_TYPE_PASSWORD) {
+        if (credType != CREDENTIAL_TYPE_PASSWORD && credType != CREDENTIAL_TYPE_PIN) {
             return true;
         }
         return (bucket.canHaveSequence() || seqLength <= MAX_ALLOWED_SEQUENCE)
@@ -531,26 +499,24 @@ public final class PasswordMetrics implements Parcelable {
     }
 
     /**
-     * Validates password against minimum metrics and complexity.
+     * Validates a proposed lockscreen credential against minimum metrics and complexity.
      *
-     * @param adminMetrics - minimum metrics to satisfy admin requirements.
-     * @param minComplexity - minimum complexity imposed by the requester.
-     * @param isPin - whether it is PIN that should be only digits
-     * @param password - password to validate.
-     * @return a list of password validation errors. An empty list means the password is OK.
+     * @param adminMetrics minimum metrics to satisfy admin requirements
+     * @param minComplexity minimum complexity imposed by the requester
+     * @param credential the proposed lockscreen credential
+     *
+     * @return a list of validation errors. An empty list means the credential is OK.
      *
      * TODO: move to PasswordPolicy
      */
-    public static List<PasswordValidationError> validatePassword(
-            PasswordMetrics adminMetrics, int minComplexity, boolean isPin, byte[] password) {
-
-        if (hasInvalidCharacters(password)) {
+    public static List<PasswordValidationError> validateCredential(
+            PasswordMetrics adminMetrics, int minComplexity, LockscreenCredential credential) {
+        if (credential.hasInvalidChars()) {
             return Collections.singletonList(
                     new PasswordValidationError(CONTAINS_INVALID_CHARACTERS, 0));
         }
-
-        final PasswordMetrics enteredMetrics = computeForPassword(password);
-        return validatePasswordMetrics(adminMetrics, minComplexity, isPin, enteredMetrics);
+        PasswordMetrics actualMetrics = computeForCredential(credential);
+        return validatePasswordMetrics(adminMetrics, minComplexity, actualMetrics);
     }
 
     /**
@@ -558,15 +524,13 @@ public final class PasswordMetrics implements Parcelable {
      *
      * @param adminMetrics - minimum metrics to satisfy admin requirements.
      * @param minComplexity - minimum complexity imposed by the requester.
-     * @param isPin - whether it is PIN that should be only digits
      * @param actualMetrics - metrics for password to validate.
      * @return a list of password validation errors. An empty list means the password is OK.
      *
      * TODO: move to PasswordPolicy
      */
     public static List<PasswordValidationError> validatePasswordMetrics(
-            PasswordMetrics adminMetrics, int minComplexity, boolean isPin,
-            PasswordMetrics actualMetrics) {
+            PasswordMetrics adminMetrics, int minComplexity, PasswordMetrics actualMetrics) {
         final ComplexityBucket bucket = ComplexityBucket.forComplexity(minComplexity);
 
         // Make sure credential type is satisfactory.
@@ -575,12 +539,21 @@ public final class PasswordMetrics implements Parcelable {
                 || !bucket.allowsCredType(actualMetrics.credType)) {
             return Collections.singletonList(new PasswordValidationError(WEAK_CREDENTIAL_TYPE, 0));
         }
-        // TODO: this needs to be modified if CREDENTIAL_TYPE_PIN is added.
-        if (actualMetrics.credType != CREDENTIAL_TYPE_PASSWORD) {
-            return Collections.emptyList(); // Nothing to check for pattern or none.
+        if (actualMetrics.credType == CREDENTIAL_TYPE_PATTERN) {
+            // For pattern, only need to check the length against the hardcoded minimum.  If the
+            // pattern length is unavailable (e.g., PasswordMetrics that was stored on-disk before
+            // the pattern length started being included in it), assume it is okay.
+            if (actualMetrics.length != 0 && actualMetrics.length < MIN_LOCK_PATTERN_SIZE) {
+                return Collections.singletonList(new PasswordValidationError(TOO_SHORT,
+                            MIN_LOCK_PATTERN_SIZE));
+            }
+            return Collections.emptyList();
+        }
+        if (actualMetrics.credType == CREDENTIAL_TYPE_NONE) {
+            return Collections.emptyList(); // Nothing to check for none.
         }
 
-        if (isPin && actualMetrics.nonNumeric > 0) {
+        if (actualMetrics.credType == CREDENTIAL_TYPE_PIN && actualMetrics.nonNumeric > 0) {
             return Collections.singletonList(
                     new PasswordValidationError(CONTAINS_INVALID_CHARACTERS, 0));
         }
@@ -590,14 +563,15 @@ public final class PasswordMetrics implements Parcelable {
             result.add(new PasswordValidationError(TOO_LONG, MAX_PASSWORD_LENGTH));
         }
 
-        final PasswordMetrics minMetrics = applyComplexity(adminMetrics, isPin, bucket);
+        final PasswordMetrics minMetrics = applyComplexity(adminMetrics,
+                actualMetrics.credType == CREDENTIAL_TYPE_PIN, bucket);
 
         // Clamp required length between maximum and minimum valid values.
         minMetrics.length = Math.min(MAX_PASSWORD_LENGTH,
                 Math.max(minMetrics.length, MIN_LOCK_PASSWORD_SIZE));
         minMetrics.removeOverlapping();
 
-        comparePasswordMetrics(minMetrics, actualMetrics, result);
+        comparePasswordMetrics(minMetrics, bucket, actualMetrics, result);
 
         return result;
     }
@@ -605,10 +579,22 @@ public final class PasswordMetrics implements Parcelable {
     /**
      * TODO: move to PasswordPolicy
      */
-    private static void comparePasswordMetrics(PasswordMetrics minMetrics,
+    private static void comparePasswordMetrics(PasswordMetrics minMetrics, ComplexityBucket bucket,
             PasswordMetrics actualMetrics, ArrayList<PasswordValidationError> result) {
         if (actualMetrics.length < minMetrics.length) {
             result.add(new PasswordValidationError(TOO_SHORT, minMetrics.length));
+        }
+        if (actualMetrics.nonNumeric == 0 && minMetrics.nonNumeric == 0 && minMetrics.letters == 0
+                && minMetrics.lowerCase == 0 && minMetrics.upperCase == 0
+                && minMetrics.symbols == 0) {
+            // When provided password is all numeric and all numeric password is allowed.
+            int allNumericMinimumLength = bucket.getMinimumLength(false);
+            if (allNumericMinimumLength > minMetrics.length
+                    && allNumericMinimumLength > minMetrics.numeric
+                    && actualMetrics.length < allNumericMinimumLength) {
+                result.add(new PasswordValidationError(
+                        TOO_SHORT_WHEN_ALL_NUMERIC, allNumericMinimumLength));
+            }
         }
         if (actualMetrics.letters < minMetrics.letters) {
             result.add(new PasswordValidationError(NOT_ENOUGH_LETTERS, minMetrics.letters));
@@ -682,13 +668,13 @@ public final class PasswordMetrics implements Parcelable {
      *
      * TODO: move to PasswordPolicy
      */
-    public static PasswordMetrics applyComplexity(
-            PasswordMetrics adminMetrics, boolean isPin, int complexity) {
+    public static PasswordMetrics applyComplexity(PasswordMetrics adminMetrics, boolean isPin,
+            int complexity) {
         return applyComplexity(adminMetrics, isPin, ComplexityBucket.forComplexity(complexity));
     }
 
-    private static PasswordMetrics applyComplexity(
-            PasswordMetrics adminMetrics, boolean isPin, ComplexityBucket bucket) {
+    private static PasswordMetrics applyComplexity(PasswordMetrics adminMetrics, boolean isPin,
+            ComplexityBucket bucket) {
         final PasswordMetrics minMetrics = new PasswordMetrics(adminMetrics);
 
         if (!bucket.canHaveSequence()) {
@@ -697,15 +683,24 @@ public final class PasswordMetrics implements Parcelable {
 
         minMetrics.length = Math.max(minMetrics.length, bucket.getMinimumLength(!isPin));
 
-        if (!isPin && !bucket.allowsNumericPassword()) {
-            minMetrics.nonNumeric = Math.max(minMetrics.nonNumeric, 1);
-        }
-
         return minMetrics;
     }
 
+    /**
+     * Returns true if password is non-empty and contains digits only.
+     * @param password
+     * @return
+     */
+    public static boolean isNumericOnly(@NonNull String password) {
+        if (password.length() == 0) return false;
+        for (int i = 0; i < password.length(); i++) {
+            if (categoryChar(password.charAt(i)) != CHAR_DIGIT) return false;
+        }
+        return true;
+    }
+
     @Override
-    public boolean equals(Object o) {
+    public boolean equals(@Nullable Object o) {
         if (this == o) return true;
         if (o == null || getClass() != o.getClass()) return false;
         final PasswordMetrics that = (PasswordMetrics) o;

@@ -29,11 +29,13 @@ import android.content.Intent;
 import android.content.res.Resources;
 import android.database.ContentObserver;
 import android.os.BatterySaverPolicyConfig;
+import android.os.Bundle;
 import android.os.Handler;
 import android.os.PowerManager;
 import android.os.SystemClock;
 import android.os.UserHandle;
 import android.provider.Settings;
+import android.util.IndentingPrintWriter;
 import android.util.Slog;
 import android.util.proto.ProtoOutputStream;
 
@@ -43,8 +45,10 @@ import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.os.BackgroundThread;
 import com.android.server.EventLogTags;
 import com.android.server.power.BatterySaverStateMachineProto;
+import com.android.server.power.PowerManagerService;
 
 import java.io.PrintWriter;
+import java.time.Duration;
 
 /**
  * Decides when to enable / disable battery saver.
@@ -94,6 +98,9 @@ public class BatterySaverStateMachine {
     private static final String TAG = "BatterySaverStateMachine";
     private static final String DYNAMIC_MODE_NOTIF_CHANNEL_ID = "dynamic_mode_notification";
     private static final String BATTERY_SAVER_NOTIF_CHANNEL_ID = "battery_saver_channel";
+    private static final String EXTRA_FRAGMENT_ARG_KEY = ":settings:fragment_args_key";
+    private static final String EXTRA_SHOW_FRAGMENT_TITLE = ":settings:show_fragment_args";
+    private static final String PREFERENCE_KEY_BATTERY_SAVER_SCHEDULER = "battery_saver_schedule";
     private static final int DYNAMIC_MODE_NOTIFICATION_ID = 1992;
     private static final int STICKY_AUTO_DISABLED_NOTIFICATION_ID = 1993;
     private final Object mLock;
@@ -104,6 +111,8 @@ public class BatterySaverStateMachine {
 
     /** Turn off adaptive battery saver if the device has charged above this level. */
     private static final int ADAPTIVE_AUTO_DISABLE_BATTERY_LEVEL = 80;
+
+    private static final long STICKY_DISABLED_NOTIFY_TIMEOUT_MS = Duration.ofHours(12).toMillis();
 
     private static final int STATE_OFF = BatterySaverStateMachineProto.STATE_OFF;
 
@@ -161,6 +170,9 @@ public class BatterySaverStateMachine {
 
     /** Config flag to track if battery saver's sticky behaviour is disabled. */
     private final boolean mBatterySaverStickyBehaviourDisabled;
+
+    /** Config flag to track if "Battery Saver turned off" notification is enabled. */
+    private final boolean mBatterySaverTurnedOffNotificationEnabled;
 
     /**
      * Whether or not to end sticky battery saver upon reaching a level specified by
@@ -245,8 +257,28 @@ public class BatterySaverStateMachine {
 
         mBatterySaverStickyBehaviourDisabled = mContext.getResources().getBoolean(
                 com.android.internal.R.bool.config_batterySaverStickyBehaviourDisabled);
+        mBatterySaverTurnedOffNotificationEnabled = mContext.getResources().getBoolean(
+                com.android.internal.R.bool.config_batterySaverTurnedOffNotificationEnabled);
         mDynamicPowerSavingsDefaultDisableThreshold = mContext.getResources().getInteger(
                 com.android.internal.R.integer.config_dynamicPowerSavingsDefaultDisableThreshold);
+    }
+
+    /**
+     * Called by {@link PowerManagerService} on system ready, *with no lock held*.
+     */
+    public void systemReady() {
+        mBatterySaverController.systemReady();
+        getBatterySaverPolicy().systemReady();
+    }
+
+    /** @return Battery saver controller. */
+    public BatterySaverController getBatterySaverController() {
+        return mBatterySaverController;
+    }
+
+    /** @return Battery saver policy. */
+    public BatterySaverPolicy getBatterySaverPolicy() {
+        return mBatterySaverController.getBatterySaverPolicy();
     }
 
     /** @return true if the automatic percentage based mode should be used */
@@ -497,6 +529,33 @@ public class BatterySaverStateMachine {
             mIsBatteryLevelLow = newBatteryLevelLow;
 
             doAutoBatterySaverLocked();
+        }
+    }
+
+    /**
+     * Change the full battery saver policy.
+     */
+    public BatterySaverPolicyConfig getFullBatterySaverPolicy() {
+        if (DEBUG) {
+            Slog.d(TAG, "getFullBatterySaverPolicy");
+        }
+
+        synchronized (mLock) {
+            return mBatterySaverController.getPolicyLocked(BatterySaverPolicy.POLICY_LEVEL_FULL);
+        }
+    }
+
+    /**
+     * Change the full battery saver policy.
+     */
+    public boolean setFullBatterySaverPolicy(BatterySaverPolicyConfig config) {
+        if (DEBUG) {
+            Slog.d(TAG, "setFullBatterySaverPolicy: config=" + config);
+        }
+
+        synchronized (mLock) {
+            return mBatterySaverController.setFullPolicyLocked(config,
+                    BatterySaverController.REASON_FULL_POWER_SAVINGS_CHANGED);
         }
     }
 
@@ -774,8 +833,13 @@ public class BatterySaverStateMachine {
         mBatterySaverController.enableBatterySaver(enable, intReason);
 
         // Handle triggering the notification to show/hide when appropriate
-        if (intReason == BatterySaverController.REASON_DYNAMIC_POWER_SAVINGS_AUTOMATIC_ON) {
-            triggerDynamicModeNotification();
+        if (intReason == BatterySaverController.REASON_DYNAMIC_POWER_SAVINGS_AUTOMATIC_ON
+                || intReason == BatterySaverController.REASON_PERCENTAGE_AUTOMATIC_ON) {
+            if (Flags.updateAutoTurnOnNotificationStringAndAction()) {
+                triggerDynamicModeNotificationV2();
+            } else {
+                triggerDynamicModeNotification();
+            }
         } else if (!enable) {
             hideDynamicModeNotification();
         }
@@ -800,13 +864,41 @@ public class BatterySaverStateMachine {
                     buildNotification(DYNAMIC_MODE_NOTIF_CHANNEL_ID,
                             R.string.dynamic_mode_notification_title,
                             R.string.dynamic_mode_notification_summary,
-                            Intent.ACTION_POWER_USAGE_SUMMARY),
+                            Settings.ACTION_BATTERY_SAVER_SETTINGS, 0L),
+                    UserHandle.ALL);
+        });
+    }
+
+    @VisibleForTesting
+    void triggerDynamicModeNotificationV2() {
+        // The current lock is the PowerManager lock, which sits very low in the service lock
+        // hierarchy. We shouldn't call out to NotificationManager with the PowerManager lock.
+        runOnBgThread(() -> {
+            NotificationManager manager = mContext.getSystemService(NotificationManager.class);
+            ensureNotificationChannelExists(manager, DYNAMIC_MODE_NOTIF_CHANNEL_ID,
+                    R.string.dynamic_mode_notification_channel_name);
+
+            // The bundle is used for highlighting a settings item when launching the settings page.
+            final var highlightBundle = new Bundle(1 /* capacity */);
+            highlightBundle.putString(
+                    EXTRA_FRAGMENT_ARG_KEY, PREFERENCE_KEY_BATTERY_SAVER_SCHEDULER);
+
+            manager.notifyAsUser(TAG, DYNAMIC_MODE_NOTIFICATION_ID,
+                    buildNotificationV2(DYNAMIC_MODE_NOTIF_CHANNEL_ID,
+                            R.string.dynamic_mode_notification_title_v2,
+                            R.string.dynamic_mode_notification_summary_v2,
+                            Settings.ACTION_BATTERY_SAVER_SETTINGS,
+                            0L /* timeoutMs */,
+                            highlightBundle),
                     UserHandle.ALL);
         });
     }
 
     @VisibleForTesting
     void triggerStickyDisabledNotification() {
+        if (!mBatterySaverTurnedOffNotificationEnabled) {
+            return;
+        }
         // The current lock is the PowerManager lock, which sits very low in the service lock
         // hierarchy. We shouldn't call out to NotificationManager with the PowerManager lock.
         runOnBgThread(() -> {
@@ -818,7 +910,8 @@ public class BatterySaverStateMachine {
                     buildNotification(BATTERY_SAVER_NOTIF_CHANNEL_ID,
                             R.string.battery_saver_off_notification_title,
                             R.string.battery_saver_charged_notification_summary,
-                            Settings.ACTION_BATTERY_SAVER_SETTINGS),
+                            Settings.ACTION_BATTERY_SAVER_SETTINGS,
+                            STICKY_DISABLED_NOTIFY_TIMEOUT_MS),
                     UserHandle.ALL);
         });
     }
@@ -833,7 +926,7 @@ public class BatterySaverStateMachine {
     }
 
     private Notification buildNotification(@NonNull String channelId, @StringRes int titleId,
-            @StringRes int summaryId, @NonNull String intentAction) {
+            @StringRes int summaryId, @NonNull String intentAction, long timeoutMs) {
         Resources res = mContext.getResources();
         Intent intent = new Intent(intentAction);
         intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
@@ -851,6 +944,33 @@ public class BatterySaverStateMachine {
                 .setStyle(new Notification.BigTextStyle().bigText(summary))
                 .setOnlyAlertOnce(true)
                 .setAutoCancel(true)
+                .setTimeoutAfter(timeoutMs)
+                .build();
+    }
+
+    private Notification buildNotificationV2(@NonNull String channelId, @StringRes int titleId,
+            @StringRes int summaryId, @NonNull String intentAction, long timeoutMs,
+            @NonNull Bundle highlightBundle) {
+        Resources res = mContext.getResources();
+        Intent intent = new Intent(intentAction)
+                .setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK)
+                .putExtra(EXTRA_SHOW_FRAGMENT_TITLE, highlightBundle);
+
+        PendingIntent batterySaverIntent = PendingIntent.getActivity(
+                mContext, 0 /* requestCode */, intent,
+                PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
+        final String title = res.getString(titleId);
+        final String summary = res.getString(summaryId);
+
+        return new Notification.Builder(mContext, channelId)
+                .setSmallIcon(R.drawable.ic_battery)
+                .setContentTitle(title)
+                .setContentText(summary)
+                .setContentIntent(batterySaverIntent)
+                .setStyle(new Notification.BigTextStyle().bigText(summary))
+                .setOnlyAlertOnce(true)
+                .setAutoCancel(true)
+                .setTimeoutAfter(timeoutMs)
                 .build();
     }
 
@@ -888,70 +1008,76 @@ public class BatterySaverStateMachine {
     }
 
     public void dump(PrintWriter pw) {
+        final IndentingPrintWriter ipw = new IndentingPrintWriter(pw, "  ");
+
+        ipw.println();
+        ipw.println("Battery saver state machine:");
+        ipw.increaseIndent();
         synchronized (mLock) {
-            pw.println();
-            pw.println("Battery saver state machine:");
-
-            pw.print("  Enabled=");
-            pw.println(mBatterySaverController.isEnabled());
-            pw.print("    full=");
-            pw.println(mBatterySaverController.isFullEnabled());
-            pw.print("    adaptive=");
-            pw.print(mBatterySaverController.isAdaptiveEnabled());
+            ipw.print("Enabled=");
+            ipw.println(mBatterySaverController.isEnabled());
+            ipw.increaseIndent();
+            ipw.print("full=");
+            ipw.println(mBatterySaverController.isFullEnabled());
+            ipw.print("adaptive=");
+            ipw.print(mBatterySaverController.isAdaptiveEnabled());
             if (mBatterySaverController.isAdaptiveEnabled()) {
-                pw.print(" (advertise=");
-                pw.print(
-                        mBatterySaverController.getBatterySaverPolicy().shouldAdvertiseIsEnabled());
-                pw.print(")");
+                ipw.print(" (advertise=");
+                ipw.print(getBatterySaverPolicy().shouldAdvertiseIsEnabled());
+                ipw.print(")");
             }
-            pw.println();
-            pw.print("  mState=");
-            pw.println(mState);
+            ipw.decreaseIndent();
+            ipw.println();
+            ipw.print("mState=");
+            ipw.println(mState);
 
-            pw.print("  mLastChangedIntReason=");
-            pw.println(mLastChangedIntReason);
-            pw.print("  mLastChangedStrReason=");
-            pw.println(mLastChangedStrReason);
+            ipw.print("mLastChangedIntReason=");
+            ipw.println(mLastChangedIntReason);
+            ipw.print("mLastChangedStrReason=");
+            ipw.println(mLastChangedStrReason);
 
-            pw.print("  mBootCompleted=");
-            pw.println(mBootCompleted);
-            pw.print("  mSettingsLoaded=");
-            pw.println(mSettingsLoaded);
-            pw.print("  mBatteryStatusSet=");
-            pw.println(mBatteryStatusSet);
+            ipw.print("mBootCompleted=");
+            ipw.println(mBootCompleted);
+            ipw.print("mSettingsLoaded=");
+            ipw.println(mSettingsLoaded);
+            ipw.print("mBatteryStatusSet=");
+            ipw.println(mBatteryStatusSet);
 
-            pw.print("  mIsPowered=");
-            pw.println(mIsPowered);
-            pw.print("  mBatteryLevel=");
-            pw.println(mBatteryLevel);
-            pw.print("  mIsBatteryLevelLow=");
-            pw.println(mIsBatteryLevelLow);
+            ipw.print("mIsPowered=");
+            ipw.println(mIsPowered);
+            ipw.print("mBatteryLevel=");
+            ipw.println(mBatteryLevel);
+            ipw.print("mIsBatteryLevelLow=");
+            ipw.println(mIsBatteryLevelLow);
 
-            pw.print("  mSettingAutomaticBatterySaver=");
-            pw.println(mSettingAutomaticBatterySaver);
-            pw.print("  mSettingBatterySaverEnabled=");
-            pw.println(mSettingBatterySaverEnabled);
-            pw.print("  mSettingBatterySaverEnabledSticky=");
-            pw.println(mSettingBatterySaverEnabledSticky);
-            pw.print("  mSettingBatterySaverStickyAutoDisableEnabled=");
-            pw.println(mSettingBatterySaverStickyAutoDisableEnabled);
-            pw.print("  mSettingBatterySaverStickyAutoDisableThreshold=");
-            pw.println(mSettingBatterySaverStickyAutoDisableThreshold);
-            pw.print("  mSettingBatterySaverTriggerThreshold=");
-            pw.println(mSettingBatterySaverTriggerThreshold);
-            pw.print("  mBatterySaverStickyBehaviourDisabled=");
-            pw.println(mBatterySaverStickyBehaviourDisabled);
+            ipw.print("mSettingAutomaticBatterySaver=");
+            ipw.println(mSettingAutomaticBatterySaver);
+            ipw.print("mSettingBatterySaverEnabled=");
+            ipw.println(mSettingBatterySaverEnabled);
+            ipw.print("mSettingBatterySaverEnabledSticky=");
+            ipw.println(mSettingBatterySaverEnabledSticky);
+            ipw.print("mSettingBatterySaverStickyAutoDisableEnabled=");
+            ipw.println(mSettingBatterySaverStickyAutoDisableEnabled);
+            ipw.print("mSettingBatterySaverStickyAutoDisableThreshold=");
+            ipw.println(mSettingBatterySaverStickyAutoDisableThreshold);
+            ipw.print("mSettingBatterySaverTriggerThreshold=");
+            ipw.println(mSettingBatterySaverTriggerThreshold);
+            ipw.print("mBatterySaverStickyBehaviourDisabled=");
+            ipw.println(mBatterySaverStickyBehaviourDisabled);
+            ipw.print("mBatterySaverTurnedOffNotificationEnabled=");
+            ipw.println(mBatterySaverTurnedOffNotificationEnabled);
 
-            pw.print("  mDynamicPowerSavingsDefaultDisableThreshold=");
-            pw.println(mDynamicPowerSavingsDefaultDisableThreshold);
-            pw.print("  mDynamicPowerSavingsDisableThreshold=");
-            pw.println(mDynamicPowerSavingsDisableThreshold);
-            pw.print("  mDynamicPowerSavingsEnableBatterySaver=");
-            pw.println(mDynamicPowerSavingsEnableBatterySaver);
+            ipw.print("mDynamicPowerSavingsDefaultDisableThreshold=");
+            ipw.println(mDynamicPowerSavingsDefaultDisableThreshold);
+            ipw.print("mDynamicPowerSavingsDisableThreshold=");
+            ipw.println(mDynamicPowerSavingsDisableThreshold);
+            ipw.print("mDynamicPowerSavingsEnableBatterySaver=");
+            ipw.println(mDynamicPowerSavingsEnableBatterySaver);
 
-            pw.print("  mLastAdaptiveBatterySaverChangedExternallyElapsed=");
-            pw.println(mLastAdaptiveBatterySaverChangedExternallyElapsed);
+            ipw.print("mLastAdaptiveBatterySaverChangedExternallyElapsed=");
+            ipw.println(mLastAdaptiveBatterySaverChangedExternallyElapsed);
         }
+        ipw.decreaseIndent();
     }
 
     public void dumpProto(ProtoOutputStream proto, long tag) {
@@ -966,7 +1092,7 @@ public class BatterySaverStateMachine {
             proto.write(BatterySaverStateMachineProto.IS_ADAPTIVE_ENABLED,
                     mBatterySaverController.isAdaptiveEnabled());
             proto.write(BatterySaverStateMachineProto.SHOULD_ADVERTISE_IS_ENABLED,
-                    mBatterySaverController.getBatterySaverPolicy().shouldAdvertiseIsEnabled());
+                    getBatterySaverPolicy().shouldAdvertiseIsEnabled());
 
             proto.write(BatterySaverStateMachineProto.BOOT_COMPLETED, mBootCompleted);
             proto.write(BatterySaverStateMachineProto.SETTINGS_LOADED, mSettingsLoaded);

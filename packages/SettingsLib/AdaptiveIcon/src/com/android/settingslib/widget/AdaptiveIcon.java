@@ -32,6 +32,7 @@ import android.util.Log;
 import androidx.annotation.VisibleForTesting;
 
 import com.android.settingslib.drawer.Tile;
+import com.android.settingslib.widget.adaptiveicon.R;
 
 /**
  * Adaptive icon that can set background color
@@ -45,12 +46,15 @@ public class AdaptiveIcon extends LayerDrawable {
     private AdaptiveConstantState mAdaptiveConstantState;
 
     public AdaptiveIcon(Context context, Drawable foreground) {
+        this(context, foreground, R.dimen.dashboard_tile_foreground_image_inset);
+    }
+
+    public AdaptiveIcon(Context context, Drawable foreground, int insetResId) {
         super(new Drawable[]{
                 new AdaptiveIconShapeDrawable(context.getResources()),
                 foreground
         });
-        final int insetPx = context.getResources()
-                .getDimensionPixelSize(R.dimen.dashboard_tile_foreground_image_inset);
+        final int insetPx = context.getResources().getDimensionPixelSize(insetResId);
         setLayerInset(1 /* index */, insetPx, insetPx, insetPx, insetPx);
         mAdaptiveConstantState = new AdaptiveConstantState(context, foreground);
     }

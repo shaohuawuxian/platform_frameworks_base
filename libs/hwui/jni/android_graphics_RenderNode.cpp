@@ -15,18 +15,17 @@
  */
 
 #define ATRACE_TAG ATRACE_TAG_VIEW
-#include "GraphicsJNI.h"
-
 #include <Animator.h>
 #include <DamageAccumulator.h>
 #include <Matrix.h>
 #include <RenderNode.h>
-#ifdef __ANDROID__ // Layoutlib does not support CanvasContext
-#include <renderthread/CanvasContext.h>
-#endif
 #include <TreeInfo.h>
+#include <effects/StretchEffect.h>
+#include <gui/TraceUtils.h>
 #include <hwui/Paint.h>
-#include <utils/TraceUtils.h>
+#include <renderthread/CanvasContext.h>
+
+#include "GraphicsJNI.h"
 
 namespace android {
 
@@ -76,11 +75,9 @@ static jlong android_view_RenderNode_getNativeFinalizer(JNIEnv* env,
     return static_cast<jlong>(reinterpret_cast<uintptr_t>(&releaseRenderNode));
 }
 
-static void android_view_RenderNode_setDisplayList(JNIEnv* env,
-        jobject clazz, jlong renderNodePtr, jlong displayListPtr) {
+static void android_view_RenderNode_discardDisplayList(CRITICAL_JNI_PARAMS_COMMA jlong renderNodePtr) {
     RenderNode* renderNode = reinterpret_cast<RenderNode*>(renderNodePtr);
-    DisplayList* newData = reinterpret_cast<DisplayList*>(displayListPtr);
-    renderNode->setStagingDisplayList(newData);
+    renderNode->discardStagingDisplayList();
 }
 
 static jboolean android_view_RenderNode_isValid(CRITICAL_JNI_PARAMS_COMMA jlong renderNodePtr) {
@@ -168,6 +165,29 @@ static jboolean android_view_RenderNode_setOutlineNone(CRITICAL_JNI_PARAMS_COMMA
     return true;
 }
 
+static jboolean android_view_RenderNode_clearStretch(CRITICAL_JNI_PARAMS_COMMA jlong renderNodePtr) {
+    RenderNode* renderNode = reinterpret_cast<RenderNode*>(renderNodePtr);
+    auto& stretch = renderNode->mutateStagingProperties()
+            .mutateLayerProperties().mutableStretchEffect();
+    if (stretch.isEmpty()) {
+        return false;
+    }
+    stretch.setEmpty();
+    renderNode->setPropertyFieldsDirty(RenderNode::GENERIC);
+    return true;
+}
+
+static jboolean android_view_RenderNode_stretch(CRITICAL_JNI_PARAMS_COMMA jlong renderNodePtr,
+                                                jfloat vX, jfloat vY, jfloat maxX,
+                                                jfloat maxY) {
+    auto* renderNode = reinterpret_cast<RenderNode*>(renderNodePtr);
+    StretchEffect effect = StretchEffect({.fX = vX, .fY = vY}, maxX, maxY);
+    renderNode->mutateStagingProperties().mutateLayerProperties().mutableStretchEffect().mergeWith(
+            effect);
+    renderNode->setPropertyFieldsDirty(RenderNode::GENERIC);
+    return true;
+}
+
 static jboolean android_view_RenderNode_hasShadow(CRITICAL_JNI_PARAMS_COMMA jlong renderNodePtr) {
     RenderNode* renderNode = reinterpret_cast<RenderNode*>(renderNodePtr);
     return renderNode->stagingProperties().hasShadow();
@@ -213,6 +233,19 @@ static jboolean android_view_RenderNode_setRevealClip(CRITICAL_JNI_PARAMS_COMMA 
 
 static jboolean android_view_RenderNode_setAlpha(CRITICAL_JNI_PARAMS_COMMA jlong renderNodePtr, float alpha) {
     return SET_AND_DIRTY(setAlpha, alpha, RenderNode::ALPHA);
+}
+
+static jboolean android_view_RenderNode_setRenderEffect(CRITICAL_JNI_PARAMS_COMMA jlong renderNodePtr,
+        jlong renderEffectPtr) {
+    SkImageFilter* imageFilter = reinterpret_cast<SkImageFilter*>(renderEffectPtr);
+    return SET_AND_DIRTY(mutateLayerProperties().setImageFilter, imageFilter, RenderNode::GENERIC);
+}
+
+static jboolean android_view_RenderNode_setBackdropRenderEffect(
+        CRITICAL_JNI_PARAMS_COMMA jlong renderNodePtr, jlong renderEffectPtr) {
+    SkImageFilter* imageFilter = reinterpret_cast<SkImageFilter*>(renderEffectPtr);
+    return SET_AND_DIRTY(mutateLayerProperties().setBackdropImageFilter, imageFilter,
+                         RenderNode::GENERIC);
 }
 
 static jboolean android_view_RenderNode_setHasOverlappingRendering(CRITICAL_JNI_PARAMS_COMMA jlong renderNodePtr,
@@ -498,6 +531,11 @@ static jlong android_view_RenderNode_getUniqueId(CRITICAL_JNI_PARAMS_COMMA jlong
     return reinterpret_cast<RenderNode*>(renderNodePtr)->uniqueId();
 }
 
+static void android_view_RenderNode_setIsTextureView(
+        CRITICAL_JNI_PARAMS_COMMA jlong renderNodePtr) {
+    reinterpret_cast<RenderNode*>(renderNodePtr)->setIsTextureView();
+}
+
 // ----------------------------------------------------------------------------
 // RenderProperties - Animations
 // ----------------------------------------------------------------------------
@@ -515,12 +553,23 @@ static void android_view_RenderNode_endAllAnimators(JNIEnv* env, jobject clazz,
     renderNode->animators().endAllStagingAnimators();
 }
 
+static void android_view_RenderNode_forceEndAnimators(JNIEnv* env, jobject clazz,
+                                                      jlong renderNodePtr) {
+    RenderNode* renderNode = reinterpret_cast<RenderNode*>(renderNodePtr);
+    renderNode->animators().forceEndAnimators();
+}
+
 // ----------------------------------------------------------------------------
 // SurfaceView position callback
 // ----------------------------------------------------------------------------
 
-jmethodID gPositionListener_PositionChangedMethod;
-jmethodID gPositionListener_PositionLostMethod;
+struct {
+    jclass clazz;
+    jmethodID callPositionChanged;
+    jmethodID callPositionChanged2;
+    jmethodID callApplyStretch;
+    jmethodID callPositionLost;
+} gPositionListener;
 
 static void android_view_RenderNode_requestPositionUpdates(JNIEnv* env, jobject,
         jlong renderNodePtr, jobject listener) {
@@ -528,24 +577,50 @@ static void android_view_RenderNode_requestPositionUpdates(JNIEnv* env, jobject,
     public:
         PositionListenerTrampoline(JNIEnv* env, jobject listener) {
             env->GetJavaVM(&mVm);
-            mWeakRef = env->NewWeakGlobalRef(listener);
+            mListener = env->NewGlobalRef(listener);
         }
 
         virtual ~PositionListenerTrampoline() {
-            jnienv()->DeleteWeakGlobalRef(mWeakRef);
-            mWeakRef = nullptr;
+            jnienv()->DeleteGlobalRef(mListener);
+            mListener = nullptr;
         }
 
         virtual void onPositionUpdated(RenderNode& node, const TreeInfo& info) override {
-            if (CC_UNLIKELY(!mWeakRef || !info.updateWindowPositions)) return;
+            if (CC_UNLIKELY(!mListener || !info.updateWindowPositions)) return;
+
+            const RenderProperties& props = node.properties();
+            const bool enableClip = Properties::clipSurfaceViews;
 
             Matrix4 transform;
-            info.damageAccumulator->computeCurrentTransform(&transform);
-            const RenderProperties& props = node.properties();
+            SkIRect clipBounds;
+            if (enableClip) {
+                uirenderer::Rect initialClipBounds;
+                const auto clipFlags = props.getClippingFlags();
+                if (clipFlags) {
+                    props.getClippingRectForFlags(clipFlags, &initialClipBounds);
+                } else {
+                    // Works for RenderNode::damageSelf()
+                    initialClipBounds.set(DIRTY_MIN, DIRTY_MIN, DIRTY_MAX, DIRTY_MAX);
+                }
+                clipBounds =
+                        info.damageAccumulator
+                                ->computeClipAndTransform(initialClipBounds.toSkRect(), &transform)
+                                .roundOut();
+            } else {
+                info.damageAccumulator->computeCurrentTransform(&transform);
+            }
+            bool useStretchShader =
+                    Properties::getStretchEffectBehavior() != StretchEffectBehavior::UniformScale;
+            // Compute the transform bounds first before calculating the stretch
             uirenderer::Rect bounds(props.getWidth(), props.getHeight());
             transform.mapRect(bounds);
 
-            if (CC_LIKELY(transform.isPureTranslate())) {
+            bool hasStretch = useStretchShader && info.stretchEffectCount;
+            if (hasStretch) {
+                handleStretchEffect(info, bounds);
+            }
+
+            if (CC_LIKELY(transform.isPureTranslate()) && !hasStretch) {
                 // snap/round the computed bounds, so they match the rounding behavior
                 // of the clear done in SurfaceView#draw().
                 bounds.snapGeometryToPixelBoundaries(false);
@@ -555,25 +630,46 @@ static void android_view_RenderNode_requestPositionUpdates(JNIEnv* env, jobject,
                 bounds.roundOut();
             }
 
-            if (mPreviousPosition == bounds) {
+            if (mPreviousPosition == bounds && mPreviousClip == clipBounds) {
                 return;
             }
             mPreviousPosition = bounds;
+            mPreviousClip = clipBounds;
 
-#ifdef __ANDROID__ // Layoutlib does not support CanvasContext
-            incStrong(0);
-            auto functor = std::bind(
-                std::mem_fn(&PositionListenerTrampoline::doUpdatePositionAsync), this,
-                (jlong) info.canvasContext.getFrameNumber(),
-                (jint) bounds.left, (jint) bounds.top,
-                (jint) bounds.right, (jint) bounds.bottom);
+            ATRACE_NAME("Update SurfaceView position");
 
-            info.canvasContext.enqueueFrameWork(std::move(functor));
-#endif
+            JNIEnv* env = jnienv();
+            // Update the new position synchronously. We cannot defer this to
+            // a worker pool to process asynchronously because the UI thread
+            // may be unblocked by the time a worker thread can process this,
+            // In particular if the app removes a view from the view tree before
+            // this callback is dispatched, then we lose the position
+            // information for this frame.
+            jboolean keepListening;
+            if (!enableClip) {
+                keepListening = env->CallStaticBooleanMethod(
+                        gPositionListener.clazz, gPositionListener.callPositionChanged, mListener,
+                        static_cast<jlong>(info.canvasContext.getFrameNumber()),
+                        static_cast<jint>(bounds.left), static_cast<jint>(bounds.top),
+                        static_cast<jint>(bounds.right), static_cast<jint>(bounds.bottom));
+            } else {
+                keepListening = env->CallStaticBooleanMethod(
+                        gPositionListener.clazz, gPositionListener.callPositionChanged2, mListener,
+                        static_cast<jlong>(info.canvasContext.getFrameNumber()),
+                        static_cast<jint>(bounds.left), static_cast<jint>(bounds.top),
+                        static_cast<jint>(bounds.right), static_cast<jint>(bounds.bottom),
+                        static_cast<jint>(clipBounds.fLeft), static_cast<jint>(clipBounds.fTop),
+                        static_cast<jint>(clipBounds.fRight),
+                        static_cast<jint>(clipBounds.fBottom));
+            }
+            if (!keepListening) {
+                env->DeleteGlobalRef(mListener);
+                mListener = nullptr;
+            }
         }
 
         virtual void onPositionLost(RenderNode& node, const TreeInfo* info) override {
-            if (CC_UNLIKELY(!mWeakRef || (info && !info->updateWindowPositions))) return;
+            if (CC_UNLIKELY(!mListener || (info && !info->updateWindowPositions))) return;
 
             if (mPreviousPosition.isEmpty()) {
                 return;
@@ -582,18 +678,21 @@ static void android_view_RenderNode_requestPositionUpdates(JNIEnv* env, jobject,
 
             ATRACE_NAME("SurfaceView position lost");
             JNIEnv* env = jnienv();
-            jobject localref = env->NewLocalRef(mWeakRef);
-            if (CC_UNLIKELY(!localref)) {
-                jnienv()->DeleteWeakGlobalRef(mWeakRef);
-                mWeakRef = nullptr;
-                return;
-            }
-#ifdef __ANDROID__ // Layoutlib does not support CanvasContext
-            // TODO: Remember why this is synchronous and then make a comment
-            env->CallVoidMethod(localref, gPositionListener_PositionLostMethod,
+            // Update the lost position synchronously. We cannot defer this to
+            // a worker pool to process asynchronously because the UI thread
+            // may be unblocked by the time a worker thread can process this,
+            // In particular if a view's rendernode is readded to the scene
+            // before this callback is dispatched, then we report that we lost
+            // position information on the wrong frame, which can be problematic
+            // for views like SurfaceView which rely on RenderNode callbacks
+            // for driving visibility.
+            jboolean keepListening = env->CallStaticBooleanMethod(
+                    gPositionListener.clazz, gPositionListener.callPositionLost, mListener,
                     info ? info->canvasContext.getFrameNumber() : 0);
-#endif
-            env->DeleteLocalRef(localref);
+            if (!keepListening) {
+                env->DeleteGlobalRef(mListener);
+                mListener = nullptr;
+            }
         }
 
     private:
@@ -605,28 +704,64 @@ static void android_view_RenderNode_requestPositionUpdates(JNIEnv* env, jobject,
             return env;
         }
 
-        void doUpdatePositionAsync(jlong frameNumber, jint left, jint top,
-                jint right, jint bottom) {
-            ATRACE_NAME("Update SurfaceView position");
+        void handleStretchEffect(const TreeInfo& info, uirenderer::Rect& targetBounds) {
+            // Search up to find the nearest stretcheffect parent
+            const DamageAccumulator::StretchResult result =
+                info.damageAccumulator->findNearestStretchEffect();
+            const StretchEffect* effect = result.stretchEffect;
+            if (effect) {
+                // Compute the number of pixels that the stretching container
+                // scales by.
+                // Then compute the scale factor that the child would need
+                // to scale in order to occupy the same pixel bounds.
+                auto& parentBounds = result.parentBounds;
+                auto parentWidth = parentBounds.width();
+                auto parentHeight = parentBounds.height();
+                auto& stretchDirection = effect->getStretchDirection();
+                auto stretchX = stretchDirection.x();
+                auto stretchY = stretchDirection.y();
+                auto stretchXPixels = parentWidth * std::abs(stretchX);
+                auto stretchYPixels = parentHeight * std::abs(stretchY);
+                SkMatrix stretchMatrix;
 
-            JNIEnv* env = jnienv();
-            jobject localref = env->NewLocalRef(mWeakRef);
-            if (CC_UNLIKELY(!localref)) {
-                env->DeleteWeakGlobalRef(mWeakRef);
-                mWeakRef = nullptr;
+                auto childScaleX = 1 + (stretchXPixels / targetBounds.getWidth());
+                auto childScaleY = 1 + (stretchYPixels / targetBounds.getHeight());
+                auto pivotX = stretchX > 0 ? targetBounds.left : targetBounds.right;
+                auto pivotY = stretchY > 0 ? targetBounds.top : targetBounds.bottom;
+                stretchMatrix.setScale(childScaleX, childScaleY, pivotX, pivotY);
+                SkRect rect = SkRect::MakeLTRB(targetBounds.left, targetBounds.top,
+                                               targetBounds.right, targetBounds.bottom);
+                SkRect dst = stretchMatrix.mapRect(rect);
+                targetBounds.left = dst.left();
+                targetBounds.top = dst.top();
+                targetBounds.right = dst.right();
+                targetBounds.bottom = dst.bottom();
             } else {
-                env->CallVoidMethod(localref, gPositionListener_PositionChangedMethod,
-                        frameNumber, left, top, right, bottom);
-                env->DeleteLocalRef(localref);
+                return;
             }
 
-            // We need to release ourselves here
-            decStrong(0);
+            if (Properties::getStretchEffectBehavior() ==
+                StretchEffectBehavior::Shader) {
+                JNIEnv* env = jnienv();
+
+                SkVector stretchDirection = effect->getStretchDirection();
+                jboolean keepListening = env->CallStaticBooleanMethod(
+                        gPositionListener.clazz, gPositionListener.callApplyStretch, mListener,
+                        info.canvasContext.getFrameNumber(), result.width, result.height,
+                        stretchDirection.fX, stretchDirection.fY, effect->maxStretchAmountX,
+                        effect->maxStretchAmountY, targetBounds.left, targetBounds.top,
+                        targetBounds.right, targetBounds.bottom);
+                if (!keepListening) {
+                    env->DeleteGlobalRef(mListener);
+                    mListener = nullptr;
+                }
+            }
         }
 
         JavaVM* mVm;
-        jobject mWeakRef;
+        jobject mListener;
         uirenderer::Rect mPreviousPosition;
+        uirenderer::Rect mPreviousClip;
     };
 
     RenderNode* renderNode = reinterpret_cast<RenderNode*>(renderNodePtr);
@@ -640,118 +775,127 @@ static void android_view_RenderNode_requestPositionUpdates(JNIEnv* env, jobject,
 const char* const kClassPathName = "android/graphics/RenderNode";
 
 static const JNINativeMethod gMethods[] = {
-// ----------------------------------------------------------------------------
-// Regular JNI
-// ----------------------------------------------------------------------------
-    { "nCreate",               "(Ljava/lang/String;)J", (void*) android_view_RenderNode_create },
-    { "nGetNativeFinalizer",   "()J",    (void*) android_view_RenderNode_getNativeFinalizer },
-    { "nOutput",               "(J)V",    (void*) android_view_RenderNode_output },
-    { "nGetUsageSize",         "(J)I",    (void*) android_view_RenderNode_getUsageSize },
-    { "nGetAllocatedSize",         "(J)I",    (void*) android_view_RenderNode_getAllocatedSize },
-    { "nAddAnimator",              "(JJ)V", (void*) android_view_RenderNode_addAnimator },
-    { "nEndAllAnimators",          "(J)V", (void*) android_view_RenderNode_endAllAnimators },
-    { "nRequestPositionUpdates",   "(JLandroid/graphics/RenderNode$PositionUpdateListener;)V", (void*) android_view_RenderNode_requestPositionUpdates },
-    { "nSetDisplayList",       "(JJ)V",   (void*) android_view_RenderNode_setDisplayList },
+        // ----------------------------------------------------------------------------
+        // Regular JNI
+        // ----------------------------------------------------------------------------
+        {"nCreate", "(Ljava/lang/String;)J", (void*)android_view_RenderNode_create},
+        {"nGetNativeFinalizer", "()J", (void*)android_view_RenderNode_getNativeFinalizer},
+        {"nOutput", "(J)V", (void*)android_view_RenderNode_output},
+        {"nGetUsageSize", "(J)I", (void*)android_view_RenderNode_getUsageSize},
+        {"nGetAllocatedSize", "(J)I", (void*)android_view_RenderNode_getAllocatedSize},
+        {"nAddAnimator", "(JJ)V", (void*)android_view_RenderNode_addAnimator},
+        {"nEndAllAnimators", "(J)V", (void*)android_view_RenderNode_endAllAnimators},
+        {"nForceEndAnimators", "(J)V", (void*)android_view_RenderNode_forceEndAnimators},
+        {"nRequestPositionUpdates", "(JLjava/lang/ref/WeakReference;)V",
+         (void*)android_view_RenderNode_requestPositionUpdates},
 
+        // ----------------------------------------------------------------------------
+        // Critical JNI via @CriticalNative annotation in RenderNode.java
+        // ----------------------------------------------------------------------------
+        {"nDiscardDisplayList", "(J)V", (void*)android_view_RenderNode_discardDisplayList},
+        {"nIsValid", "(J)Z", (void*)android_view_RenderNode_isValid},
+        {"nSetLayerType", "(JI)Z", (void*)android_view_RenderNode_setLayerType},
+        {"nGetLayerType", "(J)I", (void*)android_view_RenderNode_getLayerType},
+        {"nSetLayerPaint", "(JJ)Z", (void*)android_view_RenderNode_setLayerPaint},
+        {"nSetStaticMatrix", "(JJ)Z", (void*)android_view_RenderNode_setStaticMatrix},
+        {"nSetAnimationMatrix", "(JJ)Z", (void*)android_view_RenderNode_setAnimationMatrix},
+        {"nGetAnimationMatrix", "(JJ)Z", (void*)android_view_RenderNode_getAnimationMatrix},
+        {"nSetClipToBounds", "(JZ)Z", (void*)android_view_RenderNode_setClipToBounds},
+        {"nGetClipToBounds", "(J)Z", (void*)android_view_RenderNode_getClipToBounds},
+        {"nSetClipBounds", "(JIIII)Z", (void*)android_view_RenderNode_setClipBounds},
+        {"nSetClipBoundsEmpty", "(J)Z", (void*)android_view_RenderNode_setClipBoundsEmpty},
+        {"nSetProjectBackwards", "(JZ)Z", (void*)android_view_RenderNode_setProjectBackwards},
+        {"nSetProjectionReceiver", "(JZ)Z", (void*)android_view_RenderNode_setProjectionReceiver},
 
-// ----------------------------------------------------------------------------
-// Fast JNI via @CriticalNative annotation in RenderNode.java
-// ----------------------------------------------------------------------------
-    { "nSetDisplayList",       "(JJ)V",   (void*) android_view_RenderNode_setDisplayList },
+        {"nSetOutlineRoundRect", "(JIIIIFF)Z", (void*)android_view_RenderNode_setOutlineRoundRect},
+        {"nSetOutlinePath", "(JJF)Z", (void*)android_view_RenderNode_setOutlinePath},
+        {"nSetOutlineEmpty", "(J)Z", (void*)android_view_RenderNode_setOutlineEmpty},
+        {"nSetOutlineNone", "(J)Z", (void*)android_view_RenderNode_setOutlineNone},
+        {"nClearStretch", "(J)Z", (void*)android_view_RenderNode_clearStretch},
+        {"nStretch", "(JFFFF)Z", (void*)android_view_RenderNode_stretch},
+        {"nHasShadow", "(J)Z", (void*)android_view_RenderNode_hasShadow},
+        {"nSetSpotShadowColor", "(JI)Z", (void*)android_view_RenderNode_setSpotShadowColor},
+        {"nGetSpotShadowColor", "(J)I", (void*)android_view_RenderNode_getSpotShadowColor},
+        {"nSetAmbientShadowColor", "(JI)Z", (void*)android_view_RenderNode_setAmbientShadowColor},
+        {"nGetAmbientShadowColor", "(J)I", (void*)android_view_RenderNode_getAmbientShadowColor},
+        {"nSetClipToOutline", "(JZ)Z", (void*)android_view_RenderNode_setClipToOutline},
+        {"nSetRevealClip", "(JZFFF)Z", (void*)android_view_RenderNode_setRevealClip},
 
+        {"nSetAlpha", "(JF)Z", (void*)android_view_RenderNode_setAlpha},
+        {"nSetRenderEffect", "(JJ)Z", (void*)android_view_RenderNode_setRenderEffect},
+        {"nSetBackdropRenderEffect", "(JJ)Z",
+         (void*)android_view_RenderNode_setBackdropRenderEffect},
+        {"nSetHasOverlappingRendering", "(JZ)Z",
+         (void*)android_view_RenderNode_setHasOverlappingRendering},
+        {"nSetUsageHint", "(JI)V", (void*)android_view_RenderNode_setUsageHint},
+        {"nSetElevation", "(JF)Z", (void*)android_view_RenderNode_setElevation},
+        {"nSetTranslationX", "(JF)Z", (void*)android_view_RenderNode_setTranslationX},
+        {"nSetTranslationY", "(JF)Z", (void*)android_view_RenderNode_setTranslationY},
+        {"nSetTranslationZ", "(JF)Z", (void*)android_view_RenderNode_setTranslationZ},
+        {"nSetRotation", "(JF)Z", (void*)android_view_RenderNode_setRotation},
+        {"nSetRotationX", "(JF)Z", (void*)android_view_RenderNode_setRotationX},
+        {"nSetRotationY", "(JF)Z", (void*)android_view_RenderNode_setRotationY},
+        {"nSetScaleX", "(JF)Z", (void*)android_view_RenderNode_setScaleX},
+        {"nSetScaleY", "(JF)Z", (void*)android_view_RenderNode_setScaleY},
+        {"nSetPivotX", "(JF)Z", (void*)android_view_RenderNode_setPivotX},
+        {"nSetPivotY", "(JF)Z", (void*)android_view_RenderNode_setPivotY},
+        {"nResetPivot", "(J)Z", (void*)android_view_RenderNode_resetPivot},
+        {"nSetCameraDistance", "(JF)Z", (void*)android_view_RenderNode_setCameraDistance},
+        {"nSetLeft", "(JI)Z", (void*)android_view_RenderNode_setLeft},
+        {"nSetTop", "(JI)Z", (void*)android_view_RenderNode_setTop},
+        {"nSetRight", "(JI)Z", (void*)android_view_RenderNode_setRight},
+        {"nSetBottom", "(JI)Z", (void*)android_view_RenderNode_setBottom},
+        {"nGetLeft", "(J)I", (void*)android_view_RenderNode_getLeft},
+        {"nGetTop", "(J)I", (void*)android_view_RenderNode_getTop},
+        {"nGetRight", "(J)I", (void*)android_view_RenderNode_getRight},
+        {"nGetBottom", "(J)I", (void*)android_view_RenderNode_getBottom},
+        {"nSetLeftTopRightBottom", "(JIIII)Z",
+         (void*)android_view_RenderNode_setLeftTopRightBottom},
+        {"nOffsetLeftAndRight", "(JI)Z", (void*)android_view_RenderNode_offsetLeftAndRight},
+        {"nOffsetTopAndBottom", "(JI)Z", (void*)android_view_RenderNode_offsetTopAndBottom},
 
-// ----------------------------------------------------------------------------
-// Critical JNI via @CriticalNative annotation in RenderNode.java
-// ----------------------------------------------------------------------------
-    { "nIsValid",              "(J)Z",   (void*) android_view_RenderNode_isValid },
-    { "nSetLayerType",         "(JI)Z",  (void*) android_view_RenderNode_setLayerType },
-    { "nGetLayerType",         "(J)I",   (void*) android_view_RenderNode_getLayerType },
-    { "nSetLayerPaint",        "(JJ)Z",  (void*) android_view_RenderNode_setLayerPaint },
-    { "nSetStaticMatrix",      "(JJ)Z",  (void*) android_view_RenderNode_setStaticMatrix },
-    { "nSetAnimationMatrix",   "(JJ)Z",  (void*) android_view_RenderNode_setAnimationMatrix },
-    { "nGetAnimationMatrix",   "(JJ)Z",  (void*) android_view_RenderNode_getAnimationMatrix },
-    { "nSetClipToBounds",      "(JZ)Z",  (void*) android_view_RenderNode_setClipToBounds },
-    { "nGetClipToBounds",      "(J)Z",   (void*) android_view_RenderNode_getClipToBounds },
-    { "nSetClipBounds",        "(JIIII)Z", (void*) android_view_RenderNode_setClipBounds },
-    { "nSetClipBoundsEmpty",   "(J)Z",   (void*) android_view_RenderNode_setClipBoundsEmpty },
-    { "nSetProjectBackwards",  "(JZ)Z",  (void*) android_view_RenderNode_setProjectBackwards },
-    { "nSetProjectionReceiver","(JZ)Z",  (void*) android_view_RenderNode_setProjectionReceiver },
+        {"nHasOverlappingRendering", "(J)Z",
+         (void*)android_view_RenderNode_hasOverlappingRendering},
+        {"nGetClipToOutline", "(J)Z", (void*)android_view_RenderNode_getClipToOutline},
+        {"nGetAlpha", "(J)F", (void*)android_view_RenderNode_getAlpha},
+        {"nGetCameraDistance", "(J)F", (void*)android_view_RenderNode_getCameraDistance},
+        {"nGetScaleX", "(J)F", (void*)android_view_RenderNode_getScaleX},
+        {"nGetScaleY", "(J)F", (void*)android_view_RenderNode_getScaleY},
+        {"nGetElevation", "(J)F", (void*)android_view_RenderNode_getElevation},
+        {"nGetTranslationX", "(J)F", (void*)android_view_RenderNode_getTranslationX},
+        {"nGetTranslationY", "(J)F", (void*)android_view_RenderNode_getTranslationY},
+        {"nGetTranslationZ", "(J)F", (void*)android_view_RenderNode_getTranslationZ},
+        {"nGetRotation", "(J)F", (void*)android_view_RenderNode_getRotation},
+        {"nGetRotationX", "(J)F", (void*)android_view_RenderNode_getRotationX},
+        {"nGetRotationY", "(J)F", (void*)android_view_RenderNode_getRotationY},
+        {"nIsPivotExplicitlySet", "(J)Z", (void*)android_view_RenderNode_isPivotExplicitlySet},
+        {"nHasIdentityMatrix", "(J)Z", (void*)android_view_RenderNode_hasIdentityMatrix},
 
-    { "nSetOutlineRoundRect",  "(JIIIIFF)Z", (void*) android_view_RenderNode_setOutlineRoundRect },
-    { "nSetOutlinePath",       "(JJF)Z", (void*) android_view_RenderNode_setOutlinePath },
-    { "nSetOutlineEmpty",      "(J)Z",   (void*) android_view_RenderNode_setOutlineEmpty },
-    { "nSetOutlineNone",       "(J)Z",   (void*) android_view_RenderNode_setOutlineNone },
-    { "nHasShadow",            "(J)Z",   (void*) android_view_RenderNode_hasShadow },
-    { "nSetSpotShadowColor",   "(JI)Z",  (void*) android_view_RenderNode_setSpotShadowColor },
-    { "nGetSpotShadowColor",   "(J)I",   (void*) android_view_RenderNode_getSpotShadowColor },
-    { "nSetAmbientShadowColor","(JI)Z",  (void*) android_view_RenderNode_setAmbientShadowColor },
-    { "nGetAmbientShadowColor","(J)I",   (void*) android_view_RenderNode_getAmbientShadowColor },
-    { "nSetClipToOutline",     "(JZ)Z",  (void*) android_view_RenderNode_setClipToOutline },
-    { "nSetRevealClip",        "(JZFFF)Z", (void*) android_view_RenderNode_setRevealClip },
+        {"nGetTransformMatrix", "(JJ)V", (void*)android_view_RenderNode_getTransformMatrix},
+        {"nGetInverseTransformMatrix", "(JJ)V",
+         (void*)android_view_RenderNode_getInverseTransformMatrix},
 
-    { "nSetAlpha",             "(JF)Z",  (void*) android_view_RenderNode_setAlpha },
-    { "nSetHasOverlappingRendering", "(JZ)Z",
-            (void*) android_view_RenderNode_setHasOverlappingRendering },
-    { "nSetUsageHint",    "(JI)V", (void*) android_view_RenderNode_setUsageHint },
-    { "nSetElevation",         "(JF)Z",  (void*) android_view_RenderNode_setElevation },
-    { "nSetTranslationX",      "(JF)Z",  (void*) android_view_RenderNode_setTranslationX },
-    { "nSetTranslationY",      "(JF)Z",  (void*) android_view_RenderNode_setTranslationY },
-    { "nSetTranslationZ",      "(JF)Z",  (void*) android_view_RenderNode_setTranslationZ },
-    { "nSetRotation",          "(JF)Z",  (void*) android_view_RenderNode_setRotation },
-    { "nSetRotationX",         "(JF)Z",  (void*) android_view_RenderNode_setRotationX },
-    { "nSetRotationY",         "(JF)Z",  (void*) android_view_RenderNode_setRotationY },
-    { "nSetScaleX",            "(JF)Z",  (void*) android_view_RenderNode_setScaleX },
-    { "nSetScaleY",            "(JF)Z",  (void*) android_view_RenderNode_setScaleY },
-    { "nSetPivotX",            "(JF)Z",  (void*) android_view_RenderNode_setPivotX },
-    { "nSetPivotY",            "(JF)Z",  (void*) android_view_RenderNode_setPivotY },
-    { "nResetPivot",           "(J)Z",   (void*) android_view_RenderNode_resetPivot },
-    { "nSetCameraDistance",    "(JF)Z",  (void*) android_view_RenderNode_setCameraDistance },
-    { "nSetLeft",              "(JI)Z",  (void*) android_view_RenderNode_setLeft },
-    { "nSetTop",               "(JI)Z",  (void*) android_view_RenderNode_setTop },
-    { "nSetRight",             "(JI)Z",  (void*) android_view_RenderNode_setRight },
-    { "nSetBottom",            "(JI)Z",  (void*) android_view_RenderNode_setBottom },
-    { "nGetLeft",              "(J)I",  (void*) android_view_RenderNode_getLeft },
-    { "nGetTop",               "(J)I",  (void*) android_view_RenderNode_getTop },
-    { "nGetRight",             "(J)I",  (void*) android_view_RenderNode_getRight },
-    { "nGetBottom",            "(J)I",  (void*) android_view_RenderNode_getBottom },
-    { "nSetLeftTopRightBottom","(JIIII)Z", (void*) android_view_RenderNode_setLeftTopRightBottom },
-    { "nOffsetLeftAndRight",   "(JI)Z",  (void*) android_view_RenderNode_offsetLeftAndRight },
-    { "nOffsetTopAndBottom",   "(JI)Z",  (void*) android_view_RenderNode_offsetTopAndBottom },
-
-    { "nHasOverlappingRendering", "(J)Z",  (void*) android_view_RenderNode_hasOverlappingRendering },
-    { "nGetClipToOutline",        "(J)Z",  (void*) android_view_RenderNode_getClipToOutline },
-    { "nGetAlpha",                "(J)F",  (void*) android_view_RenderNode_getAlpha },
-    { "nGetCameraDistance",       "(J)F",  (void*) android_view_RenderNode_getCameraDistance },
-    { "nGetScaleX",               "(J)F",  (void*) android_view_RenderNode_getScaleX },
-    { "nGetScaleY",               "(J)F",  (void*) android_view_RenderNode_getScaleY },
-    { "nGetElevation",            "(J)F",  (void*) android_view_RenderNode_getElevation },
-    { "nGetTranslationX",         "(J)F",  (void*) android_view_RenderNode_getTranslationX },
-    { "nGetTranslationY",         "(J)F",  (void*) android_view_RenderNode_getTranslationY },
-    { "nGetTranslationZ",         "(J)F",  (void*) android_view_RenderNode_getTranslationZ },
-    { "nGetRotation",             "(J)F",  (void*) android_view_RenderNode_getRotation },
-    { "nGetRotationX",            "(J)F",  (void*) android_view_RenderNode_getRotationX },
-    { "nGetRotationY",            "(J)F",  (void*) android_view_RenderNode_getRotationY },
-    { "nIsPivotExplicitlySet",    "(J)Z",  (void*) android_view_RenderNode_isPivotExplicitlySet },
-    { "nHasIdentityMatrix",       "(J)Z",  (void*) android_view_RenderNode_hasIdentityMatrix },
-
-    { "nGetTransformMatrix",       "(JJ)V", (void*) android_view_RenderNode_getTransformMatrix },
-    { "nGetInverseTransformMatrix","(JJ)V", (void*) android_view_RenderNode_getInverseTransformMatrix },
-
-    { "nGetPivotX",                "(J)F",  (void*) android_view_RenderNode_getPivotX },
-    { "nGetPivotY",                "(J)F",  (void*) android_view_RenderNode_getPivotY },
-    { "nGetWidth",                 "(J)I",  (void*) android_view_RenderNode_getWidth },
-    { "nGetHeight",                "(J)I",  (void*) android_view_RenderNode_getHeight },
-    { "nSetAllowForceDark",        "(JZ)Z", (void*) android_view_RenderNode_setAllowForceDark },
-    { "nGetAllowForceDark",        "(J)Z",  (void*) android_view_RenderNode_getAllowForceDark },
-    { "nGetUniqueId",              "(J)J",  (void*) android_view_RenderNode_getUniqueId },
+        {"nGetPivotX", "(J)F", (void*)android_view_RenderNode_getPivotX},
+        {"nGetPivotY", "(J)F", (void*)android_view_RenderNode_getPivotY},
+        {"nGetWidth", "(J)I", (void*)android_view_RenderNode_getWidth},
+        {"nGetHeight", "(J)I", (void*)android_view_RenderNode_getHeight},
+        {"nSetAllowForceDark", "(JZ)Z", (void*)android_view_RenderNode_setAllowForceDark},
+        {"nGetAllowForceDark", "(J)Z", (void*)android_view_RenderNode_getAllowForceDark},
+        {"nGetUniqueId", "(J)J", (void*)android_view_RenderNode_getUniqueId},
+        {"nSetIsTextureView", "(J)V", (void*)android_view_RenderNode_setIsTextureView},
 };
 
 int register_android_view_RenderNode(JNIEnv* env) {
     jclass clazz = FindClassOrDie(env, "android/graphics/RenderNode$PositionUpdateListener");
-    gPositionListener_PositionChangedMethod = GetMethodIDOrDie(env, clazz,
-            "positionChanged", "(JIIII)V");
-    gPositionListener_PositionLostMethod = GetMethodIDOrDie(env, clazz,
-            "positionLost", "(J)V");
+    gPositionListener.clazz = MakeGlobalRefOrDie(env, clazz);
+    gPositionListener.callPositionChanged = GetStaticMethodIDOrDie(
+            env, clazz, "callPositionChanged", "(Ljava/lang/ref/WeakReference;JIIII)Z");
+    gPositionListener.callPositionChanged2 = GetStaticMethodIDOrDie(
+            env, clazz, "callPositionChanged2", "(Ljava/lang/ref/WeakReference;JIIIIIIII)Z");
+    gPositionListener.callApplyStretch = GetStaticMethodIDOrDie(
+            env, clazz, "callApplyStretch", "(Ljava/lang/ref/WeakReference;JFFFFFFFFFF)Z");
+    gPositionListener.callPositionLost = GetStaticMethodIDOrDie(
+            env, clazz, "callPositionLost", "(Ljava/lang/ref/WeakReference;J)Z");
     return RegisterMethodsOrDie(env, kClassPathName, gMethods, NELEM(gMethods));
 }
 

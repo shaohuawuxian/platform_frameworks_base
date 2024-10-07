@@ -238,7 +238,7 @@ class FileInfo(
                     } else if (classBounds.isDataclass) {
 
                         // Insert placeholder for generated code to be inserted for the 1st time
-                        chunks.last = (chunks.last as Code)
+                        chunks[chunks.lastIndex] = (chunks.last() as Code)
                                 .lines
                                 .dropLastWhile { it.isBlank() }
                                 .run {
@@ -272,7 +272,7 @@ class FileInfo(
         /** Debug info */
         fun summary(): String = when(this) {
             is Code -> "${javaClass.simpleName}(${lines.size} lines): ${lines.getOrNull(0)?.take(70) ?: ""}..."
-            is DataClass -> "DataClass ${ast.nameAsString}:\n" +
+            is DataClass -> "DataClass ${ast.nameAsString} nested:${ast.nestedTypes.map { it.nameAsString }}:\n" +
                     chunks.joinToString("\n") { it.summary() } +
                     "\n//end ${ast.nameAsString}"
         }

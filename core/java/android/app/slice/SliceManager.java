@@ -41,6 +41,7 @@ import android.os.RemoteException;
 import android.os.ServiceManager;
 import android.os.ServiceManager.ServiceNotFoundException;
 import android.os.UserHandle;
+import android.text.TextUtils;
 import android.util.ArraySet;
 import android.util.Log;
 
@@ -58,7 +59,12 @@ import java.util.Set;
  * Class to handle interactions with {@link Slice}s.
  * <p>
  * The SliceManager manages permissions and pinned state for slices.
+ * @deprecated Slice framework has been deprecated, it will not receive any updates from
+ *          {@link android.os.Build.VANILLA_ICE_CREAM} and forward. If you are looking for a
+ *          framework that sends displayable data from one app to another, consider using
+ *          {@link android.app.appsearch.AppSearchManager}.
  */
+@Deprecated
 @SystemService(Context.SLICE_SERVICE)
 public class SliceManager {
 
@@ -140,15 +146,6 @@ public class SliceManager {
     }
 
     /**
-     * @deprecated TO BE REMOVED
-     * @removed
-     */
-    @Deprecated
-    public void pinSlice(@NonNull Uri uri, @NonNull List<SliceSpec> specs) {
-        pinSlice(uri, new ArraySet<>(specs));
-    }
-
-    /**
      * Remove a pin for a slice.
      * <p>
      * If the slice has no other pins/callbacks then the slice will be unpinned.
@@ -223,10 +220,15 @@ public class SliceManager {
     public @NonNull Collection<Uri> getSliceDescendants(@NonNull Uri uri) {
         ContentResolver resolver = mContext.getContentResolver();
         try (ContentProviderClient provider = resolver.acquireUnstableContentProviderClient(uri)) {
-            Bundle extras = new Bundle();
-            extras.putParcelable(SliceProvider.EXTRA_BIND_URI, uri);
-            final Bundle res = provider.call(SliceProvider.METHOD_GET_DESCENDANTS, null, extras);
-            return res.getParcelableArrayList(SliceProvider.EXTRA_SLICE_DESCENDANTS);
+            if (provider == null) {
+                Log.w(TAG, TextUtils.formatSimple("Unknown URI: %s", uri));
+            } else {
+                Bundle extras = new Bundle();
+                extras.putParcelable(SliceProvider.EXTRA_BIND_URI, uri);
+                final Bundle res = provider.call(
+                        SliceProvider.METHOD_GET_DESCENDANTS, null, extras);
+                return res.getParcelableArrayList(SliceProvider.EXTRA_SLICE_DESCENDANTS, android.net.Uri.class);
+            }
         } catch (RemoteException e) {
             Log.e(TAG, "Unable to get slice descendants", e);
         }
@@ -258,21 +260,12 @@ public class SliceManager {
             if (res == null) {
                 return null;
             }
-            return res.getParcelable(SliceProvider.EXTRA_SLICE);
+            return res.getParcelable(SliceProvider.EXTRA_SLICE, android.app.slice.Slice.class);
         } catch (RemoteException e) {
             // Arbitrary and not worth documenting, as Activity
             // Manager will kill this process shortly anyway.
             return null;
         }
-    }
-
-    /**
-     * @deprecated TO BE REMOVED
-     * @removed
-     */
-    @Deprecated
-    public @Nullable Slice bindSlice(@NonNull Uri uri, @NonNull List<SliceSpec> supportedSpecs) {
-        return bindSlice(uri, new ArraySet<>(supportedSpecs));
     }
 
     /**
@@ -317,7 +310,7 @@ public class SliceManager {
             if (res == null) {
                 return null;
             }
-            return res.getParcelable(SliceProvider.EXTRA_SLICE);
+            return res.getParcelable(SliceProvider.EXTRA_SLICE, android.net.Uri.class);
         } catch (RemoteException e) {
             // Arbitrary and not worth documenting, as Activity
             // Manager will kill this process shortly anyway.
@@ -397,23 +390,12 @@ public class SliceManager {
             if (res == null) {
                 return null;
             }
-            return res.getParcelable(SliceProvider.EXTRA_SLICE);
+            return res.getParcelable(SliceProvider.EXTRA_SLICE, android.app.slice.Slice.class);
         } catch (RemoteException e) {
             // Arbitrary and not worth documenting, as Activity
             // Manager will kill this process shortly anyway.
             return null;
         }
-    }
-
-    /**
-     * @deprecated TO BE REMOVED.
-     * @removed
-     */
-    @Deprecated
-    @Nullable
-    public Slice bindSlice(@NonNull Intent intent,
-            @NonNull List<SliceSpec> supportedSpecs) {
-        return bindSlice(intent, new ArraySet<>(supportedSpecs));
     }
 
     /**
@@ -433,8 +415,8 @@ public class SliceManager {
      */
     public @PermissionResult int checkSlicePermission(@NonNull Uri uri, int pid, int uid) {
         try {
-            return mService.checkSlicePermission(uri, mContext.getPackageName(), null, pid, uid,
-                    null);
+            return mService.checkSlicePermission(uri, mContext.getPackageName(), pid, uid,
+                    null /* autoGrantPermissions */);
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }
@@ -482,17 +464,13 @@ public class SliceManager {
      * Does the permission check to see if a caller has access to a specific slice.
      * @hide
      */
-    public void enforceSlicePermission(Uri uri, String pkg, int pid, int uid,
-            String[] autoGrantPermissions) {
+    public void enforceSlicePermission(Uri uri, int pid, int uid, String[] autoGrantPermissions) {
         try {
             if (UserHandle.isSameApp(uid, Process.myUid())) {
                 return;
             }
-            if (pkg == null) {
-                throw new SecurityException("No pkg specified");
-            }
-            int result = mService.checkSlicePermission(uri, mContext.getPackageName(), pkg, pid,
-                    uid, autoGrantPermissions);
+            int result = mService.checkSlicePermission(uri, mContext.getPackageName(), pid, uid,
+                    autoGrantPermissions);
             if (result == PERMISSION_DENIED) {
                 throw new SecurityException("User " + uid + " does not have slice permission for "
                         + uri + ".");

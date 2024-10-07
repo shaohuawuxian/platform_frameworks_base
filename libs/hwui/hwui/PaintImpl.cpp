@@ -15,6 +15,7 @@
  */
 
 #include "Paint.h"
+#include "BlurDrawLooper.h"
 
 namespace android {
 
@@ -43,10 +44,11 @@ Paint::Paint(const Paint& paint)
         , mHyphenEdit(paint.mHyphenEdit)
         , mTypeface(paint.mTypeface)
         , mAlign(paint.mAlign)
+        , mFilterBitmap(paint.mFilterBitmap)
         , mStrikeThru(paint.mStrikeThru)
         , mUnderline(paint.mUnderline)
-        , mDevKern(paint.mDevKern) {}
-
+        , mDevKern(paint.mDevKern)
+        , mRunFlag(paint.mRunFlag) {}
 
 Paint::~Paint() {}
 
@@ -62,23 +64,23 @@ Paint& Paint::operator=(const Paint& other) {
     mHyphenEdit = other.mHyphenEdit;
     mTypeface = other.mTypeface;
     mAlign = other.mAlign;
+    mFilterBitmap = other.mFilterBitmap;
     mStrikeThru = other.mStrikeThru;
     mUnderline = other.mUnderline;
     mDevKern = other.mDevKern;
+    mRunFlag = other.mRunFlag;
     return *this;
 }
 
 bool operator==(const Paint& a, const Paint& b) {
-    return static_cast<const SkPaint&>(a) == static_cast<const SkPaint&>(b) &&
-           a.mFont == b.mFont &&
-           a.mLooper == b.mLooper && 
-           a.mLetterSpacing == b.mLetterSpacing && a.mWordSpacing == b.mWordSpacing &&
-           a.mFontFeatureSettings == b.mFontFeatureSettings &&
+    return static_cast<const SkPaint&>(a) == static_cast<const SkPaint&>(b) && a.mFont == b.mFont &&
+           a.mLooper == b.mLooper && a.mLetterSpacing == b.mLetterSpacing &&
+           a.mWordSpacing == b.mWordSpacing && a.mFontFeatureSettings == b.mFontFeatureSettings &&
            a.mMinikinLocaleListId == b.mMinikinLocaleListId &&
            a.mFamilyVariant == b.mFamilyVariant && a.mHyphenEdit == b.mHyphenEdit &&
            a.mTypeface == b.mTypeface && a.mAlign == b.mAlign &&
-           a.mStrikeThru == b.mStrikeThru && a.mUnderline == b.mUnderline &&
-           a.mDevKern == b.mDevKern;
+           a.mFilterBitmap == b.mFilterBitmap && a.mStrikeThru == b.mStrikeThru &&
+           a.mUnderline == b.mUnderline && a.mDevKern == b.mDevKern && a.mRunFlag == b.mRunFlag;
 }
 
 void Paint::reset() {
@@ -88,9 +90,15 @@ void Paint::reset() {
     mFont.setEdging(SkFont::Edging::kAlias);
     mLooper.reset();
 
+    mFilterBitmap = false;
     mStrikeThru = false;
     mUnderline = false;
     mDevKern = false;
+    mRunFlag = minikin::RunFlag::NONE;
+}
+
+void Paint::setLooper(sk_sp<BlurDrawLooper> looper) {
+    mLooper = std::move(looper);
 }
 
 void Paint::setAntiAlias(bool aa) {
@@ -124,6 +132,8 @@ static const uint32_t sForceAutoHinting = 0x800;
 // flags related to minikin::Paint
 static const uint32_t sUnderlineFlag    = 0x08;
 static const uint32_t sStrikeThruFlag   = 0x10;
+static const uint32_t sTextRunLeftEdge = 0x2000;
+static const uint32_t sTextRunRightEdge = 0x4000;
 // flags no longer supported on native side (but mirrored for compatibility)
 static const uint32_t sDevKernFlag      = 0x100;
 
@@ -131,9 +141,6 @@ static uint32_t paintToLegacyFlags(const SkPaint& paint) {
     uint32_t flags = 0;
     flags |= -(int)paint.isAntiAlias() & sAntiAliasFlag;
     flags |= -(int)paint.isDither()    & sDitherFlag;
-    if (paint.getFilterQuality() != kNone_SkFilterQuality) {
-        flags |= sFilterBitmapFlag;
-    }
     return flags;
 }
 
@@ -150,12 +157,6 @@ static uint32_t fontToLegacyFlags(const SkFont& font) {
 static void applyLegacyFlagsToPaint(uint32_t flags, SkPaint* paint) {
     paint->setAntiAlias((flags & sAntiAliasFlag) != 0);
     paint->setDither   ((flags & sDitherFlag) != 0);
-
-    if (flags & sFilterBitmapFlag) {
-        paint->setFilterQuality(kLow_SkFilterQuality);
-    } else {
-        paint->setFilterQuality(kNone_SkFilterQuality);
-    }
 }
 
 static void applyLegacyFlagsToFont(uint32_t flags, SkFont* font) {
@@ -182,18 +183,35 @@ void Paint::SetSkPaintJavaFlags(SkPaint* paint, uint32_t flags) {
 
 uint32_t Paint::getJavaFlags() const {
     uint32_t flags = paintToLegacyFlags(*this) | fontToLegacyFlags(mFont);
-    flags |= -(int)mStrikeThru & sStrikeThruFlag;
-    flags |= -(int)mUnderline  & sUnderlineFlag;
-    flags |= -(int)mDevKern    & sDevKernFlag;
+    flags |= -(int)mStrikeThru   & sStrikeThruFlag;
+    flags |= -(int)mUnderline    & sUnderlineFlag;
+    flags |= -(int)mDevKern      & sDevKernFlag;
+    flags |= -(int)mFilterBitmap & sFilterBitmapFlag;
+    if (mRunFlag & minikin::RunFlag::LEFT_EDGE) {
+        flags |= sTextRunLeftEdge;
+    }
+    if (mRunFlag & minikin::RunFlag::RIGHT_EDGE) {
+        flags |= sTextRunRightEdge;
+    }
     return flags;
 }
 
 void Paint::setJavaFlags(uint32_t flags) {
     applyLegacyFlagsToPaint(flags, this);
     applyLegacyFlagsToFont(flags, &mFont);
-    mStrikeThru = (flags & sStrikeThruFlag) != 0;
-    mUnderline  = (flags & sUnderlineFlag) != 0;
-    mDevKern    = (flags & sDevKernFlag) != 0;
+    mStrikeThru   = (flags & sStrikeThruFlag) != 0;
+    mUnderline    = (flags & sUnderlineFlag) != 0;
+    mDevKern      = (flags & sDevKernFlag) != 0;
+    mFilterBitmap = (flags & sFilterBitmapFlag) != 0;
+
+    std::underlying_type<minikin::RunFlag>::type rawFlag = minikin::RunFlag::NONE;
+    if (flags & sTextRunLeftEdge) {
+        rawFlag |= minikin::RunFlag::LEFT_EDGE;
+    }
+    if (flags & sTextRunRightEdge) {
+        rawFlag |= minikin::RunFlag::RIGHT_EDGE;
+    }
+    mRunFlag = static_cast<minikin::RunFlag>(rawFlag);
 }
 
 }  // namespace android

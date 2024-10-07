@@ -26,20 +26,26 @@ android_test {
     srcs: ["src/**/*.java"],
     data: [":bugreport_artifacts"],
     libs: [
-        "android.test.runner",
-        "android.test.base",
+        "android.test.runner.stubs.test",
+        "android.test.base.stubs.test",
     ],
     static_libs: [
         "androidx.test.rules",
         "androidx.test.uiautomator_uiautomator",
-        "truth-prebuilt",
+        "truth",
     ],
     test_suites: ["general-tests"],
     sdk_version: "test_current",
-    platform_apis: true,
 }
 
 filegroup {
     name: "bugreport_artifacts",
     srcs: ["config/test-sysconfig.xml"],
+}
+
+test_module_config {
+    name: "BugreportManagerTestCases_android_server_os",
+    base: "BugreportManagerTestCases",
+    test_suites: ["general-tests"],
+    exclude_annotations: ["androidx.test.filters.LargeTest"],
 }

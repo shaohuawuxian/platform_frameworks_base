@@ -150,6 +150,7 @@ interface IContentService {
     SyncAdapterType[] getSyncAdapterTypesAsUser(int userId);
 
     String[] getSyncAdapterPackagesForAuthorityAsUser(String authority, int userId);
+    String getSyncAdapterPackageAsUser(String accountType, String authority, int userId);
 
     /**
      * Returns true if there is currently a operation for the given account/authority or service
@@ -159,6 +160,7 @@ interface IContentService {
      * @param cname component to identify sync service, must be null if account/providerName are
      * non-null.
      */
+    @EnforcePermission("READ_SYNC_STATS")
     @UnsupportedAppUsage(maxTargetSdk = 30, trackingBug = 170729553)
     boolean isSyncActive(in Account account, String authority, in ComponentName cname);
 
@@ -182,6 +184,7 @@ interface IContentService {
      * non-null.
      */
     boolean isSyncPending(in Account account, String authority, in ComponentName cname);
+    @EnforcePermission("READ_SYNC_STATS")
     boolean isSyncPendingAsUser(in Account account, String authority, in ComponentName cname,
             int userId);
 

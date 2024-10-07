@@ -19,16 +19,22 @@ package com.android.server.media;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.content.ComponentName;
+import android.media.MediaRoute2Info;
 import android.media.MediaRoute2ProviderInfo;
+import android.media.MediaRouter2;
+import android.media.MediaRouter2Utils;
 import android.media.RouteDiscoveryPreference;
 import android.media.RoutingSessionInfo;
 import android.os.Bundle;
+import android.os.UserHandle;
 
 import com.android.internal.annotations.GuardedBy;
 
+import java.io.PrintWriter;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 
 abstract class MediaRoute2Provider {
     final ComponentName mComponentName;
@@ -47,22 +53,40 @@ abstract class MediaRoute2Provider {
         mUniqueId = componentName.flattenToShortString();
     }
 
-    public void setCallback(MediaRoute2ProviderServiceProxy.Callback callback) {
+    public void setCallback(Callback callback) {
         mCallback = callback;
     }
 
-    public abstract void requestCreateSession(long requestId, String packageName, String routeId,
-            @Nullable Bundle sessionHints);
+    public abstract void requestCreateSession(
+            long requestId,
+            String packageName,
+            String routeOriginalId,
+            @Nullable Bundle sessionHints,
+            @RoutingSessionInfo.TransferReason int transferReason,
+            @NonNull UserHandle transferInitiatorUserHandle,
+            @NonNull String transferInitiatorPackageName);
+
     public abstract void releaseSession(long requestId, String sessionId);
-    public abstract void updateDiscoveryPreference(RouteDiscoveryPreference discoveryPreference);
+
+    public abstract void updateDiscoveryPreference(
+            Set<String> activelyScanningPackages, RouteDiscoveryPreference discoveryPreference);
 
     public abstract void selectRoute(long requestId, String sessionId, String routeId);
     public abstract void deselectRoute(long requestId, String sessionId, String routeId);
-    public abstract void transferToRoute(long requestId, String sessionId, String routeId);
 
-    public abstract void setRouteVolume(long requestId, String routeId, int volume);
-    public abstract void setSessionVolume(long requestId, String sessionId, int volume);
-    public abstract void prepareReleaseSession(@NonNull String sessionId);
+    public abstract void transferToRoute(
+            long requestId,
+            @NonNull UserHandle transferInitiatorUserHandle,
+            @NonNull String transferInitiatorPackageName,
+            String sessionOriginalId,
+            String routeOriginalId,
+            @RoutingSessionInfo.TransferReason int transferReason);
+
+    public abstract void setRouteVolume(long requestId, String routeOriginalId, int volume);
+
+    public abstract void setSessionVolume(long requestId, String sessionOriginalId, int volume);
+
+    public abstract void prepareReleaseSession(@NonNull String sessionUniqueId);
 
     @NonNull
     public String getUniqueId() {
@@ -86,7 +110,7 @@ abstract class MediaRoute2Provider {
             mProviderInfo = null;
         } else {
             mProviderInfo = new MediaRoute2ProviderInfo.Builder(providerInfo)
-                    .setUniqueId(mUniqueId)
+                    .setUniqueId(mComponentName.getPackageName(), mUniqueId)
                     .setSystemRouteProvider(mIsSystemRouteProvider)
                     .build();
         }
@@ -108,6 +132,40 @@ abstract class MediaRoute2Provider {
                 && mComponentName.getClassName().equals(className);
     }
 
+    public void dump(PrintWriter pw, String prefix) {
+        pw.println(prefix + getDebugString());
+        prefix += "  ";
+
+        if (mProviderInfo == null) {
+            pw.println(prefix + "<provider info not received, yet>");
+        } else if (mProviderInfo.getRoutes().isEmpty()) {
+            pw.println(prefix + "<provider info has no routes>");
+        } else {
+            for (MediaRoute2Info route : mProviderInfo.getRoutes()) {
+                pw.printf("%s%s | %s\n", prefix, route.getId(), route.getName());
+            }
+        }
+
+        pw.println(prefix + "Active routing sessions:");
+        synchronized (mLock) {
+            if (mSessionInfos.isEmpty()) {
+                pw.println(prefix + "  <no active routing sessions>");
+            } else {
+                for (RoutingSessionInfo routingSessionInfo : mSessionInfos) {
+                    routingSessionInfo.dump(pw, prefix + "  ");
+                }
+            }
+        }
+    }
+
+    @Override
+    public String toString() {
+        return getDebugString();
+    }
+
+    /** Returns a human-readable string describing the instance, for debugging purposes. */
+    protected abstract String getDebugString();
+
     public interface Callback {
         void onProviderStateChanged(@Nullable MediaRoute2Provider provider);
         void onSessionCreated(@NonNull MediaRoute2Provider provider,
@@ -117,5 +175,75 @@ abstract class MediaRoute2Provider {
         void onSessionReleased(@NonNull MediaRoute2Provider provider,
                 @NonNull RoutingSessionInfo sessionInfo);
         void onRequestFailed(@NonNull MediaRoute2Provider provider, long requestId, int reason);
+    }
+
+    /**
+     * Holds session creation or transfer initiation information for a transfer in flight.
+     *
+     * <p>The initiator app is typically also the {@link RoutingSessionInfo#getClientPackageName()
+     * client app}, with the exception of the {@link MediaRouter2#getSystemController() system
+     * routing session} which is exceptional in that it's shared among all apps.
+     *
+     * <p>For the system routing session, the initiator app is the one that programmatically
+     * triggered the transfer (for example, via {@link MediaRouter2#transferTo}), or the target app
+     * of the proxy router that did the transfer.
+     *
+     * @see MediaRouter2.RoutingController#wasTransferInitiatedBySelf()
+     * @see RoutingSessionInfo#getTransferInitiatorPackageName()
+     * @see RoutingSessionInfo#getTransferInitiatorUserHandle()
+     */
+    protected static class SessionCreationOrTransferRequest {
+
+        /**
+         * The id of the request, or {@link
+         * android.media.MediaRoute2ProviderService#REQUEST_ID_NONE} if unknown.
+         */
+        public final long mRequestId;
+
+        /** The {@link MediaRoute2Info#getOriginalId()} original id} of the target route. */
+        @NonNull public final String mTargetOriginalRouteId;
+
+        @RoutingSessionInfo.TransferReason public final int mTransferReason;
+
+        /** The {@link android.os.UserHandle} on which the initiator app is running. */
+        @NonNull public final UserHandle mTransferInitiatorUserHandle;
+
+        @NonNull public final String mTransferInitiatorPackageName;
+
+        SessionCreationOrTransferRequest(
+                long requestId,
+                @NonNull String targetOriginalRouteId,
+                @RoutingSessionInfo.TransferReason int transferReason,
+                @NonNull UserHandle transferInitiatorUserHandle,
+                @NonNull String transferInitiatorPackageName) {
+            mRequestId = requestId;
+            mTargetOriginalRouteId = targetOriginalRouteId;
+            mTransferReason = transferReason;
+            mTransferInitiatorUserHandle = transferInitiatorUserHandle;
+            mTransferInitiatorPackageName = transferInitiatorPackageName;
+        }
+
+        public boolean isTargetRoute(@Nullable MediaRoute2Info route2Info) {
+            return route2Info != null && mTargetOriginalRouteId.equals(route2Info.getOriginalId());
+        }
+
+        /**
+         * Returns whether the given list of {@link MediaRoute2Info#getOriginalId() original ids}
+         * contains the {@link #mTargetOriginalRouteId target route id}.
+         */
+        public boolean isTargetRouteIdInRouteOriginalIdList(
+                @NonNull List<String> originalRouteIdList) {
+            return originalRouteIdList.stream().anyMatch(mTargetOriginalRouteId::equals);
+        }
+
+        /**
+         * Returns whether the given list of {@link MediaRoute2Info#getId() unique ids} contains the
+         * {@link #mTargetOriginalRouteId target route id}.
+         */
+        public boolean isTargetRouteIdInRouteUniqueIdList(@NonNull List<String> uniqueRouteIdList) {
+            return uniqueRouteIdList.stream()
+                    .map(MediaRouter2Utils::getOriginalId)
+                    .anyMatch(mTargetOriginalRouteId::equals);
+        }
     }
 }

@@ -23,6 +23,7 @@ import android.util.TimingsTraceLog;
 /**
  * Helper class for reporting boot and shutdown timing metrics, also logging to {@link Slog}.
  */
+@android.ravenwood.annotation.RavenwoodKeepWholeClass
 public final class TimingsTraceAndSlog extends TimingsTraceLog {
 
     /**
@@ -78,9 +79,17 @@ public final class TimingsTraceAndSlog extends TimingsTraceLog {
         mTag = tag;
     }
 
+    /**
+     * @see TimingsTraceLog#TimingsTraceLog(TimingsTraceLog)
+     */
+    public TimingsTraceAndSlog(@NonNull TimingsTraceAndSlog other) {
+        super(other);
+        this.mTag = other.mTag;
+    }
+
     @Override
     public void traceBegin(@NonNull String name) {
-        Slog.i(mTag, name);
+        Slog.d(mTag, name);
         super.traceBegin(name);
     }
 

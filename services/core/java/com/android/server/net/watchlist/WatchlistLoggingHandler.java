@@ -36,7 +36,6 @@ import android.provider.Settings;
 import android.text.TextUtils;
 import android.util.Slog;
 
-import com.android.internal.annotations.GuardedBy;
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.util.ArrayUtils;
 import com.android.internal.util.HexDump;
@@ -45,8 +44,8 @@ import java.io.File;
 import java.io.IOException;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.GregorianCalendar;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
@@ -84,6 +83,8 @@ class WatchlistLoggingHandler extends Handler {
     private final ConcurrentHashMap<Integer, byte[]> mCachedUidDigestMap =
             new ConcurrentHashMap<>();
 
+    private final FileHashCache mApkHashCache;
+
     private interface WatchlistEventKeys {
         String HOST = "host";
         String IP_ADDRESSES = "ipAddresses";
@@ -101,6 +102,13 @@ class WatchlistLoggingHandler extends Handler {
         mSettings = WatchlistSettings.getInstance();
         mDropBoxManager = mContext.getSystemService(DropBoxManager.class);
         mPrimaryUserId = getPrimaryUserId();
+        if (context.getResources().getBoolean(
+                com.android.internal.R.bool.config_watchlistUseFileHashesCache)) {
+            mApkHashCache = new FileHashCache(this);
+            Slog.i(TAG, "Using file hashes cache.");
+        } else {
+            mApkHashCache = null;
+        }
     }
 
     @Override
@@ -155,7 +163,7 @@ class WatchlistLoggingHandler extends Handler {
         try {
             final String[] packageNames = mPm.getPackagesForUid(uid);
             if (packageNames == null || packageNames.length == 0) {
-                Slog.e(TAG, "Couldn't find package: " + packageNames);
+                Slog.e(TAG, "Couldn't find package: " + Arrays.toString(packageNames));
                 return false;
             }
             ai = mPm.getApplicationInfo(packageNames[0], 0);
@@ -346,7 +354,9 @@ class WatchlistLoggingHandler extends Handler {
                             Slog.i(TAG, "Skipping incremental path: " + packageName);
                             continue;
                         }
-                        return DigestUtils.getSha256Hash(new File(apkPath));
+                        return mApkHashCache != null
+                                ? mApkHashCache.getSha256Hash(new File(apkPath))
+                                : DigestUtils.getSha256Hash(new File(apkPath));
                     } catch (NameNotFoundException | NoSuchAlgorithmException | IOException e) {
                         Slog.e(TAG, "Cannot get digest from uid: " + key
                                 + ",pkg: " + packageName, e);

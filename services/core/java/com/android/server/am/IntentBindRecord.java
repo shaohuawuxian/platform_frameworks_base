@@ -46,9 +46,9 @@ final class IntentBindRecord {
     boolean hasBound;
     /** Set when the service's onUnbind() has asked to be told about new clients. */
     boolean doRebind;
-    
+
     String stringName;      // caching of toString
-    
+
     void dump(PrintWriter pw, String prefix) {
         pw.print(prefix); pw.print("service="); pw.println(service);
         dumpInService(pw, prefix);
@@ -77,12 +77,12 @@ final class IntentBindRecord {
         intent = _intent;
     }
 
-    int collectFlags() {
-        int flags = 0;
+    long collectFlags() {
+        long flags = 0;
         for (int i=apps.size()-1; i>=0; i--) {
             final ArraySet<ConnectionRecord> connections = apps.valueAt(i).connections;
             for (int j=connections.size()-1; j>=0; j--) {
-                flags |= connections.valueAt(j).flags;
+                flags |= connections.valueAt(j).getFlags();
             }
         }
         return flags;

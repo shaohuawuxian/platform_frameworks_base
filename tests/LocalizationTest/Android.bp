@@ -25,16 +25,16 @@ android_test {
     name: "LocalizationTest",
     srcs: ["java/**/*.kt"],
     libs: [
-        "android.test.runner",
-        "android.test.base",
-        "android.test.mock",
+        "android.test.runner.stubs.system",
+        "android.test.base.stubs.system",
+        "android.test.mock.stubs.system",
     ],
     static_libs: [
         "androidx.test.core",
         "androidx.test.ext.junit",
         "androidx.test.rules",
         "mockito-target-extended-minus-junit4",
-        "truth-prebuilt",
+        "truth",
     ],
     jni_libs: [
         // For mockito extended

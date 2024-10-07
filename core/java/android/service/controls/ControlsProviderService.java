@@ -16,6 +16,8 @@
 package android.service.controls;
 
 import android.Manifest;
+import android.annotation.FlaggedApi;
+import android.annotation.IntDef;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.annotation.SdkConstant;
@@ -25,6 +27,7 @@ import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.os.Bundle;
+import android.os.DeadObjectException;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
@@ -32,12 +35,15 @@ import android.os.Message;
 import android.os.RemoteException;
 import android.service.controls.actions.ControlAction;
 import android.service.controls.actions.ControlActionWrapper;
+import android.service.controls.flags.Flags;
 import android.service.controls.templates.ControlTemplate;
 import android.text.TextUtils;
 import android.util.Log;
 
 import com.android.internal.util.Preconditions;
 
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
 import java.util.List;
 import java.util.concurrent.Flow.Publisher;
 import java.util.concurrent.Flow.Subscriber;
@@ -53,6 +59,67 @@ public abstract class ControlsProviderService extends Service {
     @SdkConstant(SdkConstantType.SERVICE_ACTION)
     public static final String SERVICE_CONTROLS =
             "android.service.controls.ControlsProviderService";
+
+    /**
+     * Manifest metadata to show a custom embedded activity as part of device controls.
+     *
+     * The value of this metadata must be the {@link ComponentName} as a string of an activity in
+     * the same package that will be launched embedded in the device controls space.
+     *
+     * The activity must be exported, enabled and protected by
+     * {@link Manifest.permission#BIND_CONTROLS}.
+     *
+     * It is recommended that the activity is declared {@code android:resizeableActivity="true"}.
+     */
+    public static final String META_DATA_PANEL_ACTIVITY =
+            "android.service.controls.META_DATA_PANEL_ACTIVITY";
+
+    /**
+     * Boolean extra containing the value of the setting allowing actions on a locked device.
+     *
+     * This corresponds to the setting that indicates whether the user has
+     * consented to allow actions on devices that declare {@link Control#isAuthRequired()} as
+     * {@code false} when the device is locked.
+     *
+     * This is passed with the intent when the panel specified by {@link #META_DATA_PANEL_ACTIVITY}
+     * is launched.
+     */
+    public static final String EXTRA_LOCKSCREEN_ALLOW_TRIVIAL_CONTROLS =
+            "android.service.controls.extra.LOCKSCREEN_ALLOW_TRIVIAL_CONTROLS";
+
+    /** @hide */
+    @Retention(RetentionPolicy.SOURCE)
+    @IntDef({CONTROLS_SURFACE_ACTIVITY_PANEL, CONTROLS_SURFACE_DREAM})
+    public @interface ControlsSurface {
+    }
+
+    /**
+     * Controls are being shown on the device controls activity panel.
+     */
+    @FlaggedApi(Flags.FLAG_HOME_PANEL_DREAM)
+    public static final int CONTROLS_SURFACE_ACTIVITY_PANEL = 0;
+
+    /**
+     * Controls are being shown as a dream, while the device is idle.
+     */
+    @FlaggedApi(Flags.FLAG_HOME_PANEL_DREAM)
+    public static final int CONTROLS_SURFACE_DREAM = 1;
+
+    /**
+     * Integer extra whose value specifies the surface which controls are being displayed on.
+     * <p>
+     * The possible values are:
+     * <ul>
+     * <li>{@link #CONTROLS_SURFACE_ACTIVITY_PANEL}
+     * <li>{@link #CONTROLS_SURFACE_DREAM}
+     * </ul>
+     *
+     * This is passed with the intent when the panel specified by {@link #META_DATA_PANEL_ACTIVITY}
+     * is launched.
+     */
+    @FlaggedApi(Flags.FLAG_HOME_PANEL_DREAM)
+    public static final String EXTRA_CONTROLS_SURFACE =
+            "android.service.controls.extra.CONTROLS_SURFACE";
 
     /**
      * @hide
@@ -116,6 +183,9 @@ public abstract class ControlsProviderService extends Service {
      * Calls to {@link Subscriber#onComplete} will not be expected. Instead, wait for the call from
      * {@link Subscription#cancel} to indicate that updates are no longer required. It is expected
      * that controls provided by this publisher were created using {@link Control.StatefulBuilder}.
+     *
+     * By default, all controls require the device to be unlocked in order for the user to interact
+     * with it. This can be modified per Control by {@link Control.StatefulBuilder#setAuthRequired}.
      */
     @NonNull
     public abstract Publisher<Control> createPublisherFor(@NonNull List<String> controlIds);
@@ -124,9 +194,12 @@ public abstract class ControlsProviderService extends Service {
      * The user has interacted with a Control. The action is dictated by the type of
      * {@link ControlAction} that was sent. A response can be sent via
      * {@link Consumer#accept}, with the Integer argument being one of the provided
-     * {@link ControlAction.ResponseResult}. The Integer should indicate whether the action
+     * {@link ControlAction} response results. The Integer should indicate whether the action
      * was received successfully, or if additional prompts should be presented to
      * the user. Any visual control updates should be sent via the Publisher.
+
+     * By default, all invocations of this method will require the device be unlocked. This can
+     * be modified per Control by {@link Control.StatefulBuilder#setAuthRequired}.
      */
     public abstract void performControlAction(@NonNull String controlId,
             @NonNull ControlAction action, @NonNull Consumer<Integer> consumer);
@@ -206,8 +279,8 @@ public abstract class ControlsProviderService extends Service {
 
                 case MSG_SUBSCRIBE: {
                     final SubscribeMessage sMsg = (SubscribeMessage) msg.obj;
-                    final SubscriberProxy proxy = new SubscriberProxy(false, mToken,
-                            sMsg.mSubscriber);
+                    final SubscriberProxy proxy = new SubscriberProxy(
+                            ControlsProviderService.this, false, mToken, sMsg.mSubscriber);
 
                     ControlsProviderService.this.createPublisherFor(sMsg.mControlIds)
                             .subscribe(proxy);
@@ -251,6 +324,8 @@ public abstract class ControlsProviderService extends Service {
         private IBinder mToken;
         private IControlsSubscriber mCs;
         private boolean mEnforceStateless;
+        private Context mContext;
+        private SubscriptionAdapter mSubscription;
 
         SubscriberProxy(boolean enforceStateless, IBinder token, IControlsSubscriber cs) {
             mEnforceStateless = enforceStateless;
@@ -258,13 +333,22 @@ public abstract class ControlsProviderService extends Service {
             mCs = cs;
         }
 
+        SubscriberProxy(Context context, boolean enforceStateless, IBinder token,
+                IControlsSubscriber cs) {
+            this(enforceStateless, token, cs);
+            mContext = context;
+        }
+
         public void onSubscribe(Subscription subscription) {
             try {
-                mCs.onSubscribe(mToken, new SubscriptionAdapter(subscription));
+                SubscriptionAdapter subscriptionAdapter = new SubscriptionAdapter(subscription);
+                mCs.onSubscribe(mToken, subscriptionAdapter);
+                mSubscription = subscriptionAdapter;
             } catch (RemoteException ex) {
-                ex.rethrowAsRuntimeException();
+                handleRemoteException(ex);
             }
         }
+
         public void onNext(@NonNull Control control) {
             Preconditions.checkNotNull(control);
             try {
@@ -273,22 +357,41 @@ public abstract class ControlsProviderService extends Service {
                             + "Control.StatelessBuilder() to build the control.");
                     control = new Control.StatelessBuilder(control).build();
                 }
+                if (mContext != null) {
+                    control.getControlTemplate().prepareTemplateForBinder(mContext);
+                }
                 mCs.onNext(mToken, control);
             } catch (RemoteException ex) {
-                ex.rethrowAsRuntimeException();
+                handleRemoteException(ex);
             }
         }
+
         public void onError(Throwable t) {
             try {
                 mCs.onError(mToken, t.toString());
+                mSubscription = null;
             } catch (RemoteException ex) {
-                ex.rethrowAsRuntimeException();
+                handleRemoteException(ex);
             }
         }
+
         public void onComplete() {
             try {
                 mCs.onComplete(mToken);
+                mSubscription = null;
             } catch (RemoteException ex) {
+                handleRemoteException(ex);
+            }
+        }
+
+        private void handleRemoteException(RemoteException ex) {
+            if (ex instanceof DeadObjectException) {
+                // System UI crashed or is restarting. There is no need to rethrow this
+                SubscriptionAdapter subscriptionAdapter = mSubscription;
+                if (subscriptionAdapter != null) {
+                    subscriptionAdapter.cancel();
+                }
+            } else {
                 ex.rethrowAsRuntimeException();
             }
         }

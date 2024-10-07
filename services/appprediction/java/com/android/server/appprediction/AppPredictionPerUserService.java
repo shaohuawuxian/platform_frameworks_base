@@ -31,6 +31,7 @@ import android.content.pm.PackageManager.NameNotFoundException;
 import android.content.pm.ParceledListSlice;
 import android.content.pm.ServiceInfo;
 import android.os.IBinder;
+import android.os.IRemoteCallback;
 import android.os.RemoteCallbackList;
 import android.os.RemoteException;
 import android.provider.DeviceConfig;
@@ -40,6 +41,7 @@ import android.util.ArrayMap;
 import android.util.Slog;
 
 import com.android.internal.annotations.GuardedBy;
+import com.android.internal.config.sysui.SystemUiDeviceConfigFlags;
 import com.android.internal.infra.AbstractRemoteService;
 import com.android.server.LocalServices;
 import com.android.server.infra.AbstractPerUserSystemService;
@@ -55,6 +57,8 @@ public class AppPredictionPerUserService extends
     private static final String TAG = AppPredictionPerUserService.class.getSimpleName();
     private static final String PREDICT_USING_PEOPLE_SERVICE_PREFIX =
             "predict_using_people_service_";
+    private static final String REMOTE_APP_PREDICTOR_KEY = "remote_app_predictor";
+
 
     @Nullable
     @GuardedBy("mLock")
@@ -112,9 +116,17 @@ public class AppPredictionPerUserService extends
     @GuardedBy("mLock")
     public void onCreatePredictionSessionLocked(@NonNull AppPredictionContext context,
             @NonNull AppPredictionSessionId sessionId, @NonNull IBinder token) {
-        final boolean usesPeopleService = DeviceConfig.getBoolean(NAMESPACE_SYSTEMUI,
+        boolean usesPeopleService = DeviceConfig.getBoolean(NAMESPACE_SYSTEMUI,
                 PREDICT_USING_PEOPLE_SERVICE_PREFIX + context.getUiSurface(), false);
-        final boolean serviceExists = resolveService(sessionId, false,
+        if (context.getExtras() != null
+                && context.getExtras().getBoolean(REMOTE_APP_PREDICTOR_KEY, false)
+                && DeviceConfig.getBoolean(NAMESPACE_SYSTEMUI,
+                SystemUiDeviceConfigFlags.DARK_LAUNCH_REMOTE_PREDICTION_SERVICE_ENABLED, false)
+        ) {
+            // connect with remote AppPredictionService instead for dark launch
+            usesPeopleService = false;
+        }
+        final boolean serviceExists = resolveService(sessionId, true,
                 usesPeopleService, s -> s.onCreatePredictionSession(context, sessionId));
         if (serviceExists && !mSessionInfos.containsKey(sessionId)) {
             final AppPredictionSessionInfo sessionInfo = new AppPredictionSessionInfo(
@@ -176,7 +188,7 @@ public class AppPredictionPerUserService extends
             @NonNull IPredictionCallback callback) {
         final AppPredictionSessionInfo sessionInfo = mSessionInfos.get(sessionId);
         if (sessionInfo == null) return;
-        final boolean serviceExists = resolveService(sessionId, false,
+        final boolean serviceExists = resolveService(sessionId, true,
                 sessionInfo.mUsesPeopleService,
                 s -> s.registerPredictionUpdates(sessionId, callback));
         if (serviceExists) {
@@ -224,6 +236,18 @@ public class AppPredictionPerUserService extends
         resolveService(sessionId, false, sessionInfo.mUsesPeopleService,
                 s -> s.onDestroyPredictionSession(sessionId));
         sessionInfo.destroy();
+    }
+
+    /**
+     * Requests the service to provide AppPredictionService features info.
+     */
+    @GuardedBy("mLock")
+    public void requestServiceFeaturesLocked(@NonNull AppPredictionSessionId sessionId,
+            @NonNull IRemoteCallback callback) {
+        final AppPredictionSessionInfo sessionInfo = mSessionInfos.get(sessionId);
+        if (sessionInfo == null) return;
+        resolveService(sessionId, true, sessionInfo.mUsesPeopleService,
+                s -> s.requestServiceFeatures(sessionId, callback));
     }
 
     @Override
@@ -387,18 +411,7 @@ public class AppPredictionPerUserService extends
         final IBinder.DeathRecipient mDeathRecipient;
 
         private final RemoteCallbackList<IPredictionCallback> mCallbacks =
-                new RemoteCallbackList<IPredictionCallback>() {
-                    @Override
-                    public void onCallbackDied(IPredictionCallback callback) {
-                        if (DEBUG) {
-                            Slog.d(TAG, "Binder died for session Id=" + mSessionId
-                                    + " and callback=" + callback.asBinder());
-                        }
-                        if (mCallbacks.getRegisteredCallbackCount() == 0) {
-                            destroy();
-                        }
-                    }
-                };
+                new RemoteCallbackList<>();
 
         AppPredictionSessionInfo(
                 @NonNull final AppPredictionSessionId id,

@@ -37,20 +37,24 @@ import android.os.UserHandle;
 import android.provider.MediaStore;
 import android.util.Log;
 
-import com.android.systemui.SystemUI;
+import com.android.systemui.CoreStartable;
+import com.android.systemui.dagger.SysUISingleton;
 
-import java.io.FileDescriptor;
 import java.io.IOException;
 import java.io.PrintWriter;
 import java.util.HashMap;
+
+import javax.inject.Inject;
 
 /**
  * Service that offers to play ringtones by {@link Uri}, since our process has
  * {@link android.Manifest.permission#READ_EXTERNAL_STORAGE}.
  */
-public class RingtonePlayer extends SystemUI {
+@SysUISingleton
+public class RingtonePlayer implements CoreStartable {
     private static final String TAG = "RingtonePlayer";
     private static final boolean LOGD = false;
+    private final Context mContext;
 
     // TODO: support Uri switching under same IBinder
 
@@ -59,8 +63,9 @@ public class RingtonePlayer extends SystemUI {
     private final NotificationPlayer mAsyncPlayer = new NotificationPlayer(TAG);
     private final HashMap<IBinder, Client> mClients = new HashMap<IBinder, Client>();
 
+    @Inject
     public RingtonePlayer(Context context) {
-        super(context);
+        mContext = context;
     }
 
     @Override
@@ -92,8 +97,9 @@ public class RingtonePlayer extends SystemUI {
             mToken = token;
 
             mRingtone = new Ringtone(getContextForUser(user), false);
-            mRingtone.setAudioAttributes(aa);
+            mRingtone.setAudioAttributesField(aa);
             mRingtone.setUri(uri, volumeShaperConfig);
+            mRingtone.createLocalMediaPlayer();
         }
 
         @Override
@@ -163,7 +169,8 @@ public class RingtonePlayer extends SystemUI {
         }
 
         @Override
-        public void setPlaybackProperties(IBinder token, float volume, boolean looping) {
+        public void setPlaybackProperties(IBinder token, float volume, boolean looping,
+                boolean hapticGeneratorEnabled) {
             Client client;
             synchronized (mClients) {
                 client = mClients.get(token);
@@ -171,12 +178,14 @@ public class RingtonePlayer extends SystemUI {
             if (client != null) {
                 client.mRingtone.setVolume(volume);
                 client.mRingtone.setLooping(looping);
+                client.mRingtone.setHapticGeneratorEnabled(hapticGeneratorEnabled);
             }
             // else no client for token when setting playback properties but will be set at play()
         }
 
         @Override
-        public void playAsync(Uri uri, UserHandle user, boolean looping, AudioAttributes aa) {
+        public void playAsync(Uri uri, UserHandle user, boolean looping, AudioAttributes aa,
+                float volume) {
             if (LOGD) Log.d(TAG, "playAsync(uri=" + uri + ", user=" + user + ")");
             if (Binder.getCallingUid() != Process.SYSTEM_UID) {
                 throw new SecurityException("Async playback only available from system UID.");
@@ -184,7 +193,7 @@ public class RingtonePlayer extends SystemUI {
             if (UserHandle.ALL.equals(user)) {
                 user = UserHandle.SYSTEM;
             }
-            mAsyncPlayer.play(getContextForUser(user), uri, looping, aa);
+            mAsyncPlayer.play(getContextForUser(user), uri, looping, aa, volume);
         }
 
         @Override
@@ -241,7 +250,7 @@ public class RingtonePlayer extends SystemUI {
     }
 
     @Override
-    public void dump(FileDescriptor fd, PrintWriter pw, String[] args) {
+    public void dump(PrintWriter pw, String[] args) {
         pw.println("Clients:");
         synchronized (mClients) {
             for (Client client : mClients.values()) {

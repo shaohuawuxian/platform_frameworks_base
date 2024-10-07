@@ -32,6 +32,7 @@ public interface AuthDialogCallback {
     int DISMISSED_ERROR = 5;
     int DISMISSED_BY_SYSTEM_SERVER = 6;
     int DISMISSED_CREDENTIAL_AUTHENTICATED = 7;
+    int DISMISSED_BUTTON_CONTENT_VIEW_MORE_OPTIONS = 8;
 
     @IntDef({DISMISSED_USER_CANCELED,
             DISMISSED_BUTTON_NEGATIVE,
@@ -39,7 +40,8 @@ public interface AuthDialogCallback {
             DISMISSED_BIOMETRIC_AUTHENTICATED,
             DISMISSED_ERROR,
             DISMISSED_BY_SYSTEM_SERVER,
-            DISMISSED_CREDENTIAL_AUTHENTICATED})
+            DISMISSED_CREDENTIAL_AUTHENTICATED,
+            DISMISSED_BUTTON_CONTENT_VIEW_MORE_OPTIONS})
     @interface DismissedReason {}
 
     /**
@@ -47,22 +49,33 @@ public interface AuthDialogCallback {
      * @param reason
      * @param credentialAttestation the HAT received from LockSettingsService upon verification
      */
-    void onDismissed(@DismissedReason int reason, @Nullable byte[] credentialAttestation);
+    void onDismissed(@DismissedReason int reason,
+                     @Nullable byte[] credentialAttestation, long requestId);
 
     /**
      * Invoked when the "try again" button is clicked
      */
-    void onTryAgainPressed();
+    void onTryAgainPressed(long requestId);
 
     /**
      * Invoked when the "use password" button is clicked
      */
-    void onDeviceCredentialPressed();
+    void onDeviceCredentialPressed(long requestId);
 
     /**
      * See {@link android.hardware.biometrics.BiometricPrompt.Builder
      * #setReceiveSystemEvents(boolean)}
      * @param event
      */
-    void onSystemEvent(int event);
+    void onSystemEvent(int event, long requestId);
+
+    /**
+     * Notifies when the dialog has finished animating.
+     */
+    void onDialogAnimatedIn(long requestId, boolean startFingerprintNow);
+
+    /**
+     * Notifies that the fingerprint sensor should be started now.
+     */
+    void onStartFingerprintNow(long requestId);
 }

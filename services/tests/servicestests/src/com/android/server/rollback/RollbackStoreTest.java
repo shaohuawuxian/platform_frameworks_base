@@ -18,11 +18,10 @@ package com.android.server.rollback;
 
 import static com.google.common.truth.Truth.assertThat;
 
+import android.content.pm.PackageManager;
 import android.content.pm.VersionedPackage;
 import android.content.rollback.PackageRollbackInfo;
-import android.util.IntArray;
 import android.util.SparseIntArray;
-import android.util.SparseLongArray;
 
 import com.google.common.truth.Correspondence;
 
@@ -83,8 +82,9 @@ public class RollbackStoreTest {
             + "'installedUsers':[55,79],"
             + "'ceSnapshotInodes':[]}],'isStaged':false,'causePackages':[{'packageName':'hello',"
             + "'longVersionCode':23},{'packageName':'something','longVersionCode':999}],"
-            + "'committedSessionId':45654465},'timestamp':'2019-10-01T12:29:08.855Z',"
-            + "'stagedSessionId':-1,'state':'enabling','apkSessionId':-1,"
+            + "'committedSessionId':45654465, 'rollbackImpactLevel':1},"
+            + "'timestamp':'2019-10-01T12:29:08.855Z',"
+            + "'originalSessionId':567,'state':'enabling','apkSessionId':-1,"
             + "'restoreUserDataInProgress':true, 'userId':0,"
             + "'installerPackageName':'some.installer'}";
 
@@ -104,7 +104,7 @@ public class RollbackStoreTest {
             + "'ceSnapshotInodes':[]}],'isStaged':false,'causePackages':[{'packageName':'hello',"
             + "'longVersionCode':23},{'packageName':'something','longVersionCode':999}],"
             + "'committedSessionId':45654465},'timestamp':'2019-10-01T12:29:08.855Z',"
-            + "'stagedSessionId':-1,'state':'enabling','apkSessionId':-1,"
+            + "'originalSessionId':567,'state':'enabling','apkSessionId':-1,"
             + "'restoreUserDataInProgress':true, 'userId':0,"
             + "'installerPackageName':'some.installer',"
             + "'extensionVersions':[{'sdkVersion':5,'extensionVersion':25},"
@@ -112,6 +112,8 @@ public class RollbackStoreTest {
 
     @Rule
     public TemporaryFolder mFolder = new TemporaryFolder();
+    @Rule
+    public TemporaryFolder mHistoryDir = new TemporaryFolder();
 
     private File mRollbackDir;
 
@@ -119,7 +121,7 @@ public class RollbackStoreTest {
 
     @Before
     public void setUp() throws Exception {
-        mRollbackStore = new RollbackStore(mFolder.getRoot());
+        mRollbackStore = new RollbackStore(mFolder.getRoot(), mHistoryDir.getRoot());
         mRollbackDir = mFolder.newFolder(ID + "");
         mFolder.newFile("rollback.json");
     }
@@ -129,14 +131,17 @@ public class RollbackStoreTest {
         SparseIntArray extensionVersions = new SparseIntArray();
         extensionVersions.put(30, 71);
         Rollback rollback = mRollbackStore.createNonStagedRollback(
-                ID, USER, INSTALLER, null, extensionVersions);
+                ID, 567, USER, INSTALLER, null, extensionVersions);
 
         assertThat(rollback.getBackupDir().getAbsolutePath())
                 .isEqualTo(mFolder.getRoot().getAbsolutePath() + "/" + ID);
 
         assertThat(rollback.isStaged()).isFalse();
+        assertThat(rollback.getOriginalSessionId()).isEqualTo(567);
         assertThat(rollback.info.getRollbackId()).isEqualTo(ID);
         assertThat(rollback.info.getPackages()).isEmpty();
+        assertThat(rollback.info.getRollbackImpactLevel()).isEqualTo(
+                PackageManager.ROLLBACK_USER_IMPACT_LOW);
         assertThat(rollback.isEnabling()).isTrue();
         assertThat(rollback.getExtensionVersions().toString())
                 .isEqualTo(extensionVersions.toString());
@@ -153,10 +158,12 @@ public class RollbackStoreTest {
                 .isEqualTo(mFolder.getRoot().getAbsolutePath() + "/" + ID);
 
         assertThat(rollback.isStaged()).isTrue();
-        assertThat(rollback.getStagedSessionId()).isEqualTo(897);
+        assertThat(rollback.getOriginalSessionId()).isEqualTo(897);
 
         assertThat(rollback.info.getRollbackId()).isEqualTo(ID);
         assertThat(rollback.info.getPackages()).isEmpty();
+        assertThat(rollback.info.getRollbackImpactLevel()).isEqualTo(
+                PackageManager.ROLLBACK_USER_IMPACT_LOW);
         assertThat(rollback.isEnabling()).isTrue();
         assertThat(rollback.getExtensionVersions().toString())
                 .isEqualTo(extensionVersions.toString());
@@ -168,23 +175,21 @@ public class RollbackStoreTest {
         extensionVersions.put(5, 25);
         extensionVersions.put(30, 71);
         Rollback origRb = mRollbackStore.createNonStagedRollback(
-                ID, USER, INSTALLER, null, extensionVersions);
+                ID, 567, USER, INSTALLER, null, extensionVersions);
 
         origRb.setRestoreUserDataInProgress(true);
         origRb.info.getCausePackages().add(new VersionedPackage("com.made.up", 2));
         origRb.info.getCausePackages().add(new VersionedPackage("com.pack.age", 99));
         origRb.info.setCommittedSessionId(123456);
+        origRb.info.setRollbackImpactLevel(PackageManager.ROLLBACK_USER_IMPACT_HIGH);
 
         PackageRollbackInfo pkgInfo1 =
                 new PackageRollbackInfo(new VersionedPackage("com.made.up", 18),
-                        new VersionedPackage("com.something.else", 5), new IntArray(),
-                        new ArrayList<>(), false, false, new IntArray(), new SparseLongArray());
+                        new VersionedPackage("com.something.else", 5), new ArrayList<>(),
+                        new ArrayList<>(), false, false, new ArrayList<>());
         pkgInfo1.getPendingBackups().add(8);
         pkgInfo1.getPendingBackups().add(888);
         pkgInfo1.getPendingBackups().add(88885);
-        pkgInfo1.getCeSnapshotInodes().put(12, 424);
-        pkgInfo1.getCeSnapshotInodes().put(222772, 10000000000L);
-        pkgInfo1.getCeSnapshotInodes().put(10, -67);
 
         pkgInfo1.getPendingRestores().add(
                 new PackageRollbackInfo.RestoreInfo(4980, 3442322, "seInfo"));
@@ -197,8 +202,8 @@ public class RollbackStoreTest {
 
         PackageRollbackInfo pkgInfo2 = new PackageRollbackInfo(
                 new VersionedPackage("another.package", 2),
-                new VersionedPackage("com.test.ing", 48888), new IntArray(), new ArrayList<>(),
-                false, false, new IntArray(), new SparseLongArray());
+                new VersionedPackage("com.test.ing", 48888), new ArrayList<>(), new ArrayList<>(),
+                false, false, new ArrayList<>());
         pkgInfo2.getPendingBackups().add(57);
 
         pkgInfo2.getPendingRestores().add(
@@ -206,6 +211,8 @@ public class RollbackStoreTest {
 
         origRb.info.getPackages().add(pkgInfo1);
         origRb.info.getPackages().add(pkgInfo2);
+
+        origRb.setState(Rollback.ROLLBACK_STATE_AVAILABLE, "hello world");
 
         RollbackStore.saveRollback(origRb);
 
@@ -219,23 +226,21 @@ public class RollbackStoreTest {
     @Test
     public void loadFromJsonNoExtensionVersions() throws Exception {
         Rollback expectedRb = mRollbackStore.createNonStagedRollback(
-                ID, USER, INSTALLER, null, new SparseIntArray(0));
+                ID, 567, USER, INSTALLER, null, new SparseIntArray(0));
 
         expectedRb.setTimestamp(Instant.parse("2019-10-01T12:29:08.855Z"));
         expectedRb.setRestoreUserDataInProgress(true);
         expectedRb.info.getCausePackages().add(new VersionedPackage("hello", 23));
         expectedRb.info.getCausePackages().add(new VersionedPackage("something", 999));
         expectedRb.info.setCommittedSessionId(45654465);
+        expectedRb.info.setRollbackImpactLevel(PackageManager.ROLLBACK_USER_IMPACT_HIGH);
 
         PackageRollbackInfo pkgInfo1 = new PackageRollbackInfo(new VersionedPackage("blah", 55),
-                new VersionedPackage("blah1", 50), new IntArray(), new ArrayList<>(),
-                false, false, new IntArray(), new SparseLongArray());
+                new VersionedPackage("blah1", 50), new ArrayList<>(), new ArrayList<>(),
+                false, false, new ArrayList<>());
         pkgInfo1.getPendingBackups().add(59);
         pkgInfo1.getPendingBackups().add(1245);
         pkgInfo1.getPendingBackups().add(124544);
-        pkgInfo1.getCeSnapshotInodes().put(546546, 345689375);
-        pkgInfo1.getCeSnapshotInodes().put(2222, 81641654445L);
-        pkgInfo1.getCeSnapshotInodes().put(1, -6);
 
         pkgInfo1.getPendingRestores().add(
                 new PackageRollbackInfo.RestoreInfo(498, 32322, "wombles"));
@@ -247,8 +252,8 @@ public class RollbackStoreTest {
         pkgInfo1.getSnapshottedUsers().add(98464);
 
         PackageRollbackInfo pkgInfo2 = new PackageRollbackInfo(new VersionedPackage("chips", 28),
-                new VersionedPackage("com.chips.test", 48), new IntArray(), new ArrayList<>(),
-                false, false, new IntArray(), new SparseLongArray());
+                new VersionedPackage("com.chips.test", 48), new ArrayList<>(), new ArrayList<>(),
+                false, false, new ArrayList<>());
         pkgInfo2.getPendingBackups().add(5);
 
         pkgInfo2.getPendingRestores().add(
@@ -272,7 +277,7 @@ public class RollbackStoreTest {
         extensionVersions.put(5, 25);
         extensionVersions.put(30, 71);
         Rollback expectedRb = mRollbackStore.createNonStagedRollback(
-                ID, USER, INSTALLER, null, extensionVersions);
+                ID, 567, USER, INSTALLER, null, extensionVersions);
 
         expectedRb.setTimestamp(Instant.parse("2019-10-01T12:29:08.855Z"));
         expectedRb.setRestoreUserDataInProgress(true);
@@ -281,14 +286,11 @@ public class RollbackStoreTest {
         expectedRb.info.setCommittedSessionId(45654465);
 
         PackageRollbackInfo pkgInfo1 = new PackageRollbackInfo(new VersionedPackage("blah", 55),
-                new VersionedPackage("blah1", 50), new IntArray(), new ArrayList<>(),
-                false, false, new IntArray(), new SparseLongArray());
+                new VersionedPackage("blah1", 50), new ArrayList<>(), new ArrayList<>(),
+                false, false, new ArrayList<>());
         pkgInfo1.getPendingBackups().add(59);
         pkgInfo1.getPendingBackups().add(1245);
         pkgInfo1.getPendingBackups().add(124544);
-        pkgInfo1.getCeSnapshotInodes().put(546546, 345689375);
-        pkgInfo1.getCeSnapshotInodes().put(2222, 81641654445L);
-        pkgInfo1.getCeSnapshotInodes().put(1, -6);
 
         pkgInfo1.getPendingRestores().add(
                 new PackageRollbackInfo.RestoreInfo(498, 32322, "wombles"));
@@ -300,8 +302,8 @@ public class RollbackStoreTest {
         pkgInfo1.getSnapshottedUsers().add(98464);
 
         PackageRollbackInfo pkgInfo2 = new PackageRollbackInfo(new VersionedPackage("chips", 28),
-                new VersionedPackage("com.chips.test", 48), new IntArray(), new ArrayList<>(),
-                false, false, new IntArray(), new SparseLongArray());
+                new VersionedPackage("com.chips.test", 48), new ArrayList<>(), new ArrayList<>(),
+                false, false, new ArrayList<>());
         pkgInfo2.getPendingBackups().add(5);
 
         pkgInfo2.getPendingRestores().add(
@@ -322,7 +324,7 @@ public class RollbackStoreTest {
     @Test
     public void saveAndDelete() {
         Rollback rollback = mRollbackStore.createNonStagedRollback(
-                ID, USER, INSTALLER, null, new SparseIntArray(0));
+                ID, 567, USER, INSTALLER, null, new SparseIntArray(0));
 
         RollbackStore.saveRollback(rollback);
 
@@ -335,10 +337,26 @@ public class RollbackStoreTest {
         assertThat(expectedFile.exists()).isFalse();
     }
 
-    private void assertRollbacksAreEquivalent(Rollback b, Rollback a) {
-        assertThat(b.info.getRollbackId()).isEqualTo(ID);
+    @Test
+    public void saveToHistoryAndLoad() {
+        Rollback origRb = mRollbackStore.createNonStagedRollback(
+                ID, 567, USER, INSTALLER, null, new SparseIntArray(0));
+        mRollbackStore.saveRollbackToHistory(origRb);
 
+        List<Rollback> loadedRollbacks = mRollbackStore.loadHistorialRollbacks();
+        assertThat(loadedRollbacks).hasSize(1);
+        Rollback loadedRb = loadedRollbacks.get(0);
+
+        assertRollbacksAreEquivalentExcludingBackupDir(loadedRb, origRb);
+    }
+
+    private void assertRollbacksAreEquivalent(Rollback b, Rollback a) {
         assertThat(b.getBackupDir()).isEqualTo(a.getBackupDir());
+        assertRollbacksAreEquivalentExcludingBackupDir(b, a);
+    }
+
+    private void assertRollbacksAreEquivalentExcludingBackupDir(Rollback b, Rollback a) {
+        assertThat(b.info.getRollbackId()).isEqualTo(ID);
 
         assertThat(b.isRestoreUserDataInProgress())
                 .isEqualTo(a.isRestoreUserDataInProgress());
@@ -348,13 +366,14 @@ public class RollbackStoreTest {
         assertThat(b.isEnabling()).isEqualTo(a.isEnabling());
         assertThat(b.isAvailable()).isEqualTo(a.isAvailable());
         assertThat(b.isCommitted()).isEqualTo(a.isCommitted());
+        assertThat(b.getStateDescription()).isEqualTo(a.getStateDescription());
 
         assertThat(b.isStaged()).isEqualTo(a.isStaged());
 
         assertThat(b.getApexPackageNames())
                 .containsExactlyElementsIn(a.getApexPackageNames());
 
-        assertThat(b.getStagedSessionId()).isEqualTo(a.getStagedSessionId());
+        assertThat(b.getOriginalSessionId()).isEqualTo(a.getOriginalSessionId());
 
         assertThat(b.info.getCommittedSessionId()).isEqualTo(a.info.getCommittedSessionId());
 
@@ -393,9 +412,6 @@ public class RollbackStoreTest {
         assertThat(b.isApex()).isEqualTo(a.isApex());
 
         assertThat(b.getSnapshottedUsers().toArray()).isEqualTo(a.getSnapshottedUsers().toArray());
-
-        assertThat(b.getCeSnapshotInodes().toString())
-                .isEqualTo(a.getCeSnapshotInodes().toString());
     }
 
 }

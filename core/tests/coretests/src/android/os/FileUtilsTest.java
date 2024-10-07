@@ -16,6 +16,7 @@
 
 package android.os;
 
+import static android.os.FileUtils.convertToModernFd;
 import static android.os.FileUtils.roundStorageSize;
 import static android.os.FileUtils.translateModeAccessToPosix;
 import static android.os.FileUtils.translateModePfdToPosix;
@@ -28,6 +29,7 @@ import static android.os.ParcelFileDescriptor.MODE_READ_ONLY;
 import static android.os.ParcelFileDescriptor.MODE_READ_WRITE;
 import static android.os.ParcelFileDescriptor.MODE_TRUNCATE;
 import static android.os.ParcelFileDescriptor.MODE_WRITE_ONLY;
+import static android.system.OsConstants.AF_INET;
 import static android.system.OsConstants.F_OK;
 import static android.system.OsConstants.O_APPEND;
 import static android.system.OsConstants.O_CREAT;
@@ -36,6 +38,7 @@ import static android.system.OsConstants.O_RDWR;
 import static android.system.OsConstants.O_TRUNC;
 import static android.system.OsConstants.O_WRONLY;
 import static android.system.OsConstants.R_OK;
+import static android.system.OsConstants.SOCK_STREAM;
 import static android.system.OsConstants.W_OK;
 import static android.system.OsConstants.X_OK;
 import static android.text.format.DateUtils.DAY_IN_MILLIS;
@@ -45,36 +48,48 @@ import static android.text.format.DateUtils.WEEK_IN_MILLIS;
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
-import android.content.Context;
 import android.os.FileUtils.MemoryPipe;
+import android.platform.test.annotations.DisabledOnRavenwood;
+import android.platform.test.ravenwood.RavenwoodRule;
 import android.provider.DocumentsContract.Document;
+import android.system.Os;
+import android.util.DataUnit;
 
-import androidx.test.InstrumentationRegistry;
 import androidx.test.runner.AndroidJUnit4;
-
-import libcore.io.Streams;
-
-import com.google.android.collect.Sets;
 
 import org.junit.After;
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.DataInputStream;
+import java.io.DataOutputStream;
 import java.io.File;
+import java.io.FileDescriptor;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.nio.file.Files;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.Random;
+import java.net.InetSocketAddress;
 
 @RunWith(AndroidJUnit4.class)
 public class FileUtilsTest {
+    @Rule
+    public final RavenwoodRule mRavenwood = new RavenwoodRule();
+
     private static final String TEST_DATA =
             "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 
@@ -85,17 +100,13 @@ public class FileUtilsTest {
 
     private final int[] DATA_SIZES = { 32, 32_000, 32_000_000 };
 
-    private Context getContext() {
-        return InstrumentationRegistry.getContext();
-    }
-
     @Before
     public void setUp() throws Exception {
-        mDir = getContext().getDir("testing", Context.MODE_PRIVATE);
+        mDir = Files.createTempDirectory("FileUtils").toFile();
         mTestFile = new File(mDir, "test.file");
         mCopyFile = new File(mDir, "copy.file");
 
-        mTarget = getContext().getFilesDir();
+        mTarget = mDir;
         FileUtils.deleteContents(mTarget);
     }
 
@@ -147,6 +158,7 @@ public class FileUtilsTest {
     }
 
     @Test
+    @DisabledOnRavenwood(blockedBy = MemoryPipe.class)
     public void testCopy_FileToPipe() throws Exception {
         for (int size : DATA_SIZES) {
             final File src = new File(mTarget, "src");
@@ -167,6 +179,7 @@ public class FileUtilsTest {
     }
 
     @Test
+    @DisabledOnRavenwood(blockedBy = MemoryPipe.class)
     public void testCopy_PipeToFile() throws Exception {
         for (int size : DATA_SIZES) {
             final File dest = new File(mTarget, "dest");
@@ -186,6 +199,7 @@ public class FileUtilsTest {
     }
 
     @Test
+    @DisabledOnRavenwood(blockedBy = MemoryPipe.class)
     public void testCopy_PipeToPipe() throws Exception {
         for (int size : DATA_SIZES) {
             byte[] expected = new byte[size];
@@ -203,6 +217,7 @@ public class FileUtilsTest {
     }
 
     @Test
+    @DisabledOnRavenwood(blockedBy = MemoryPipe.class)
     public void testCopy_ShortPipeToFile() throws Exception {
         byte[] source = new byte[33_000_000];
         new Random().nextBytes(source);
@@ -218,6 +233,105 @@ public class FileUtilsTest {
                 FileUtils.copy(in.getFD(), out.getFD(), size, null, null, null);
             }
 
+            actual = readFile(dest);
+            assertArrayEquals(expected, actual);
+        }
+    }
+
+    @Test
+    public void testCopyFileWithAppend() throws Exception {
+        final File src = new File(mTarget, "src");
+        final File dest = new File(mTarget, "dest");
+
+        byte[] expected = new byte[10];
+        byte[] actual = new byte[10];
+        new Random().nextBytes(expected);
+        writeFile(src, expected);
+
+        try (FileInputStream in = new FileInputStream(src);
+                FileOutputStream out = new FileOutputStream(dest, true /* append */)) {
+            // sendfile(2) fails if output fd is opened with O_APPEND, but FileUtils#copy should
+            // fallback to userspace copy
+            FileUtils.copy(in, out);
+        }
+
+        actual = readFile(dest);
+        assertArrayEquals(expected, actual);
+    }
+
+    @Test
+    @DisabledOnRavenwood(reason = "Missing Os methods in Ravenwood")
+    public void testCopy_SocketToFile_FileToSocket() throws Exception {
+        for (int size : DATA_SIZES ) {
+            final File src = new File(mTarget, "src");
+            final File dest = new File(mTarget, "dest");
+            byte[] expected = new byte[size];
+            byte[] actual = new byte[size];
+            new Random().nextBytes(expected);
+
+            // write test data in to src file
+            writeFile(src, expected);
+
+            // start server, get data from client and save to dest file (socket --> file)
+            FileDescriptor srvSocketFd = Os.socket(AF_INET, SOCK_STREAM, 0);
+            Os.bind(srvSocketFd, new InetSocketAddress("localhost", 0));
+            Os.listen(srvSocketFd, 5);
+            InetSocketAddress localSocketAddress = (InetSocketAddress) Os.getsockname(srvSocketFd);
+
+            final Thread srv = new Thread(new Runnable() {
+                public void run() {
+                    try {
+                        InetSocketAddress peerAddress = new InetSocketAddress();
+                        FileDescriptor srvConnFd = Os.accept(srvSocketFd, peerAddress);
+
+                        // read file size
+                        byte[] rcvFileSizeByteArray = new byte[8];
+                        Os.read(srvConnFd, rcvFileSizeByteArray, 0, rcvFileSizeByteArray.length);
+                        long rcvFileSize = 0;
+                        for (int i = 0; i < 8; i++) {
+                            rcvFileSize <<= 8;
+                            rcvFileSize |= (rcvFileSizeByteArray[i] & 0xFF);
+                        }
+
+                        FileOutputStream fileOutputStream = new FileOutputStream(dest);
+                        // copy data from socket to file
+                        FileUtils.copy(srvConnFd, fileOutputStream.getFD(), rcvFileSize, null, null, null);
+
+                        fileOutputStream.close();
+                        Os.close(srvConnFd);
+                        Os.close(srvSocketFd);
+                    } catch (Exception e) {
+                        e.printStackTrace();
+                    }
+                }
+            });
+
+            srv.start();
+
+
+            // start client, get data from dest file and send to server (file --> socket)
+            FileDescriptor clientFd = Os.socket(AF_INET, SOCK_STREAM, 0);
+            Os.connect(clientFd, localSocketAddress.getAddress(), localSocketAddress.getPort());
+
+            FileInputStream fileInputStream = new FileInputStream(src);
+            long sndFileSize = src.length();
+            // send the file size to server
+            byte[] sndFileSizeByteArray = new byte[8];
+            for (int i = 7; i >= 0; i--) {
+                sndFileSizeByteArray[i] = (byte)(sndFileSize & 0xFF);
+                sndFileSize >>= 8;
+            }
+            Os.write(clientFd, sndFileSizeByteArray, 0, sndFileSizeByteArray.length);
+
+            // copy data from file to socket
+            FileUtils.copy(fileInputStream.getFD(), clientFd, src.length(), null, null, null);
+
+            fileInputStream.close();
+            Os.close(clientFd);
+
+            srv.join();
+
+            // read test data from dest file
             actual = readFile(dest);
             assertArrayEquals(expected, actual);
         }
@@ -398,6 +512,7 @@ public class FileUtilsTest {
     }
 
     @Test
+    @DisabledOnRavenwood(blockedBy = android.webkit.MimeTypeMap.class)
     public void testBuildUniqueFile_normal() throws Exception {
         assertNameEquals("test.jpg", FileUtils.buildUniqueFile(mTarget, "image/jpeg", "test"));
         assertNameEquals("test.jpg", FileUtils.buildUniqueFile(mTarget, "image/jpeg", "test.jpg"));
@@ -417,6 +532,7 @@ public class FileUtilsTest {
     }
 
     @Test
+    @DisabledOnRavenwood(blockedBy = android.webkit.MimeTypeMap.class)
     public void testBuildUniqueFile_unknown() throws Exception {
         assertNameEquals("test",
                 FileUtils.buildUniqueFile(mTarget, "application/octet-stream", "test"));
@@ -430,6 +546,7 @@ public class FileUtilsTest {
     }
 
     @Test
+    @DisabledOnRavenwood(blockedBy = android.webkit.MimeTypeMap.class)
     public void testBuildUniqueFile_dir() throws Exception {
         assertNameEquals("test", FileUtils.buildUniqueFile(mTarget, Document.MIME_TYPE_DIR, "test"));
         new File(mTarget, "test").mkdir();
@@ -444,6 +561,7 @@ public class FileUtilsTest {
     }
 
     @Test
+    @DisabledOnRavenwood(blockedBy = android.webkit.MimeTypeMap.class)
     public void testBuildUniqueFile_increment() throws Exception {
         assertNameEquals("test.jpg", FileUtils.buildUniqueFile(mTarget, "image/jpeg", "test.jpg"));
         new File(mTarget, "test.jpg").createNewFile();
@@ -452,9 +570,18 @@ public class FileUtilsTest {
         new File(mTarget, "test (1).jpg").createNewFile();
         assertNameEquals("test (2).jpg",
                 FileUtils.buildUniqueFile(mTarget, "image/jpeg", "test.jpg"));
+
+        assertNameEquals("test.mp3", FileUtils.buildUniqueFile(mTarget, "audio/mp3", "test.mp3"));
+        new File(mTarget, "test.mp3").createNewFile();
+        assertNameEquals("test (1).mp3",
+                FileUtils.buildUniqueFile(mTarget, "audio/mp3", "test.mp3"));
+        new File(mTarget, "test (1).mp3").createNewFile();
+        assertNameEquals("test (2).mp3",
+                FileUtils.buildUniqueFile(mTarget, "audio/mp3", "test.mp3"));
     }
 
     @Test
+    @DisabledOnRavenwood(blockedBy = android.webkit.MimeTypeMap.class)
     public void testBuildUniqueFile_mimeless() throws Exception {
         assertNameEquals("test.jpg", FileUtils.buildUniqueFile(mTarget, "test.jpg"));
         new File(mTarget, "test.jpg").createNewFile();
@@ -471,17 +598,16 @@ public class FileUtilsTest {
 
     @Test
     public void testRoundStorageSize() throws Exception {
-        final long M128 = 128000000L;
-        final long M256 = 256000000L;
-        final long M512 = 512000000L;
-        final long G1 = 1000000000L;
-        final long G2 = 2000000000L;
-        final long G16 = 16000000000L;
-        final long G32 = 32000000000L;
-        final long G64 = 64000000000L;
+        final long M256 = DataUnit.MEGABYTES.toBytes(256);
+        final long M512 = DataUnit.MEGABYTES.toBytes(512);
+        final long G1 = DataUnit.GIGABYTES.toBytes(1);
+        final long G2 = DataUnit.GIGABYTES.toBytes(2);
+        final long G32 = DataUnit.GIGABYTES.toBytes(32);
+        final long G64 = DataUnit.GIGABYTES.toBytes(64);
+        final long G512 = DataUnit.GIGABYTES.toBytes(512);
+        final long G1000 = DataUnit.TERABYTES.toBytes(1);
+        final long G2000 = DataUnit.TERABYTES.toBytes(2);
 
-        assertEquals(M128, roundStorageSize(M128));
-        assertEquals(M256, roundStorageSize(M128 + 1));
         assertEquals(M256, roundStorageSize(M256 - 1));
         assertEquals(M256, roundStorageSize(M256));
         assertEquals(M512, roundStorageSize(M256 + 1));
@@ -491,15 +617,67 @@ public class FileUtilsTest {
         assertEquals(G1, roundStorageSize(G1));
         assertEquals(G2, roundStorageSize(G1 + 1));
 
-        assertEquals(G16, roundStorageSize(G16));
-        assertEquals(G32, roundStorageSize(G16 + 1));
         assertEquals(G32, roundStorageSize(G32 - 1));
         assertEquals(G32, roundStorageSize(G32));
         assertEquals(G64, roundStorageSize(G32 + 1));
+
+        assertEquals(G512, roundStorageSize(G512 - 1));
+        assertEquals(G1000, roundStorageSize(G512 + 1));
+        assertEquals(G2000, roundStorageSize(G1000 + 1));
     }
 
     @Test
-    public void testTranslateMode() throws Exception {
+    public void testParseSize() {
+        assertEquals(0L, FileUtils.parseSize("0MB"));
+        assertEquals(1_024L, FileUtils.parseSize("1024b"));
+        assertEquals(-1L, FileUtils.parseSize(" -1 b "));
+        assertEquals(0L, FileUtils.parseSize(" -0 gib "));
+        assertEquals(1_000L, FileUtils.parseSize("1K"));
+        assertEquals(1_000L, FileUtils.parseSize("1KB"));
+        assertEquals(10_000L, FileUtils.parseSize("10KB"));
+        assertEquals(100_000L, FileUtils.parseSize("100KB"));
+        assertEquals(1_000_000L, FileUtils.parseSize("1000KB"));
+        assertEquals(1_024_000L, FileUtils.parseSize("1000KiB"));
+        assertEquals(70_000_000L, FileUtils.parseSize("070M"));
+        assertEquals(70_000_000L, FileUtils.parseSize("070MB"));
+        assertEquals(73_400_320L, FileUtils.parseSize("70MiB"));
+        assertEquals(700_000_000L, FileUtils.parseSize("700000KB"));
+        assertEquals(200_000_000L, FileUtils.parseSize("+200MB"));
+        assertEquals(1_000_000_000L, FileUtils.parseSize("1000MB"));
+        assertEquals(1_000_000_000L, FileUtils.parseSize("+1000 mb"));
+        assertEquals(644_245_094_400L, FileUtils.parseSize("600GiB"));
+        assertEquals(999_000_000_000L, FileUtils.parseSize("999GB"));
+        assertEquals(999_000_000_000L, FileUtils.parseSize("999 gB"));
+        assertEquals(9_999_000_000_000L, FileUtils.parseSize("9999GB"));
+        assertEquals(9_000_000_000_000L, FileUtils.parseSize(" 9000 GB   "));
+        assertEquals(1_234_000_000_000L, FileUtils.parseSize(" 1234 GB  "));
+        assertEquals(1_234_567_890_000L, FileUtils.parseSize(" 1234567890 KB  "));
+    }
+
+    @Test
+    public void testParseSize_invalidArguments() {
+        assertEquals(Long.MIN_VALUE, FileUtils.parseSize(null));
+        assertEquals(Long.MIN_VALUE, FileUtils.parseSize("null"));
+        assertEquals(Long.MIN_VALUE, FileUtils.parseSize(""));
+        assertEquals(Long.MIN_VALUE, FileUtils.parseSize("     "));
+        assertEquals(Long.MIN_VALUE, FileUtils.parseSize("KB"));
+        assertEquals(Long.MIN_VALUE, FileUtils.parseSize("123 dd"));
+        assertEquals(Long.MIN_VALUE, FileUtils.parseSize("Invalid"));
+        assertEquals(Long.MIN_VALUE, FileUtils.parseSize(" ABC890 KB  "));
+        assertEquals(Long.MIN_VALUE, FileUtils.parseSize("-=+90 KB  "));
+        assertEquals(Long.MIN_VALUE, FileUtils.parseSize("123"));
+        assertEquals(Long.MIN_VALUE, FileUtils.parseSize("--123"));
+        assertEquals(Long.MIN_VALUE, FileUtils.parseSize("-KB"));
+        assertEquals(Long.MIN_VALUE, FileUtils.parseSize("++123"));
+        assertEquals(Long.MIN_VALUE, FileUtils.parseSize("+"));
+        assertEquals(Long.MIN_VALUE, FileUtils.parseSize("+ 1 +"));
+        assertEquals(Long.MIN_VALUE, FileUtils.parseSize("+--+ 1 +"));
+        assertEquals(Long.MIN_VALUE, FileUtils.parseSize("1GB+"));
+        assertEquals(Long.MIN_VALUE, FileUtils.parseSize(" + 1234567890 KB  "));
+    }
+
+    @Test
+    public void testTranslateMode() {
         assertTranslate("r", O_RDONLY, MODE_READ_ONLY);
 
         assertTranslate("rw", O_RDWR | O_CREAT,
@@ -518,7 +696,7 @@ public class FileUtilsTest {
     }
 
     @Test
-    public void testMalformedTransate_int() throws Exception {
+    public void testMalformedTransate_int() {
         try {
             // The non-standard Linux access mode 3 should throw
             // an IllegalArgumentException.
@@ -529,7 +707,7 @@ public class FileUtilsTest {
     }
 
     @Test
-    public void testMalformedTransate_string() throws Exception {
+    public void testMalformedTransate_string() {
         try {
             // The non-standard Linux access mode 3 should throw
             // an IllegalArgumentException.
@@ -540,7 +718,7 @@ public class FileUtilsTest {
     }
 
     @Test
-    public void testTranslateMode_Invalid() throws Exception {
+    public void testTranslateMode_Invalid() {
         try {
             translateModeStringToPosix("rwx");
             fail();
@@ -554,12 +732,56 @@ public class FileUtilsTest {
     }
 
     @Test
-    public void testTranslateMode_Access() throws Exception {
+    public void testTranslateMode_Access() {
         assertEquals(O_RDONLY, translateModeAccessToPosix(F_OK));
         assertEquals(O_RDONLY, translateModeAccessToPosix(R_OK));
         assertEquals(O_WRONLY, translateModeAccessToPosix(W_OK));
         assertEquals(O_RDWR, translateModeAccessToPosix(R_OK | W_OK));
         assertEquals(O_RDWR, translateModeAccessToPosix(R_OK | W_OK | X_OK));
+    }
+
+    @Test
+    @DisabledOnRavenwood(reason = "Requires kernel support")
+    public void testConvertToModernFd() throws Exception {
+        final String nonce = String.valueOf(System.nanoTime());
+
+        final File cameraDir = new File("/storage/emulated/0/DCIM/Camera");
+        final File nonCameraDir = new File("/storage/emulated/0/Pictures");
+        cameraDir.mkdirs();
+        nonCameraDir.mkdirs();
+
+        final File validVideoCameraDir = new File(cameraDir, "validVideo-" + nonce + ".mp4");
+        final File validImageCameraDir = new File(cameraDir, "validImage-" + nonce + ".jpg");
+
+        final File validVideoNonCameraDir = new File(nonCameraDir, "validVideo-" + nonce + ".mp4");
+        final File validImageNonCameraDir = new File(nonCameraDir, "validImage-" + nonce + ".jpg");
+
+        try {
+            FileDescriptor pfdValidVideoCameraDir =
+                    ParcelFileDescriptor.open(validVideoCameraDir,
+                            MODE_CREATE | MODE_READ_WRITE).getFileDescriptor();
+            FileDescriptor pfdValidImageCameraDir =
+                    ParcelFileDescriptor.open(validImageCameraDir,
+                            MODE_CREATE | MODE_READ_WRITE).getFileDescriptor();
+
+            FileDescriptor pfdValidVideoNonCameraDir =
+                    ParcelFileDescriptor.open(validVideoNonCameraDir,
+                            MODE_CREATE | MODE_READ_WRITE).getFileDescriptor();
+            FileDescriptor pfdValidImageNonCameraDir =
+                    ParcelFileDescriptor.open(validImageNonCameraDir,
+                            MODE_CREATE | MODE_READ_WRITE).getFileDescriptor();
+
+            assertNotNull(convertToModernFd(pfdValidVideoCameraDir));
+
+            assertNull(convertToModernFd(pfdValidImageCameraDir));
+            assertNull(convertToModernFd(pfdValidVideoNonCameraDir));
+            assertNull(convertToModernFd(pfdValidImageNonCameraDir));
+        } finally {
+            validVideoCameraDir.delete();
+            validImageCameraDir.delete();
+            validVideoNonCameraDir.delete();
+            validImageNonCameraDir.delete();
+        }
     }
 
     private static void assertTranslate(String string, int posix, int pfd) {
@@ -592,13 +814,24 @@ public class FileUtilsTest {
     private byte[] readFile(File file) throws Exception {
         try (FileInputStream in = new FileInputStream(file);
                 ByteArrayOutputStream out = new ByteArrayOutputStream()) {
-            Streams.copy(in, out);
+            copy(in, out);
             return out.toByteArray();
         }
     }
 
+    private static int copy(InputStream in, OutputStream out) throws IOException {
+        int total = 0;
+        byte[] buffer = new byte[8192];
+        int c;
+        while ((c = in.read(buffer)) != -1) {
+            total += c;
+            out.write(buffer, 0, c);
+        }
+        return total;
+    }
+
     private void assertDirContents(String... expected) {
-        final HashSet<String> expectedSet = Sets.newHashSet(expected);
+        final HashSet<String> expectedSet = new HashSet<>(Arrays.asList(expected));
         String[] actual = mDir.list();
         if (actual == null) actual = new String[0];
 

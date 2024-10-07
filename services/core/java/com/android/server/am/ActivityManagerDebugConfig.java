@@ -16,6 +16,11 @@
 
 package com.android.server.am;
 
+import android.util.Log;
+import android.util.LogWriter;
+
+import java.io.PrintWriter;
+
 /**
  * Common class for the various debug {@link android.util.Log} output configuration in the activity
  * manager package.
@@ -38,6 +43,10 @@ class ActivityManagerDebugConfig {
     // Default log tag for the activity manager package.
     static final String TAG_AM = "ActivityManager";
 
+    // Default writer that emits "info" log events for the activity manager package.
+    static final PrintWriter LOG_WRITER_INFO = new PrintWriter(
+            new LogWriter(Log.INFO, TAG_AM));
+
     // Enable all debug log categories.
     static final boolean DEBUG_ALL = false;
 
@@ -46,11 +55,9 @@ class ActivityManagerDebugConfig {
     static final boolean DEBUG_BACKGROUND_CHECK = DEBUG_ALL || false;
     static final boolean DEBUG_BACKUP = DEBUG_ALL || false;
     static final boolean DEBUG_BROADCAST = DEBUG_ALL || false;
-    static final boolean DEBUG_BROADCAST_BACKGROUND = DEBUG_BROADCAST || false;
     static final boolean DEBUG_BROADCAST_LIGHT = DEBUG_BROADCAST || false;
-    static final boolean DEBUG_BROADCAST_DEFERRAL = DEBUG_BROADCAST || false;
     static final boolean DEBUG_COMPACTION = DEBUG_ALL || false;
-    static final boolean DEBUG_FREEZER = DEBUG_ALL || true;
+    static final boolean DEBUG_FREEZER = DEBUG_ALL || false;
     static final boolean DEBUG_LRU = DEBUG_ALL || false;
     static final boolean DEBUG_MU = DEBUG_ALL || false;
     static final boolean DEBUG_NETWORK = DEBUG_ALL || false;
@@ -62,13 +69,14 @@ class ActivityManagerDebugConfig {
     static final boolean DEBUG_PROCESSES = DEBUG_ALL || false;
     static final boolean DEBUG_PROVIDER = DEBUG_ALL || false;
     static final boolean DEBUG_PSS = DEBUG_ALL || false;
+    static final boolean DEBUG_RSS = DEBUG_ALL || false;
     static final boolean DEBUG_SERVICE = DEBUG_ALL || false;
     static final boolean DEBUG_FOREGROUND_SERVICE = DEBUG_ALL || false;
     static final boolean DEBUG_SERVICE_EXECUTING = DEBUG_ALL || false;
     static final boolean DEBUG_UID_OBSERVERS = DEBUG_ALL || false;
     static final boolean DEBUG_USAGE_STATS = DEBUG_ALL || false;
     static final boolean DEBUG_PERMISSIONS_REVIEW = DEBUG_ALL || false;
-    static final boolean DEBUG_WHITELISTS = DEBUG_ALL || false;
+    static final boolean DEBUG_ALLOWLISTS = DEBUG_ALL || false;
 
     static final String POSTFIX_BACKUP = (APPEND_CATEGORY_NAME) ? "_Backup" : "";
     static final String POSTFIX_BROADCAST = (APPEND_CATEGORY_NAME) ? "_Broadcast" : "";
@@ -81,8 +89,8 @@ class ActivityManagerDebugConfig {
     static final String POSTFIX_PROCESS_OBSERVERS = (APPEND_CATEGORY_NAME)
             ? "_ProcessObservers" : "";
     static final String POSTFIX_PROCESSES = (APPEND_CATEGORY_NAME) ? "_Processes" : "";
-    static final String POSTFIX_PROVIDER = (APPEND_CATEGORY_NAME) ? "_Provider" : "";
     static final String POSTFIX_PSS = (APPEND_CATEGORY_NAME) ? "_Pss" : "";
+    static final String POSTFIX_RSS = (APPEND_CATEGORY_NAME) ? "_Rss" : "";
     static final String POSTFIX_SERVICE = (APPEND_CATEGORY_NAME) ? "_Service" : "";
     static final String POSTFIX_SERVICE_EXECUTING =
             (APPEND_CATEGORY_NAME) ? "_ServiceExecuting" : "";

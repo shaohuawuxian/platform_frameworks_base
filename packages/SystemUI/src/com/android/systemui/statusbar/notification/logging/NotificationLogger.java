@@ -20,36 +20,45 @@ import android.os.Handler;
 import android.os.RemoteException;
 import android.os.ServiceManager;
 import android.os.SystemClock;
+import android.os.Trace;
 import android.service.notification.NotificationListenerService;
-import android.service.notification.NotificationStats;
-import android.service.notification.StatusBarNotification;
 import android.util.ArrayMap;
 import android.util.ArraySet;
 import android.util.Log;
 
+import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 
 import com.android.internal.annotations.GuardedBy;
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.statusbar.IStatusBarService;
 import com.android.internal.statusbar.NotificationVisibility;
+import com.android.internal.statusbar.NotificationVisibility.NotificationLocation;
+import com.android.systemui.CoreStartable;
 import com.android.systemui.dagger.qualifiers.UiBackground;
 import com.android.systemui.plugins.statusbar.StatusBarStateController;
 import com.android.systemui.plugins.statusbar.StatusBarStateController.StateListener;
+import com.android.systemui.scene.domain.interactor.WindowRootViewVisibilityInteractor;
 import com.android.systemui.statusbar.NotificationListener;
 import com.android.systemui.statusbar.StatusBarState;
-import com.android.systemui.statusbar.notification.NotificationEntryListener;
-import com.android.systemui.statusbar.notification.NotificationEntryManager;
+import com.android.systemui.statusbar.notification.collection.NotifLiveDataStore;
+import com.android.systemui.statusbar.notification.collection.NotifPipeline;
 import com.android.systemui.statusbar.notification.collection.NotificationEntry;
+import com.android.systemui.statusbar.notification.collection.notifcollection.NotifCollectionListener;
+import com.android.systemui.statusbar.notification.collection.render.NotificationVisibilityProvider;
 import com.android.systemui.statusbar.notification.dagger.NotificationsModule;
+import com.android.systemui.statusbar.notification.shared.NotificationsLiveDataStoreRefactor;
 import com.android.systemui.statusbar.notification.stack.ExpandableViewState;
 import com.android.systemui.statusbar.notification.stack.NotificationListContainer;
-import com.android.systemui.statusbar.policy.HeadsUpManager;
+import com.android.systemui.statusbar.notification.stack.ui.view.NotificationRowStatsLogger;
+import com.android.systemui.util.Compile;
+import com.android.systemui.util.kotlin.JavaAdapter;
 
 import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.Executor;
 
 import javax.inject.Inject;
@@ -58,9 +67,10 @@ import javax.inject.Inject;
  * Handles notification logging, in particular, logging which notifications are visible and which
  * are not.
  */
-public class NotificationLogger implements StateListener {
-    private static final String TAG = "NotificationLogger";
-    private static final boolean DEBUG = false;
+public class NotificationLogger implements StateListener, CoreStartable,
+        NotificationRowStatsLogger {
+    static final String TAG = "NotificationLogger";
+    private static final boolean DEBUG = Compile.IS_DEBUG && Log.isLoggable(TAG, Log.DEBUG);
 
     /** The minimum delay in ms between reports of notification visibility. */
     private static final int VISIBILITY_REPORT_MIN_DELAY_MS = 500;
@@ -72,10 +82,13 @@ public class NotificationLogger implements StateListener {
     // Dependencies:
     private final NotificationListenerService mNotificationListener;
     private final Executor mUiBgExecutor;
-    private final NotificationEntryManager mEntryManager;
+    private final NotifLiveDataStore mNotifLiveDataStore;
+    private final NotificationVisibilityProvider mVisibilityProvider;
+    private final NotifPipeline mNotifPipeline;
     private final NotificationPanelLogger mNotificationPanelLogger;
-    private HeadsUpManager mHeadsUpManager;
     private final ExpansionStateLogger mExpansionStateLogger;
+    private final WindowRootViewVisibilityInteractor mWindowRootViewVisibilityInteractor;
+    private final JavaAdapter mJavaAdapter;
 
     protected Handler mHandler = new Handler();
     protected IStatusBarService mBarService;
@@ -83,30 +96,8 @@ public class NotificationLogger implements StateListener {
     private NotificationListContainer mListContainer;
     private final Object mDozingLock = new Object();
     @GuardedBy("mDozingLock")
-    private Boolean mDozing = null;  // Use null to indicate state is not yet known
-    @GuardedBy("mDozingLock")
     private Boolean mLockscreen = null;  // Use null to indicate state is not yet known
-    private Boolean mPanelExpanded = null;  // Use null to indicate state is not yet known
     private boolean mLogging = false;
-
-    protected final OnChildLocationsChangedListener mNotificationLocationsChangedListener =
-            new OnChildLocationsChangedListener() {
-                @Override
-                public void onChildLocationsChanged() {
-                    if (mHandler.hasCallbacks(mVisibilityReporter)) {
-                        // Visibilities will be reported when the existing
-                        // callback is executed.
-                        return;
-                    }
-                    // Calculate when we're allowed to run the visibility
-                    // reporter. Note that this timestamp might already have
-                    // passed. That's OK, the callback will just be executed
-                    // ASAP.
-                    long nextReportUptimeMs =
-                            mLastVisibilityReportUptimeMs + VISIBILITY_REPORT_MIN_DELAY_MS;
-                    mHandler.postAtTime(mVisibilityReporter, nextReportUptimeMs);
-                }
-            };
 
     // Tracks notifications currently visible in mNotificationStackScroller and
     // emits visibility events via NoMan on changes.
@@ -130,7 +121,7 @@ public class NotificationLogger implements StateListener {
             //    notifications.
             // 3. Report newly visible and no-longer visible notifications.
             // 4. Keep currently visible notifications for next report.
-            List<NotificationEntry> activeNotifications = mEntryManager.getVisibleNotifications();
+            List<NotificationEntry> activeNotifications = getVisibleNotifications();
             int N = activeNotifications.size();
             for (int i = 0; i < N; i++) {
                 NotificationEntry entry = activeNotifications.get(i);
@@ -161,6 +152,9 @@ public class NotificationLogger implements StateListener {
 
             mExpansionStateLogger.onVisibilityChanged(
                     mTmpCurrentlyVisibleNotifications, mTmpCurrentlyVisibleNotifications);
+            Trace.traceCounter(Trace.TRACE_TAG_APP, "Notifications [Active]", N);
+            Trace.traceCounter(Trace.TRACE_TAG_APP, "Notifications [Visible]",
+                    mCurrentlyVisibleNotifications.size());
 
             recycleAllVisibilityObjects(mTmpNoLongerVisibleNotifications);
             mTmpCurrentlyVisibleNotifications.clear();
@@ -169,34 +163,38 @@ public class NotificationLogger implements StateListener {
         }
     };
 
+    private List<NotificationEntry> getVisibleNotifications() {
+        return mNotifLiveDataStore.getActiveNotifList().getValue();
+    }
+
     /**
      * Returns the location of the notification referenced by the given {@link NotificationEntry}.
      */
-    public static NotificationVisibility.NotificationLocation getNotificationLocation(
+    public static NotificationLocation getNotificationLocation(
             NotificationEntry entry) {
         if (entry == null || entry.getRow() == null || entry.getRow().getViewState() == null) {
-            return NotificationVisibility.NotificationLocation.LOCATION_UNKNOWN;
+            return NotificationLocation.LOCATION_UNKNOWN;
         }
         return convertNotificationLocation(entry.getRow().getViewState().location);
     }
 
-    private static NotificationVisibility.NotificationLocation convertNotificationLocation(
+    private static NotificationLocation convertNotificationLocation(
             int location) {
         switch (location) {
             case ExpandableViewState.LOCATION_FIRST_HUN:
-                return NotificationVisibility.NotificationLocation.LOCATION_FIRST_HEADS_UP;
+                return NotificationLocation.LOCATION_FIRST_HEADS_UP;
             case ExpandableViewState.LOCATION_HIDDEN_TOP:
-                return NotificationVisibility.NotificationLocation.LOCATION_HIDDEN_TOP;
+                return NotificationLocation.LOCATION_HIDDEN_TOP;
             case ExpandableViewState.LOCATION_MAIN_AREA:
-                return NotificationVisibility.NotificationLocation.LOCATION_MAIN_AREA;
+                return NotificationLocation.LOCATION_MAIN_AREA;
             case ExpandableViewState.LOCATION_BOTTOM_STACK_PEEKING:
-                return NotificationVisibility.NotificationLocation.LOCATION_BOTTOM_STACK_PEEKING;
+                return NotificationLocation.LOCATION_BOTTOM_STACK_PEEKING;
             case ExpandableViewState.LOCATION_BOTTOM_STACK_HIDDEN:
-                return NotificationVisibility.NotificationLocation.LOCATION_BOTTOM_STACK_HIDDEN;
+                return NotificationLocation.LOCATION_BOTTOM_STACK_HIDDEN;
             case ExpandableViewState.LOCATION_GONE:
-                return NotificationVisibility.NotificationLocation.LOCATION_GONE;
+                return NotificationLocation.LOCATION_GONE;
             default:
-                return NotificationVisibility.NotificationLocation.LOCATION_UNKNOWN;
+                return NotificationLocation.LOCATION_UNKNOWN;
         }
     }
 
@@ -205,53 +203,69 @@ public class NotificationLogger implements StateListener {
      */
     public NotificationLogger(NotificationListener notificationListener,
             @UiBackground Executor uiBgExecutor,
-            NotificationEntryManager entryManager,
+            NotifLiveDataStore notifLiveDataStore,
+            NotificationVisibilityProvider visibilityProvider,
+            NotifPipeline notifPipeline,
             StatusBarStateController statusBarStateController,
+            WindowRootViewVisibilityInteractor windowRootViewVisibilityInteractor,
+            JavaAdapter javaAdapter,
             ExpansionStateLogger expansionStateLogger,
             NotificationPanelLogger notificationPanelLogger) {
+        // Not expected to be constructed if the feature flag is on
+        NotificationsLiveDataStoreRefactor.assertInLegacyMode();
+
         mNotificationListener = notificationListener;
         mUiBgExecutor = uiBgExecutor;
-        mEntryManager = entryManager;
+        mNotifLiveDataStore = notifLiveDataStore;
+        mVisibilityProvider = visibilityProvider;
+        mNotifPipeline = notifPipeline;
         mBarService = IStatusBarService.Stub.asInterface(
                 ServiceManager.getService(Context.STATUS_BAR_SERVICE));
         mExpansionStateLogger = expansionStateLogger;
         mNotificationPanelLogger = notificationPanelLogger;
+        mWindowRootViewVisibilityInteractor = windowRootViewVisibilityInteractor;
+        mJavaAdapter = javaAdapter;
         // Not expected to be destroyed, don't need to unsubscribe
         statusBarStateController.addCallback(this);
 
-        entryManager.addNotificationEntryListener(new NotificationEntryListener() {
-            @Override
-            public void onEntryRemoved(
-                    NotificationEntry entry,
-                    NotificationVisibility visibility,
-                    boolean removedByUser,
-                    int reason) {
-                if (removedByUser && visibility != null) {
-                    logNotificationClear(entry.getKey(), entry.getSbn(), visibility);
-                }
-                mExpansionStateLogger.onEntryRemoved(entry.getKey());
-            }
+        registerNewPipelineListener();
+    }
 
+    private void registerNewPipelineListener() {
+        mNotifPipeline.addCollectionListener(new NotifCollectionListener() {
             @Override
-            public void onPreEntryUpdated(NotificationEntry entry) {
+            public void onEntryUpdated(@NonNull NotificationEntry entry, boolean fromSystem) {
                 mExpansionStateLogger.onEntryUpdated(entry.getKey());
             }
 
             @Override
-            public void onInflationError(
-                    StatusBarNotification notification,
-                    Exception exception) {
-                logNotificationError(notification, exception);
+            public void onEntryRemoved(@NonNull NotificationEntry entry, int reason) {
+                mExpansionStateLogger.onEntryRemoved(entry.getKey());
             }
         });
     }
 
     public void setUpWithContainer(NotificationListContainer listContainer) {
         mListContainer = listContainer;
+        if (mLogging) {
+            mListContainer.setChildLocationsChangedListener(this::onChildLocationsChanged);
+        }
     }
 
-    public void setHeadsUpManager(HeadsUpManager headsUpManager) {
-        mHeadsUpManager = headsUpManager;
+    @Override
+    public void start() {
+        mJavaAdapter.alwaysCollectFlow(
+                mWindowRootViewVisibilityInteractor.isLockscreenOrShadeVisibleAndInteractive(),
+                this::onLockscreenOrShadeVisibleAndInteractiveChanged);
+    }
+
+    private void onLockscreenOrShadeVisibleAndInteractiveChanged(boolean visible) {
+        if (visible) {
+            startNotificationLogging();
+        } else {
+            // Ensure we stop notification logging when the device isn't interactive.
+            stopNotificationLogging();
+        }
     }
 
     public void stopNotificationLogging() {
@@ -278,65 +292,21 @@ public class NotificationLogger implements StateListener {
             if (DEBUG) {
                 Log.i(TAG, "startNotificationLogging");
             }
-            mListContainer.setChildLocationsChangedListener(mNotificationLocationsChangedListener);
-            // Some transitions like mVisibleToUser=false -> mVisibleToUser=true don't
-            // cause the scroller to emit child location events. Hence generate
-            // one ourselves to guarantee that we're reporting visible
+            boolean lockscreen;
+            synchronized (mDozingLock) {
+                lockscreen = mLockscreen != null && mLockscreen;
+            }
+            mNotificationPanelLogger.logPanelShown(lockscreen, getVisibleNotifications());
+            if (mListContainer != null) {
+                mListContainer.setChildLocationsChangedListener(this::onChildLocationsChanged);
+            }
+            // Sometimes, the transition from lockscreenOrShadeVisible=false ->
+            // lockscreenOrShadeVisible=true doesn't cause the scroller to emit child location
+            // events. Hence generate one ourselves to guarantee that we're reporting visible
             // notifications.
             // (Note that in cases where the scroller does emit events, this
             // additional event doesn't break anything.)
-            mNotificationLocationsChangedListener.onChildLocationsChanged();
-        }
-    }
-
-    private void setDozing(boolean dozing) {
-        synchronized (mDozingLock) {
-            mDozing = dozing;
-            maybeUpdateLoggingStatus();
-        }
-    }
-
-    // TODO: This method has side effects, it is NOT just logging that a notification
-    // was cleared, it also actually removes the notification
-    private void logNotificationClear(String key, StatusBarNotification notification,
-            NotificationVisibility nv) {
-        final String pkg = notification.getPackageName();
-        final String tag = notification.getTag();
-        final int id = notification.getId();
-        final int userId = notification.getUserId();
-        try {
-            int dismissalSurface = NotificationStats.DISMISSAL_SHADE;
-            if (mHeadsUpManager.isAlerting(key)) {
-                dismissalSurface = NotificationStats.DISMISSAL_PEEK;
-            } else if (mListContainer.hasPulsingNotifications()) {
-                dismissalSurface = NotificationStats.DISMISSAL_AOD;
-            }
-            int dismissalSentiment = NotificationStats.DISMISS_SENTIMENT_NEUTRAL;
-            mBarService.onNotificationClear(pkg, tag, id, userId, notification.getKey(),
-                    dismissalSurface,
-                    dismissalSentiment, nv);
-        } catch (RemoteException ex) {
-            // system process is dead if we're here.
-        }
-    }
-
-    /**
-     * Logs Notification inflation error
-     */
-    private void logNotificationError(
-            StatusBarNotification notification,
-            Exception exception) {
-        try {
-            mBarService.onNotificationError(
-                    notification.getPackageName(),
-                    notification.getTag(),
-                    notification.getId(),
-                    notification.getUid(),
-                    notification.getInitialPid(),
-                    exception.getMessage(),
-                    notification.getUserId());
-        } catch (RemoteException ex) {
-            // The end is nigh.
+            onChildLocationsChanged();
         }
     }
 
@@ -421,62 +391,30 @@ public class NotificationLogger implements StateListener {
         }
     }
 
-    @Override
-    public void onDozingChanged(boolean isDozing) {
-        if (DEBUG) {
-            Log.i(TAG, "onDozingChanged: new=" + isDozing);
-        }
-        setDozing(isDozing);
-    }
-
-    @GuardedBy("mDozingLock")
-    private void maybeUpdateLoggingStatus() {
-        if (mPanelExpanded == null || mDozing == null) {
-            if (DEBUG) {
-                Log.i(TAG, "Panel status unclear: panelExpandedKnown="
-                        + (mPanelExpanded == null) + " dozingKnown=" + (mDozing == null));
-            }
-            return;
-        }
-        // Once we know panelExpanded and Dozing, turn logging on & off when appropriate
-        boolean lockscreen = mLockscreen == null ? false : mLockscreen;
-        if (mPanelExpanded && !mDozing) {
-            mNotificationPanelLogger.logPanelShown(lockscreen,
-                    mEntryManager.getVisibleNotifications());
-            if (DEBUG) {
-                Log.i(TAG, "Notification panel shown, lockscreen=" + lockscreen);
-            }
-            startNotificationLogging();
-        } else {
-            if (DEBUG) {
-                Log.i(TAG, "Notification panel hidden, lockscreen=" + lockscreen);
-            }
-            stopNotificationLogging();
-        }
-    }
-
-    /**
-     * Called by StatusBar to notify the logger that the panel expansion has changed.
-     * The panel may be showing any of the normal notification panel, the AOD, or the bouncer.
-     * @param isExpanded True if the panel is expanded.
-     */
-    public void onPanelExpandedChanged(boolean isExpanded) {
-        if (DEBUG) {
-            Log.i(TAG, "onPanelExpandedChanged: new=" + isExpanded);
-        }
-        mPanelExpanded = isExpanded;
-        synchronized (mDozingLock) {
-            maybeUpdateLoggingStatus();
-        }
-    }
-
     /**
      * Called when the notification is expanded / collapsed.
      */
-    public void onExpansionChanged(String key, boolean isUserAction, boolean isExpanded) {
-        NotificationVisibility.NotificationLocation location =
-                getNotificationLocation(mEntryManager.getActiveNotificationUnfiltered(key));
-        mExpansionStateLogger.onExpansionChanged(key, isUserAction, isExpanded, location);
+    @Override
+    public void onNotificationExpansionChanged(@NonNull String key, boolean isExpanded,
+            int location, boolean isUserAction) {
+        NotificationLocation notifLocation = mVisibilityProvider.getLocation(key);
+        mExpansionStateLogger.onExpansionChanged(key, isUserAction, isExpanded, notifLocation);
+    }
+
+    @VisibleForTesting
+    void onChildLocationsChanged() {
+        if (mHandler.hasCallbacks(mVisibilityReporter)) {
+            // Visibilities will be reported when the existing
+            // callback is executed.
+            return;
+        }
+        // Calculate when we're allowed to run the visibility
+        // reporter. Note that this timestamp might already have
+        // passed. That's OK, the callback will just be executed
+        // ASAP.
+        long nextReportUptimeMs =
+                mLastVisibilityReportUptimeMs + VISIBILITY_REPORT_MIN_DELAY_MS;
+        mHandler.postAtTime(mVisibilityReporter, nextReportUptimeMs);
     }
 
     @VisibleForTesting
@@ -516,7 +454,7 @@ public class NotificationLogger implements StateListener {
 
         @VisibleForTesting
         void onExpansionChanged(String key, boolean isUserAction, boolean isExpanded,
-                NotificationVisibility.NotificationLocation location) {
+                NotificationLocation location) {
             State state = getState(key);
             state.mIsUserAction = isUserAction;
             state.mIsExpanded = isExpanded;
@@ -581,7 +519,7 @@ public class NotificationLogger implements StateListener {
                 return;
             }
             if (loggedExpansionState != null
-                    && state.mIsExpanded == loggedExpansionState) {
+                    && Objects.equals(state.mIsExpanded, loggedExpansionState)) {
                 return;
             }
             mLoggedExpansionState.put(key, state.mIsExpanded);
@@ -604,7 +542,7 @@ public class NotificationLogger implements StateListener {
             @Nullable
             Boolean mIsVisible;
             @Nullable
-            NotificationVisibility.NotificationLocation mLocation;
+            NotificationLocation mLocation;
 
             private State() {}
 

@@ -15,13 +15,18 @@
  */
 package com.android.settingslib.media;
 
+import static com.android.settingslib.media.MediaDevice.SelectionBehavior.SELECTION_BEHAVIOR_TRANSFER;
+
+import android.annotation.NonNull;
+import android.annotation.Nullable;
 import android.bluetooth.BluetoothClass;
 import android.bluetooth.BluetoothDevice;
+import android.bluetooth.BluetoothHearingAid;
 import android.content.Context;
-import android.graphics.drawable.BitmapDrawable;
 import android.graphics.drawable.Drawable;
+import android.media.AudioManager;
 import android.media.MediaRoute2Info;
-import android.media.MediaRouter2Manager;
+import android.media.RouteListingPreference;
 
 import com.android.settingslib.R;
 import com.android.settingslib.bluetooth.BluetoothUtils;
@@ -34,12 +39,17 @@ public class BluetoothMediaDevice extends MediaDevice {
 
     private static final String TAG = "BluetoothMediaDevice";
 
-    private CachedBluetoothDevice mCachedDevice;
+    private final CachedBluetoothDevice mCachedDevice;
+    private final AudioManager mAudioManager;
 
-    BluetoothMediaDevice(Context context, CachedBluetoothDevice device,
-            MediaRouter2Manager routerManager, MediaRoute2Info info, String packageName) {
-        super(context, routerManager, info, packageName);
+    BluetoothMediaDevice(
+            @NonNull Context context,
+            @NonNull CachedBluetoothDevice device,
+            @Nullable MediaRoute2Info info,
+            @Nullable RouteListingPreference.Item item) {
+        super(context, info, item);
         mCachedDevice = device;
+        mAudioManager = context.getSystemService(AudioManager.class);
         initDeviceRecord();
     }
 
@@ -56,23 +66,40 @@ public class BluetoothMediaDevice extends MediaDevice {
     }
 
     @Override
+    public CharSequence getSummaryForTv(int lowBatteryColorRes) {
+        return isConnected() || mCachedDevice.isBusy()
+                ? mCachedDevice.getTvConnectionSummary(lowBatteryColorRes)
+                : mContext.getString(R.string.bluetooth_saved_device);
+    }
+
+    @Override
+    public int getSelectionBehavior() {
+        // We don't allow apps to override the selection behavior of system routes.
+        return SELECTION_BEHAVIOR_TRANSFER;
+    }
+
+    @Override
     public Drawable getIcon() {
-        final Drawable drawable =
-                BluetoothUtils.getBtDrawableWithDescription(mContext, mCachedDevice).first;
-        if (!(drawable instanceof BitmapDrawable)) {
-            setColorFilter(drawable);
-        }
-        return BluetoothUtils.buildAdvancedDrawable(mContext, drawable);
+        return BluetoothUtils.isAdvancedUntetheredDevice(mCachedDevice.getDevice())
+                ? mContext.getDrawable(R.drawable.ic_earbuds_advanced)
+                : BluetoothUtils.getBtClassDrawableWithDescription(mContext, mCachedDevice).first;
     }
 
     @Override
     public Drawable getIconWithoutBackground() {
-        return BluetoothUtils.getBtClassDrawableWithDescription(mContext, mCachedDevice).first;
+        return BluetoothUtils.isAdvancedUntetheredDevice(mCachedDevice.getDevice())
+                ? mContext.getDrawable(R.drawable.ic_earbuds_advanced)
+                : BluetoothUtils.getBtClassDrawableWithDescription(mContext, mCachedDevice).first;
     }
 
     @Override
     public String getId() {
-        return MediaDeviceUtils.getId(mCachedDevice);
+        if (mCachedDevice.isHearingAidDevice()) {
+            if (mCachedDevice.getHiSyncId() != BluetoothHearingAid.HI_SYNC_ID_INVALID) {
+                return Long.toString(mCachedDevice.getHiSyncId());
+            }
+        }
+        return mCachedDevice.getAddress();
     }
 
     /**
@@ -101,6 +128,12 @@ public class BluetoothMediaDevice extends MediaDevice {
         return mCachedDevice != null
                 && BluetoothUtils.getBooleanMetaData(
                 mCachedDevice.getDevice(), BluetoothDevice.METADATA_IS_UNTETHERED_HEADSET);
+    }
+
+    @Override
+    public boolean isMutingExpectedDevice() {
+        return mAudioManager.getMutingExpectedDevice() != null && mCachedDevice.getAddress().equals(
+                mAudioManager.getMutingExpectedDevice().getAddress());
     }
 
     @Override

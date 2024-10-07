@@ -35,6 +35,7 @@ class C2Buffer;
 namespace android {
 
 struct ABuffer;
+struct AccessUnitInfo;
 struct ALooper;
 struct AMessage;
 struct AString;
@@ -55,13 +56,15 @@ using hardware::cas::native::V1_0::IDescrambler;
 struct JMediaCodec : public AHandler {
     JMediaCodec(
             JNIEnv *env, jobject thiz,
-            const char *name, bool nameIsType, bool encoder);
+            const char *name, bool nameIsType, bool encoder, int pid, int uid);
 
     status_t initCheck() const;
 
     void registerSelf();
     void release();
     void releaseAsync();
+
+    status_t enableOnFirstTunnelFrameReadyListener(jboolean enable);
 
     status_t enableOnFrameRenderedListener(jboolean enable);
 
@@ -77,6 +80,8 @@ struct JMediaCodec : public AHandler {
     status_t setSurface(
             const sp<IGraphicBufferProducer> &surface);
 
+    status_t detachOutputSurface();
+
     status_t createInputSurface(sp<IGraphicBufferProducer>* bufferProducer);
     status_t setInputSurface(const sp<PersistentSurface> &surface);
 
@@ -91,6 +96,13 @@ struct JMediaCodec : public AHandler {
             size_t offset, size_t size, int64_t timeUs, uint32_t flags,
             AString *errorDetailMsg);
 
+    status_t queueInputBuffers(
+            size_t index,
+            size_t offset,
+            size_t size,
+            const sp<RefBase> &auInfo,
+            AString *errorDetailMsg = NULL);
+
     status_t queueSecureInputBuffer(
             size_t index,
             size_t offset,
@@ -104,23 +116,26 @@ struct JMediaCodec : public AHandler {
             uint32_t flags,
             AString *errorDetailMsg);
 
+    status_t queueSecureInputBuffers(
+            size_t index,
+            size_t offset,
+            size_t size,
+            const sp<RefBase> &auInfos,
+            const sp<RefBase> &cryptoInfos,
+            AString *errorDetailMsg);
+
     status_t queueBuffer(
             size_t index, const std::shared_ptr<C2Buffer> &buffer,
-            int64_t timeUs, uint32_t flags, const sp<AMessage> &tunings,
+            const sp<RefBase> &infos, const sp<AMessage> &tunings,
             AString *errorDetailMsg);
 
     status_t queueEncryptedLinearBlock(
             size_t index,
             const sp<hardware::HidlMemory> &buffer,
             size_t offset,
-            const CryptoPlugin::SubSample *subSamples,
-            size_t numSubSamples,
-            const uint8_t key[16],
-            const uint8_t iv[16],
-            CryptoPlugin::Mode mode,
-            const CryptoPlugin::Pattern &pattern,
-            int64_t presentationTimeUs,
-            uint32_t flags,
+            size_t size,
+            const sp<RefBase> &infos,
+            const sp<RefBase> &cryptoInfos,
             const sp<AMessage> &tunings,
             AString *errorDetailMsg);
 
@@ -172,6 +187,10 @@ struct JMediaCodec : public AHandler {
 
     bool hasCryptoOrDescrambler() { return mHasCryptoOrDescrambler; }
 
+    const sp<ICrypto> &getCrypto() { return mCrypto; }
+
+    std::string getExceptionMessage(const char *msg) const;
+
 protected:
     virtual ~JMediaCodec();
 
@@ -182,6 +201,7 @@ private:
         kWhatCallbackNotify,
         kWhatFrameRendered,
         kWhatAsyncReleaseComplete,
+        kWhatFirstTunnelFrameReady,
     };
 
     jclass mClass;
@@ -197,9 +217,12 @@ private:
     std::once_flag mAsyncReleaseFlag;
 
     sp<AMessage> mCallbackNotification;
+    sp<AMessage> mOnFirstTunnelFrameReadyNotification;
     sp<AMessage> mOnFrameRenderedNotification;
 
     status_t mInitStatus;
+
+    sp<ICrypto> mCrypto;
 
     template <typename T>
     status_t createByteBufferFromABuffer(
@@ -207,6 +230,7 @@ private:
             jobject *buf) const;
 
     void handleCallback(const sp<AMessage> &msg);
+    void handleFirstTunnelFrameReadyNotification(const sp<AMessage> &msg);
     void handleFrameRenderedNotification(const sp<AMessage> &msg);
 
     DISALLOW_EVIL_CONSTRUCTORS(JMediaCodec);

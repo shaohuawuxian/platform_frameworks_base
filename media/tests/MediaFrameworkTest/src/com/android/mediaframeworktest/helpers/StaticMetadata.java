@@ -1127,8 +1127,8 @@ public class StaticMetadata {
      * Get aeAvailableModes and do the validation check.
      *
      * <p>Depending on the check level this class has, for WAR or COLLECT levels,
-     * If the aeMode list is invalid, return an empty mode array. The the caller doesn't
-     * have to abort the execution even the aeMode list is invalid.</p>
+     * If the aeMode list is invalid, return an empty mode array. The caller doesn't
+     * have to abort the execution even if the aeMode list is invalid.</p>
      * @return AE available modes
      */
     public int[] getAeAvailableModesChecked() {
@@ -1653,7 +1653,7 @@ public class StaticMetadata {
                 modeList.contains(CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_OFF));
         checkArrayValuesInRange(key, modes,
                 CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_OFF,
-                CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_ON);
+                CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_PREVIEW_STABILIZATION);
 
         return modes;
     }

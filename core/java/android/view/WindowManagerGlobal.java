@@ -16,30 +16,47 @@
 
 package android.view;
 
+import static android.view.Display.INVALID_DISPLAY;
+import static android.view.WindowManager.LayoutParams.TYPE_APPLICATION;
+
 import android.animation.ValueAnimator;
 import android.annotation.NonNull;
-import android.app.ActivityManager;
+import android.annotation.Nullable;
 import android.compat.annotation.UnsupportedAppUsage;
-import android.content.ComponentCallbacks2;
 import android.content.Context;
 import android.content.pm.ApplicationInfo;
 import android.content.res.Configuration;
+import android.graphics.HardwareRenderer;
+import android.os.Binder;
 import android.os.Build;
 import android.os.IBinder;
+import android.os.Looper;
 import android.os.RemoteException;
 import android.os.ServiceManager;
 import android.os.SystemProperties;
 import android.util.AndroidRuntimeException;
+import android.util.ArrayMap;
 import android.util.ArraySet;
 import android.util.Log;
+import android.util.Pair;
+import android.util.SparseArray;
 import android.view.inputmethod.InputMethodManager;
+import android.window.ITrustedPresentationListener;
+import android.window.InputTransferToken;
+import android.window.TrustedPresentationThresholds;
 
+import com.android.internal.annotations.GuardedBy;
 import com.android.internal.util.FastPrintWriter;
 
 import java.io.FileDescriptor;
 import java.io.FileOutputStream;
 import java.io.PrintWriter;
+import java.lang.ref.WeakReference;
 import java.util.ArrayList;
+import java.util.WeakHashMap;
+import java.util.concurrent.Executor;
+import java.util.function.Consumer;
+import java.util.function.IntConsumer;
 
 /**
  * Provides low-level communication with the system window manager for
@@ -56,58 +73,33 @@ import java.util.ArrayList;
 public final class WindowManagerGlobal {
     private static final String TAG = "WindowManager";
 
-    private static boolean sUseBLASTAdapter = false;
-
-    /**
-     * The user is navigating with keys (not the touch screen), so
-     * navigational focus should be shown.
-     */
-    public static final int RELAYOUT_RES_IN_TOUCH_MODE = 0x1;
-
     /**
      * This is the first time the window is being drawn,
      * so the client must call drawingFinished() when done
      */
-    public static final int RELAYOUT_RES_FIRST_TIME = 0x2;
+    public static final int RELAYOUT_RES_FIRST_TIME = 1;
 
     /**
      * The window manager has changed the surface from the last call.
      */
-    public static final int RELAYOUT_RES_SURFACE_CHANGED = 0x4;
-
-    /**
-     * The window is being resized by dragging on the docked divider. The client should render
-     * at (0, 0) and extend its background to the background frame passed into
-     * {@link IWindow#resized}.
-     */
-    public static final int RELAYOUT_RES_DRAG_RESIZING_DOCKED = 0x8;
-
-    /**
-     * The window is being resized by dragging one of the window corners,
-     * in this case the surface would be fullscreen-sized. The client should
-     * render to the actual frame location (instead of (0,curScrollY)).
-     */
-    public static final int RELAYOUT_RES_DRAG_RESIZING_FREEFORM = 0x10;
+    public static final int RELAYOUT_RES_SURFACE_CHANGED = 1 << 1;
 
     /**
      * The window manager has changed the size of the surface from the last call.
      */
-    public static final int RELAYOUT_RES_SURFACE_RESIZED = 0x20;
+    public static final int RELAYOUT_RES_SURFACE_RESIZED = 1 << 2;
 
     /**
      * In multi-window we force show the system bars. Because we don't want that the surface size
      * changes in this mode, we instead have a flag whether the system bar sizes should always be
      * consumed, so the app is treated like there is no virtual system bars at all.
      */
-    public static final int RELAYOUT_RES_CONSUME_ALWAYS_SYSTEM_BARS = 0x40;
+    public static final int RELAYOUT_RES_CONSUME_ALWAYS_SYSTEM_BARS = 1 << 3;
 
     /**
-     * This flag indicates the client should not directly submit it's next frame,
-     * but instead should pass it in the postDrawTransaction of
-     * {@link WindowManagerService#finishDrawing}. This is used by the WM
-     * BLASTSyncEngine to synchronize rendering of multiple windows.
+     * The window manager has told the window it cannot draw this frame and should retry again.
      */
-    public static final int RELAYOUT_RES_BLAST_SYNC = 0x80;
+    public static final int RELAYOUT_RES_CANCEL_AND_REDRAW = 1 << 4;
 
     /**
      * Flag for relayout: the client will be later giving
@@ -116,18 +108,8 @@ public final class WindowManagerGlobal {
      */
     public static final int RELAYOUT_INSETS_PENDING = 0x1;
 
-    /**
-     * Flag for relayout: the client may be currently using the current surface,
-     * so if it is to be destroyed as a part of the relayout the destroy must
-     * be deferred until later.  The client will call performDeferredDestroy()
-     * when it is okay.
-     */
-    public static final int RELAYOUT_DEFER_SURFACE_DESTROY = 0x2;
-
     public static final int ADD_FLAG_IN_TOUCH_MODE = 0x1;
     public static final int ADD_FLAG_APP_VISIBLE = 0x2;
-    public static final int ADD_FLAG_USE_TRIPLE_BUFFERING = 0x4;
-    public static final int ADD_FLAG_USE_BLAST = 0x8;
 
     /**
      * Like {@link #RELAYOUT_RES_CONSUME_ALWAYS_SYSTEM_BARS}, but as a "hint" when adding the
@@ -147,7 +129,6 @@ public final class WindowManagerGlobal {
     public static final int ADD_INVALID_DISPLAY = -9;
     public static final int ADD_INVALID_TYPE = -10;
     public static final int ADD_INVALID_USER = -11;
-    public static final int ADD_TOO_MANY_TOKENS = -12;
 
     @UnsupportedAppUsage
     private static WindowManagerGlobal sDefaultWindowManager;
@@ -168,7 +149,19 @@ public final class WindowManagerGlobal {
             new ArrayList<WindowManager.LayoutParams>();
     private final ArraySet<View> mDyingViews = new ArraySet<View>();
 
+    private final ArrayList<ViewRootImpl> mWindowlessRoots = new ArrayList<ViewRootImpl>();
+
+    /** A context token only has one remote registration to system. */
+    private WeakHashMap<IBinder, ProposedRotationListenerDelegate> mProposedRotationListenerMap;
+
     private Runnable mSystemPropertyUpdater;
+
+    private final TrustedPresentationListener mTrustedPresentationListener =
+            new TrustedPresentationListener();
+
+    @GuardedBy("mSurfaceControlInputReceivers")
+    private final SparseArray<SurfaceControlInputReceiverInfo>
+            mSurfaceControlInputReceivers = new SparseArray<>();
 
     private WindowManagerGlobal() {
     }
@@ -188,17 +181,38 @@ public final class WindowManagerGlobal {
         }
     }
 
+    /**
+     * Sets {@link com.android.server.wm.WindowManagerService} for the system process.
+     * <p>
+     * It is needed to prevent possible deadlock. A possible scenario is:
+     * In system process, WMS holds {@link com.android.server.wm.WindowManagerGlobalLock} to call
+     * {@code WindowManagerGlobal} APIs and wait to lock {@code WindowManagerGlobal} itself
+     * (i.e. call {@link #getWindowManagerService()} in the global lock), while
+     * another component may lock {@code WindowManagerGlobal} and wait to lock
+     * {@link com.android.server.wm.WindowManagerGlobalLock}(i.e call {@link #addView} in the
+     * system process, which calls to {@link com.android.server.wm.WindowManagerService} API
+     * directly).
+     */
+    public static void setWindowManagerServiceForSystemProcess(@NonNull IWindowManager wms) {
+        sWindowManagerService = wms;
+    }
+
+    @Nullable
     @UnsupportedAppUsage
     public static IWindowManager getWindowManagerService() {
+        if (sWindowManagerService != null) {
+            // Use WMS directly without locking WMGlobal to prevent deadlock.
+            return sWindowManagerService;
+        }
         synchronized (WindowManagerGlobal.class) {
             if (sWindowManagerService == null) {
                 sWindowManagerService = IWindowManager.Stub.asInterface(
                         ServiceManager.getService("window"));
                 try {
+                    // Can be null if this is called before WindowManagerService is initialized.
                     if (sWindowManagerService != null) {
                         ValueAnimator.setDurationScale(
                                 sWindowManagerService.getCurrentAnimatorScale());
-                        sUseBLASTAdapter = sWindowManagerService.useBLAST();
                     }
                 } catch (RemoteException e) {
                     throw e.rethrowFromSystemServer();
@@ -240,20 +254,17 @@ public final class WindowManagerGlobal {
         }
     }
 
-    /**
-     * Whether or not to use BLAST for ViewRootImpl
-     */
-    public static boolean useBLAST() {
-        return sUseBLASTAdapter;
-    }
-
     @UnsupportedAppUsage
     public String[] getViewRootNames() {
         synchronized (mLock) {
             final int numRoots = mRoots.size();
-            String[] mViewRoots = new String[numRoots];
+            final int windowlessRoots = mWindowlessRoots.size();
+            String[] mViewRoots = new String[numRoots + windowlessRoots];
             for (int i = 0; i < numRoots; ++i) {
                 mViewRoots[i] = getWindowName(mRoots.get(i));
+            }
+            for (int i = 0; i < windowlessRoots; ++i) {
+                mViewRoots[i + numRoots] = getWindowName(mWindowlessRoots.get(i));
             }
             return mViewRoots;
         }
@@ -323,6 +334,10 @@ public final class WindowManagerGlobal {
                 final ViewRootImpl root = mRoots.get(i);
                 if (name.equals(getWindowName(root))) return root.getView();
             }
+            for (int i = mWindowlessRoots.size() - 1; i >= 0; --i) {
+                final ViewRootImpl root = mWindowlessRoots.get(i);
+                if (name.equals(getWindowName(root))) return root.getView();
+            }
         }
 
         return null;
@@ -349,7 +364,7 @@ public final class WindowManagerGlobal {
             final Context context = view.getContext();
             if (context != null
                     && (context.getApplicationInfo().flags
-                            & ApplicationInfo.FLAG_HARDWARE_ACCELERATED) != 0) {
+                    & ApplicationInfo.FLAG_HARDWARE_ACCELERATED) != 0) {
                 wparams.flags |= WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED;
             }
         }
@@ -396,7 +411,25 @@ public final class WindowManagerGlobal {
                 }
             }
 
-            root = new ViewRootImpl(view.getContext(), display);
+            IWindowSession windowlessSession = null;
+            // If there is a parent set, but we can't find it, it may be coming
+            // from a SurfaceControlViewHost hierarchy.
+            if (wparams.token != null && panelParentView == null) {
+                for (int i = 0; i < mWindowlessRoots.size(); i++) {
+                    ViewRootImpl maybeParent = mWindowlessRoots.get(i);
+                    if (maybeParent.getWindowToken() == wparams.token) {
+                        windowlessSession = maybeParent.getWindowSession();
+                        break;
+                    }
+                }
+            }
+
+            if (windowlessSession == null) {
+                root = new ViewRootImpl(view.getContext(), display);
+            } else {
+                root = new ViewRootImpl(view.getContext(), display,
+                        windowlessSession, new WindowlessWindowLayout());
+            }
 
             view.setLayoutParams(wparams);
 
@@ -408,9 +441,10 @@ public final class WindowManagerGlobal {
             try {
                 root.setView(view, wparams, panelParentView, userId);
             } catch (RuntimeException e) {
+                final int viewIndex = (index >= 0) ? index : (mViews.size() - 1);
                 // BadTokenException or InvalidDisplayException, clean up.
-                if (index >= 0) {
-                    removeViewLocked(index, true);
+                if (viewIndex >= 0) {
+                    removeViewLocked(viewIndex, true);
                 }
                 throw e;
             }
@@ -488,7 +522,7 @@ public final class WindowManagerGlobal {
                     if (who != null) {
                         WindowLeaked leak = new WindowLeaked(
                                 what + " " + who + " has leaked window "
-                                + root.getView() + " that was originally added here");
+                                        + root.getView() + " that was originally added here");
                         leak.setStackTrace(root.getLocation().getStackTrace());
                         Log.e(TAG, "", leak);
                     }
@@ -527,9 +561,6 @@ public final class WindowManagerGlobal {
             }
             allViewsRemoved = mRoots.isEmpty();
         }
-        if (ThreadedRenderer.sTrimForeground && ThreadedRenderer.isAvailable()) {
-            doTrimForeground();
-        }
 
         // If we don't have any views anymore in our process, we no longer need the
         // InsetsAnimationThread to save some resources.
@@ -546,66 +577,14 @@ public final class WindowManagerGlobal {
         return index;
     }
 
-    public static boolean shouldDestroyEglContext(int trimLevel) {
-        // On low-end gfx devices we trim when memory is moderate;
-        // on high-end devices we do this when low.
-        if (trimLevel >= ComponentCallbacks2.TRIM_MEMORY_COMPLETE) {
-            return true;
-        }
-        if (trimLevel >= ComponentCallbacks2.TRIM_MEMORY_MODERATE
-                && !ActivityManager.isHighEndGfx()) {
-            return true;
-        }
-        return false;
-    }
-
     @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.P)
     public void trimMemory(int level) {
-        if (ThreadedRenderer.isAvailable()) {
-            if (shouldDestroyEglContext(level)) {
-                // Destroy all hardware surfaces and resources associated to
-                // known windows
-                synchronized (mLock) {
-                    for (int i = mRoots.size() - 1; i >= 0; --i) {
-                        mRoots.get(i).destroyHardwareResources();
-                    }
-                }
-                // Force a full memory flush
-                level = ComponentCallbacks2.TRIM_MEMORY_COMPLETE;
-            }
-
-            ThreadedRenderer.trimMemory(level);
-
-            if (ThreadedRenderer.sTrimForeground) {
-                doTrimForeground();
-            }
-        }
+        ThreadedRenderer.trimMemory(level);
     }
 
-    public static void trimForeground() {
-        if (ThreadedRenderer.sTrimForeground && ThreadedRenderer.isAvailable()) {
-            WindowManagerGlobal wm = WindowManagerGlobal.getInstance();
-            wm.doTrimForeground();
-        }
-    }
-
-    private void doTrimForeground() {
-        boolean hasVisibleWindows = false;
-        synchronized (mLock) {
-            for (int i = mRoots.size() - 1; i >= 0; --i) {
-                final ViewRootImpl root = mRoots.get(i);
-                if (root.mView != null && root.getHostVisibility() == View.VISIBLE
-                        && root.mAttachInfo.mThreadedRenderer != null) {
-                    hasVisibleWindows = true;
-                } else {
-                    root.destroyHardwareResources();
-                }
-            }
-        }
-        if (!hasVisibleWindows) {
-            ThreadedRenderer.trimMemory(
-                    ComponentCallbacks2.TRIM_MEMORY_COMPLETE);
-        }
+    /** @hide */
+    public void trimCaches(@HardwareRenderer.CacheTrimLevel int level) {
+        ThreadedRenderer.trimCaches(level);
     }
 
     public void dumpGfxInfo(FileDescriptor fd, String[] args) {
@@ -718,6 +697,363 @@ public final class WindowManagerGlobal {
                     return;
                 }
             }
+        }
+    }
+
+    /** @hide */
+    @Nullable
+    public SurfaceControl mirrorWallpaperSurface(int displayId) {
+        try {
+            return getWindowManagerService().mirrorWallpaperSurface(displayId);
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /** Registers the listener to the context token and returns the current proposed rotation. */
+    public void registerProposedRotationListener(IBinder contextToken, Executor executor,
+            IntConsumer listener) {
+        ProposedRotationListenerDelegate delegate;
+        synchronized (mLock) {
+            if (mProposedRotationListenerMap == null) {
+                mProposedRotationListenerMap = new WeakHashMap<>(1);
+            }
+            delegate = mProposedRotationListenerMap.get(contextToken);
+            final ProposedRotationListenerDelegate existingDelegate = delegate;
+            if (delegate == null) {
+                mProposedRotationListenerMap.put(contextToken,
+                        delegate = new ProposedRotationListenerDelegate());
+            }
+            if (!delegate.add(executor, listener)) {
+                // Duplicated listener.
+                return;
+            }
+            if (existingDelegate != null) {
+                executor.execute(() -> listener.accept(existingDelegate.mLastRotation));
+                return;
+            }
+        }
+        try {
+            final int currentRotation = getWindowManagerService().registerProposedRotationListener(
+                    contextToken, delegate);
+            delegate.onRotationChanged(currentRotation);
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /** Unregisters the proposed rotation listener of the given token. */
+    public void unregisterProposedRotationListener(IBinder contextToken, IntConsumer listener) {
+        final ProposedRotationListenerDelegate delegate;
+        synchronized (mLock) {
+            if (mProposedRotationListenerMap == null) {
+                return;
+            }
+            delegate = mProposedRotationListenerMap.get(contextToken);
+            if (delegate == null) {
+                return;
+            }
+            if (delegate.remove(listener)) {
+                // The delegate becomes empty.
+                mProposedRotationListenerMap.remove(contextToken);
+            } else {
+                // The delegate still contains other listeners.
+                return;
+            }
+        }
+        try {
+            getWindowManagerService().removeRotationWatcher(delegate);
+        } catch (RemoteException e) {
+            e.rethrowFromSystemServer();
+        }
+    }
+
+    private static class ProposedRotationListenerDelegate extends IRotationWatcher.Stub {
+        static class ListenerWrapper {
+            final Executor mExecutor;
+            final WeakReference<IntConsumer> mListener;
+
+            ListenerWrapper(Executor executor, IntConsumer listener) {
+                mExecutor = executor;
+                mListener = new WeakReference<>(listener);
+            }
+        }
+
+        /** The registered listeners. */
+        private final ArrayList<ListenerWrapper> mListeners = new ArrayList<>(1);
+        /** A thread-safe copy of registered listeners for dispatching events. */
+        private volatile ListenerWrapper[] mListenerArray;
+        int mLastRotation;
+
+        boolean add(Executor executor, IntConsumer listener) {
+            for (int i = mListeners.size() - 1; i >= 0; i--) {
+                if (mListeners.get(i).mListener.get() == listener) {
+                    // Ignore adding duplicated listener.
+                    return false;
+                }
+            }
+            mListeners.add(new ListenerWrapper(executor, listener));
+            mListenerArray = mListeners.toArray(new ListenerWrapper[0]);
+            return true;
+        }
+
+        boolean remove(IntConsumer listener) {
+            for (int i = mListeners.size() - 1; i >= 0; i--) {
+                if (mListeners.get(i).mListener.get() == listener) {
+                    mListeners.remove(i);
+                    mListenerArray = mListeners.toArray(new ListenerWrapper[0]);
+                    return mListeners.isEmpty();
+                }
+            }
+            return false;
+        }
+
+        @Override
+        public void onRotationChanged(int rotation) {
+            mLastRotation = rotation;
+            boolean alive = false;
+            for (ListenerWrapper listenerWrapper : mListenerArray) {
+                final IntConsumer listener = listenerWrapper.mListener.get();
+                if (listener != null) {
+                    listenerWrapper.mExecutor.execute(() -> listener.accept(rotation));
+                    alive = true;
+                }
+            }
+            if (!alive) {
+                // Unregister if there is no strong reference.
+                try {
+                    getWindowManagerService().removeRotationWatcher(this);
+                } catch (RemoteException e) {
+                    e.rethrowFromSystemServer();
+                }
+            }
+        }
+    }
+
+    public void registerTrustedPresentationListener(@NonNull IBinder window,
+            @NonNull TrustedPresentationThresholds thresholds, Executor executor,
+            @NonNull Consumer<Boolean> listener) {
+        mTrustedPresentationListener.addListener(window, thresholds, listener, executor);
+    }
+
+    public void unregisterTrustedPresentationListener(@NonNull Consumer<Boolean> listener) {
+        mTrustedPresentationListener.removeListener(listener);
+    }
+
+    private static InputChannel createInputChannel(@NonNull IBinder clientToken,
+            @NonNull InputTransferToken hostToken, @NonNull SurfaceControl surfaceControl,
+            @Nullable InputTransferToken inputTransferToken) {
+        InputChannel inputChannel = new InputChannel();
+        try {
+            // TODO (b/329860681): Use INVALID_DISPLAY for now because the displayId will be
+            // selected in  SurfaceFlinger. This should be cleaned up so grantInputChannel doesn't
+            // take in a displayId at all
+            WindowManagerGlobal.getWindowSession().grantInputChannel(INVALID_DISPLAY,
+                    surfaceControl, clientToken, hostToken, 0, 0, TYPE_APPLICATION, 0, null,
+                    inputTransferToken, surfaceControl.getName(), inputChannel);
+        } catch (RemoteException e) {
+            Log.e(TAG, "Failed to create input channel", e);
+            e.rethrowAsRuntimeException();
+        }
+        return inputChannel;
+    }
+
+    private static void removeInputChannel(IBinder clientToken) {
+        try {
+            WindowManagerGlobal.getWindowSession().remove(clientToken);
+        } catch (RemoteException e) {
+            Log.e(TAG, "Failed to remove input channel", e);
+            e.rethrowAsRuntimeException();
+        }
+    }
+
+    InputTransferToken registerBatchedSurfaceControlInputReceiver(
+            @NonNull InputTransferToken hostToken, @NonNull SurfaceControl surfaceControl,
+            @NonNull Choreographer choreographer, @NonNull SurfaceControlInputReceiver receiver) {
+        IBinder clientToken = new Binder();
+        InputTransferToken inputTransferToken = new InputTransferToken();
+        InputChannel inputChannel = createInputChannel(clientToken, hostToken,
+                surfaceControl, inputTransferToken);
+
+        synchronized (mSurfaceControlInputReceivers) {
+            mSurfaceControlInputReceivers.put(surfaceControl.getLayerId(),
+                    new SurfaceControlInputReceiverInfo(clientToken,
+                            new BatchedInputEventReceiver(inputChannel, choreographer.getLooper(),
+                                    choreographer) {
+                                @Override
+                                public void onInputEvent(InputEvent event) {
+                                    boolean handled = receiver.onInputEvent(event);
+                                    finishInputEvent(event, handled);
+                                }
+                            }));
+        }
+        return inputTransferToken;
+    }
+
+    InputTransferToken registerUnbatchedSurfaceControlInputReceiver(
+            @NonNull InputTransferToken hostToken, @NonNull SurfaceControl surfaceControl,
+            @NonNull Looper looper, @NonNull SurfaceControlInputReceiver receiver) {
+        IBinder clientToken = new Binder();
+        InputTransferToken inputTransferToken = new InputTransferToken();
+        InputChannel inputChannel = createInputChannel(clientToken, hostToken,
+                surfaceControl, inputTransferToken);
+
+        synchronized (mSurfaceControlInputReceivers) {
+            mSurfaceControlInputReceivers.put(surfaceControl.getLayerId(),
+                    new SurfaceControlInputReceiverInfo(clientToken,
+                            new InputEventReceiver(inputChannel, looper) {
+                                @Override
+                                public void onInputEvent(InputEvent event) {
+                                    boolean handled = receiver.onInputEvent(event);
+                                    finishInputEvent(event, handled);
+                                }
+                            }));
+        }
+        return inputTransferToken;
+    }
+
+    void unregisterSurfaceControlInputReceiver(@NonNull SurfaceControl surfaceControl) {
+        SurfaceControlInputReceiverInfo surfaceControlInputReceiverInfo;
+        synchronized (mSurfaceControlInputReceivers) {
+            surfaceControlInputReceiverInfo = mSurfaceControlInputReceivers.removeReturnOld(
+                    surfaceControl.getLayerId());
+        }
+
+        if (surfaceControlInputReceiverInfo == null) {
+            Log.w(TAG, "No registered input event receiver with sc: " + surfaceControl);
+            return;
+        }
+        removeInputChannel(surfaceControlInputReceiverInfo.mClientToken);
+
+        surfaceControlInputReceiverInfo.mInputEventReceiver.dispose();
+    }
+
+    IBinder getSurfaceControlInputClientToken(@NonNull SurfaceControl surfaceControl) {
+        SurfaceControlInputReceiverInfo surfaceControlInputReceiverInfo;
+        synchronized (mSurfaceControlInputReceivers) {
+            surfaceControlInputReceiverInfo = mSurfaceControlInputReceivers.get(
+                    surfaceControl.getLayerId());
+        }
+
+        if (surfaceControlInputReceiverInfo == null) {
+            Log.w(TAG, "No registered input event receiver with sc: " + surfaceControl);
+            return null;
+        }
+        return surfaceControlInputReceiverInfo.mClientToken;
+    }
+
+    boolean transferTouchGesture(@NonNull InputTransferToken transferFromToken,
+            @NonNull InputTransferToken transferToToken) {
+        try {
+            return getWindowManagerService().transferTouchGesture(transferFromToken,
+                    transferToToken);
+        } catch (RemoteException e) {
+            e.rethrowAsRuntimeException();
+        }
+        return false;
+    }
+
+    private final class TrustedPresentationListener extends
+            ITrustedPresentationListener.Stub {
+        private static int sId = 0;
+        private final ArrayMap<Consumer<Boolean>, Pair<Integer, Executor>> mListeners =
+                new ArrayMap<>();
+
+        private final Object mTplLock = new Object();
+
+        private void addListener(IBinder window, TrustedPresentationThresholds thresholds,
+                Consumer<Boolean> listener, Executor executor) {
+            synchronized (mTplLock) {
+                if (mListeners.containsKey(listener)) {
+                    Log.i(TAG, "Updating listener " + listener + " thresholds to " + thresholds);
+                    removeListener(listener);
+                }
+                int id = sId++;
+                mListeners.put(listener, new Pair<>(id, executor));
+                try {
+                    WindowManagerGlobal.getWindowManagerService()
+                            .registerTrustedPresentationListener(window, this, thresholds, id);
+                } catch (RemoteException e) {
+                    e.rethrowFromSystemServer();
+                }
+            }
+        }
+
+        private void removeListener(Consumer<Boolean> listener) {
+            synchronized (mTplLock) {
+                var removedListener = mListeners.remove(listener);
+                if (removedListener == null) {
+                    Log.i(TAG, "listener " + listener + " does not exist.");
+                    return;
+                }
+
+                try {
+                    WindowManagerGlobal.getWindowManagerService()
+                            .unregisterTrustedPresentationListener(this, removedListener.first);
+                } catch (RemoteException e) {
+                    e.rethrowFromSystemServer();
+                }
+            }
+        }
+
+        @Override
+        public void onTrustedPresentationChanged(int[] inTrustedStateListenerIds,
+                int[] outOfTrustedStateListenerIds) {
+            ArrayList<Runnable> firedListeners = new ArrayList<>();
+            synchronized (mTplLock) {
+                mListeners.forEach((listener, idExecutorPair) -> {
+                    final var listenerId =  idExecutorPair.first;
+                    final var executor = idExecutorPair.second;
+                    for (int id : inTrustedStateListenerIds) {
+                        if (listenerId == id) {
+                            firedListeners.add(() -> executor.execute(
+                                    () -> listener.accept(/*presentationState*/true)));
+                        }
+                    }
+                    for (int id : outOfTrustedStateListenerIds) {
+                        if (listenerId == id) {
+                            firedListeners.add(() -> executor.execute(
+                                    () -> listener.accept(/*presentationState*/false)));
+                        }
+                    }
+                });
+            }
+            for (int i = 0; i < firedListeners.size(); i++) {
+                firedListeners.get(i).run();
+            }
+        }
+    }
+
+    /** @hide */
+    public void addWindowlessRoot(ViewRootImpl impl) {
+        synchronized (mLock) {
+            mWindowlessRoots.add(impl);
+        }
+    }
+
+    /** @hide */
+    public void removeWindowlessRoot(ViewRootImpl impl) {
+        synchronized (mLock) {
+            mWindowlessRoots.remove(impl);
+        }
+    }
+
+    public void setRecentsAppBehindSystemBars(boolean behindSystemBars) {
+        try {
+            getWindowManagerService().setRecentsAppBehindSystemBars(behindSystemBars);
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    private static class SurfaceControlInputReceiverInfo {
+        final IBinder mClientToken;
+        final InputEventReceiver mInputEventReceiver;
+
+        private SurfaceControlInputReceiverInfo(IBinder clientToken,
+                InputEventReceiver inputEventReceiver) {
+            mClientToken = clientToken;
+            mInputEventReceiver = inputEventReceiver;
         }
     }
 }

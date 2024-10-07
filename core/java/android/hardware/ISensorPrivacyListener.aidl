@@ -24,6 +24,7 @@ oneway interface ISensorPrivacyListener {
     // the ones in
     //   frameworks/native/libs/sensorprivacy/aidl/android/hardware/ISensorPrivacyListener.aidl
     // =============== Beginning of transactions used on native side as well ======================
-    void onSensorPrivacyChanged(boolean enabled);
+    void onSensorPrivacyChanged(int toggleType, int sensor, boolean enabled);
+    void onSensorPrivacyStateChanged(int toggleType, int sensor, int state);
     // =============== End of transactions used on native side as well ============================
 }

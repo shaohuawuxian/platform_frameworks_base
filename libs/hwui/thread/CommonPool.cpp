@@ -16,36 +16,39 @@
 
 #include "CommonPool.h"
 
-#include <sys/resource.h>
 #include <utils/Trace.h>
-#include "renderthread/RenderThread.h"
 
 #include <array>
 
 namespace android {
 namespace uirenderer {
 
-CommonPool::CommonPool() {
+CommonPool::CommonPool() : CommonPoolBase() {
     ATRACE_CALL();
 
     CommonPool* pool = this;
+    std::mutex mLock;
+    std::vector<int> tids(THREAD_COUNT);
+    std::vector<std::condition_variable> tidConditionVars(THREAD_COUNT);
+
     // Create 2 workers
     for (int i = 0; i < THREAD_COUNT; i++) {
-        std::thread worker([pool, i] {
-            {
-                std::array<char, 20> name{"hwuiTask"};
-                snprintf(name.data(), name.size(), "hwuiTask%d", i);
-                auto self = pthread_self();
-                pthread_setname_np(self, name.data());
-                setpriority(PRIO_PROCESS, 0, PRIORITY_FOREGROUND);
-                auto startHook = renderthread::RenderThread::getOnStartHook();
-                if (startHook) {
-                    startHook(name.data());
-                }
-            }
+        std::thread worker([pool, i, &mLock, &tids, &tidConditionVars] {
+            pool->setupThread(i, mLock, tids, tidConditionVars);
             pool->workerLoop();
         });
         worker.detach();
+    }
+    {
+        std::unique_lock lock(mLock);
+        for (int i = 0; i < THREAD_COUNT; i++) {
+            while (!tids[i]) {
+                tidConditionVars[i].wait(lock);
+            }
+        }
+    }
+    if (pool->supportsTid()) {
+        mWorkerThreadIds = std::move(tids);
     }
 }
 
@@ -56,6 +59,10 @@ CommonPool& CommonPool::instance() {
 
 void CommonPool::post(Task&& task) {
     instance().enqueue(std::move(task));
+}
+
+std::vector<int> CommonPool::getThreadIds() {
+    return instance().mWorkerThreadIds;
 }
 
 void CommonPool::enqueue(Task&& task) {
@@ -73,7 +80,7 @@ void CommonPool::enqueue(Task&& task) {
 
 void CommonPool::workerLoop() {
     std::unique_lock lock(mLock);
-    while (true) {
+    while (!mIsStopping) {
         if (!mWorkQueue.hasWork()) {
             mWaitingThreads++;
             mCondition.wait(lock);

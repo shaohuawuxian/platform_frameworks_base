@@ -16,13 +16,15 @@
 
 package com.android.systemui.shared.system;
 
-import android.os.Bundle;
+import static android.os.Trace.TRACE_TAG_INPUT;
+
 import android.os.Looper;
+import android.os.Trace;
+import android.util.Log;
 import android.view.BatchedInputEventReceiver;
 import android.view.Choreographer;
 import android.view.InputChannel;
 import android.view.InputEvent;
-import android.view.InputEventSender;
 import android.view.MotionEvent;
 
 /**
@@ -38,16 +40,6 @@ public class InputChannelCompat {
          * @param ev event to be handled
          */
         void onInputEvent(InputEvent ev);
-    }
-
-    /**
-     * Creates a dispatcher from the extras received as part on onInitialize
-     */
-    public static InputEventReceiver fromBundle(Bundle params, String key,
-            Looper looper, Choreographer choreographer, InputEventListener listener) {
-
-        InputChannel channel = params.getParcelable(key);
-        return new InputEventReceiver(channel, looper, choreographer, listener);
     }
 
     /**
@@ -68,14 +60,19 @@ public class InputChannelCompat {
      */
     public static class InputEventReceiver {
 
+        private final String mName;
         private final BatchedInputEventReceiver mReceiver;
-        private final InputChannel mInputChannel;
 
+        @Deprecated
         public InputEventReceiver(InputChannel inputChannel, Looper looper,
                 Choreographer choreographer, final InputEventListener listener) {
-            mInputChannel = inputChannel;
-            mReceiver = new BatchedInputEventReceiver(inputChannel, looper, choreographer) {
+            this("unknown", inputChannel, looper, choreographer, listener);
+        }
 
+        public InputEventReceiver(String name, InputChannel inputChannel, Looper looper,
+                Choreographer choreographer, final InputEventListener listener) {
+            mName = name;
+            mReceiver = new BatchedInputEventReceiver(inputChannel, looper, choreographer) {
                 @Override
                 public void onInputEvent(InputEvent event) {
                     listener.onInputEvent(event);
@@ -85,40 +82,20 @@ public class InputChannelCompat {
         }
 
         /**
+         * @see BatchedInputEventReceiver#setBatchingEnabled()
+         */
+        public void setBatchingEnabled(boolean batchingEnabled) {
+            mReceiver.setBatchingEnabled(batchingEnabled);
+        }
+
+        /**
          * @see BatchedInputEventReceiver#dispose()
          */
         public void dispose() {
             mReceiver.dispose();
-            mInputChannel.dispose();
-        }
-    }
-
-    /**
-     * @see InputEventSender
-     */
-    public static class InputEventDispatcher {
-
-        private final InputChannel mInputChannel;
-        private final InputEventSender mSender;
-
-        public InputEventDispatcher(InputChannel inputChannel, Looper looper) {
-            mInputChannel = inputChannel;
-            mSender = new InputEventSender(inputChannel, looper) { };
-        }
-
-        /**
-         * @see InputEventSender#sendInputEvent(int, InputEvent)
-         */
-        public void dispatch(InputEvent ev) {
-            mSender.sendInputEvent(ev.getSequenceNumber(), ev);
-        }
-
-        /**
-         * @see InputEventSender#dispose()
-         */
-        public void dispose() {
-            mSender.dispose();
-            mInputChannel.dispose();
+            Trace.instant(TRACE_TAG_INPUT, "InputMonitorCompat-" + mName + " receiver disposed");
+            Log.d(InputMonitorCompat.TAG, "Input event receiver for monitor (" + mName
+                    + ") disposed");
         }
     }
 }

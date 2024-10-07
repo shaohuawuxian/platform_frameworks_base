@@ -28,8 +28,8 @@ import android.os.Parcelable;
  * Information about a Keyboard Shortcut.
  */
 public final class KeyboardShortcutInfo implements Parcelable {
-    private final CharSequence mLabel;
-    private final Icon mIcon;
+    @Nullable private final CharSequence mLabel;
+    @Nullable private Icon mIcon;
     private final char mBaseCharacter;
     private final int mKeycode;
     private final int mModifiers;
@@ -91,7 +91,7 @@ public final class KeyboardShortcutInfo implements Parcelable {
 
     private KeyboardShortcutInfo(Parcel source) {
         mLabel = source.readCharSequence();
-        mIcon = source.readParcelable(null);
+        mIcon = source.readParcelable(null, android.graphics.drawable.Icon.class);
         mBaseCharacter = (char) source.readInt();
         mKeycode = source.readInt();
         mModifiers = source.readInt();
@@ -113,6 +113,15 @@ public final class KeyboardShortcutInfo implements Parcelable {
     @Nullable
     public Icon getIcon() {
         return mIcon;
+    }
+
+    /**
+     * Removes an icon that was previously set.
+     *
+     * @hide
+     */
+    public void clearIcon() {
+        mIcon = null;
     }
 
     /**

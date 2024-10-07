@@ -35,17 +35,21 @@ android_test {
         "frameworks-base-testutils",
         "platform-test-annotations",
         "testng",
-        "truth-prebuilt",
+        "truth",
     ],
 
     libs: [
-        "android.test.runner",
-        "android.test.base",
+        "android.test.runner.stubs",
+        "android.test.base.stubs",
         "framework",
         "framework-res",
     ],
 
-    platform_apis: true,
+    java_resources: [
+        // Borrow an arbitrary test app from another module
+        ":PackageManagerTestAppVersion1",
+    ],
+
     sdk_version: "core_platform",
     test_suites: ["device-tests"],
 }

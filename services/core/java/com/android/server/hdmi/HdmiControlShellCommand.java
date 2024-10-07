@@ -84,10 +84,22 @@ final class HdmiControlShellCommand extends ShellCommand {
         pw.println("                --args <vendor specific arguments>");
         pw.println("                [--id <true if vendor command should be sent with vendor id>]");
         pw.println("      Send a Vendor Command to the given target device");
+        pw.println("  cec_setting get <setting name>");
+        pw.println("      Get the current value of a CEC setting");
+        pw.println("  cec_setting set <setting name> <value>");
+        pw.println("      Set the value of a CEC setting");
         pw.println("  setsystemaudiomode, setsam [on|off]");
         pw.println("      Sets the System Audio Mode feature on or off on TV devices");
         pw.println("  setarc [on|off]");
         pw.println("      Sets the ARC feature on or off on TV devices");
+        pw.println("  deviceselect <device id>");
+        pw.println("      Switch to device with given id");
+        pw.println("      The device's id is represented by its logical address.");
+        pw.println("  history_size get");
+        pw.println("      Gets the number of messages that can be stored in dumpsys history");
+        pw.println("  history_size set <new_size>");
+        pw.println("      Changes the number of messages that can be stored in dumpsys history to"
+                       + " new_size");
     }
 
     private int handleShellCommand(String cmd) throws RemoteException {
@@ -99,15 +111,36 @@ final class HdmiControlShellCommand extends ShellCommand {
                 return oneTouchPlay(pw);
             case "vendorcommand":
                 return vendorCommand(pw);
+            case "cec_setting":
+                return cecSetting(pw);
             case "setsystemaudiomode":
             case "setsam":
                 return setSystemAudioMode(pw);
             case "setarc":
                 return setArcMode(pw);
+            case "deviceselect":
+                return deviceSelect(pw);
+            case "history_size":
+                return historySize(pw);
         }
 
-        getErrPrintWriter().println("Unhandled command: " + cmd);
-        return 1;
+        return handleDefaultCommands(cmd);
+    }
+
+    private int deviceSelect(PrintWriter pw) throws RemoteException {
+        if (getRemainingArgsCount() != 1) {
+            throw new IllegalArgumentException("Expected exactly 1 argument.");
+        }
+        int deviceId = Integer.parseInt(getNextArg());
+
+        pw.print("Sending Device Select...");
+        mBinderService.deviceSelect(deviceId, mHdmiControlCallback);
+
+        if (!receiveCallback("Device Select")) {
+            return 1;
+        }
+
+        return mCecResult.get() == HdmiControlManager.RESULT_SUCCESS ? 0 : 1;
     }
 
     private int oneTouchPlay(PrintWriter pw) throws RemoteException {
@@ -167,6 +200,41 @@ final class HdmiControlShellCommand extends ShellCommand {
         return 0;
     }
 
+    private int cecSetting(PrintWriter pw) throws RemoteException {
+        if (getRemainingArgsCount() < 1) {
+            throw new IllegalArgumentException("Expected at least 1 argument (operation).");
+        }
+        String operation = getNextArgRequired();
+        switch (operation) {
+            case "get": {
+                String setting = getNextArgRequired();
+                try {
+                    String value = mBinderService.getCecSettingStringValue(setting);
+                    pw.println(setting + " = " + value);
+                } catch (IllegalArgumentException e) {
+                    int intValue = mBinderService.getCecSettingIntValue(setting);
+                    pw.println(setting + " = " + intValue);
+                }
+                return 0;
+            }
+            case "set": {
+                String setting = getNextArgRequired();
+                String value = getNextArgRequired();
+                try {
+                    mBinderService.setCecSettingStringValue(setting, value);
+                    pw.println(setting + " = " + value);
+                } catch (IllegalArgumentException e) {
+                    int intValue = Integer.parseInt(value);
+                    mBinderService.setCecSettingIntValue(setting, intValue);
+                    pw.println(setting + " = " + intValue);
+                }
+                return 0;
+            }
+            default:
+                throw new IllegalArgumentException("Unknown operation: " + operation);
+        }
+    }
+
     private int setSystemAudioMode(PrintWriter pw) throws RemoteException {
         if (1 > getRemainingArgsCount()) {
             throw new IllegalArgumentException(
@@ -211,6 +279,41 @@ final class HdmiControlShellCommand extends ShellCommand {
         }
 
         return 0;
+    }
+
+    private int historySize(PrintWriter pw) throws RemoteException {
+        if (1 > getRemainingArgsCount()) {
+            throw new IllegalArgumentException("Use 'set' or 'get' for the command action");
+        }
+
+        String operation = getNextArgRequired();
+        switch (operation) {
+            case "get": {
+                int value = mBinderService.getMessageHistorySize();
+                pw.println("CEC dumpsys message history size = " + value);
+                return 0;
+            }
+            case "set": {
+                String arg = getNextArgRequired();
+                int value;
+                try {
+                    value = Integer.parseInt(arg);
+                } catch (NumberFormatException nfe) {
+                    pw.println("Cannot set CEC dumpsys message history size to " + arg);
+                    return 1;
+                }
+                if (mBinderService.setMessageHistorySize(value)) {
+                    pw.println("Setting CEC dumpsys message history size to " + value);
+                } else {
+                    pw.println(
+                            "Message history size not changed, was it lower than the minimum "
+                                    + "size?");
+                }
+                return 0;
+            }
+            default:
+                throw new IllegalArgumentException("Unknown operation: " + operation);
+        }
     }
 
     private boolean receiveCallback(String command) {

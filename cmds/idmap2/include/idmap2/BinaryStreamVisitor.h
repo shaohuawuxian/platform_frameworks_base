@@ -18,7 +18,7 @@
 #define IDMAP2_INCLUDE_IDMAP2_BINARYSTREAMVISITOR_H_
 
 #include <cstdint>
-#include <iostream>
+#include <ostream>
 #include <string>
 
 #include "idmap2/Idmap.h"
@@ -39,8 +39,7 @@ class BinaryStreamVisitor : public Visitor {
   void Write8(uint8_t value);
   void Write16(uint16_t value);
   void Write32(uint32_t value);
-  void WriteString256(const StringPiece& value);
-  void WriteString(const StringPiece& value);
+  void WriteString(StringPiece value);
   std::ostream& stream_;
 };
 

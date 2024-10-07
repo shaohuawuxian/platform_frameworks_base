@@ -16,13 +16,16 @@
 
 package android.app;
 
-import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotEquals;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
 
 import android.content.pm.SharedLibraryInfo;
 
 import androidx.test.filters.SmallTest;
 import androidx.test.runner.AndroidJUnit4;
+
+import com.google.android.collect.Lists;
 
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -37,18 +40,20 @@ public class ApplicationLoadersTest {
     private static final String LIB_A = "/system/framework/android.hidl.base-V1.0-java.jar";
     // a library installed onto the device which only depends on A
     private static final String LIB_DEP_A = "/system/framework/android.hidl.manager-V1.0-java.jar";
+    // a commonly used, non-BCP, app-facing library installed onto the device
+    private static final String LIB_APACHE_HTTP = "/system/framework/org.apache.http.legacy.jar";
 
     private static SharedLibraryInfo createLib(String zip) {
         return new SharedLibraryInfo(
                 zip, null /*packageName*/, null /*codePaths*/, null /*name*/, 0 /*version*/,
                 SharedLibraryInfo.TYPE_BUILTIN, null /*declaringPackage*/,
-                null /*dependentPackages*/, null /*dependencies*/);
+                null /*dependentPackages*/, null /*dependencies*/, false /*isNative*/);
     }
 
     @Test
     public void testGetNonExistantLib() {
         ApplicationLoaders loaders = new ApplicationLoaders();
-        assertEquals(null, loaders.getCachedNonBootclasspathSystemLib(
+        assertNull(loaders.getCachedNonBootclasspathSystemLib(
                 "/system/framework/nonexistantlib.jar", null, null, null));
     }
 
@@ -57,9 +62,9 @@ public class ApplicationLoadersTest {
         ApplicationLoaders loaders = new ApplicationLoaders();
         SharedLibraryInfo libA = createLib(LIB_A);
 
-        loaders.createAndCacheNonBootclasspathSystemClassLoaders(new SharedLibraryInfo[]{libA});
+        loaders.createAndCacheNonBootclasspathSystemClassLoaders(Lists.newArrayList(libA));
 
-        assertNotEquals(null, loaders.getCachedNonBootclasspathSystemLib(
+        assertNotNull(loaders.getCachedNonBootclasspathSystemLib(
                 LIB_A, null, null, null));
     }
 
@@ -71,9 +76,9 @@ public class ApplicationLoadersTest {
         ClassLoader parent = ClassLoader.getSystemClassLoader();
         assertNotEquals(null, parent);
 
-        loaders.createAndCacheNonBootclasspathSystemClassLoaders(new SharedLibraryInfo[]{libA});
+        loaders.createAndCacheNonBootclasspathSystemClassLoaders(Lists.newArrayList(libA));
 
-        assertEquals(null, loaders.getCachedNonBootclasspathSystemLib(
+        assertNull(loaders.getCachedNonBootclasspathSystemLib(
                 LIB_A, parent, null, null));
     }
 
@@ -82,9 +87,9 @@ public class ApplicationLoadersTest {
         ApplicationLoaders loaders = new ApplicationLoaders();
         SharedLibraryInfo libA = createLib(LIB_A);
 
-        loaders.createAndCacheNonBootclasspathSystemClassLoaders(new SharedLibraryInfo[]{libA});
+        loaders.createAndCacheNonBootclasspathSystemClassLoaders(Lists.newArrayList(libA));
 
-        assertEquals(null, loaders.getCachedNonBootclasspathSystemLib(
+        assertNull(loaders.getCachedNonBootclasspathSystemLib(
                 LIB_A, null, "other classloader", null));
     }
 
@@ -98,9 +103,9 @@ public class ApplicationLoadersTest {
         ArrayList<ClassLoader> sharedLibraries = new ArrayList<>();
         sharedLibraries.add(dep);
 
-        loaders.createAndCacheNonBootclasspathSystemClassLoaders(new SharedLibraryInfo[]{libA});
+        loaders.createAndCacheNonBootclasspathSystemClassLoaders(Lists.newArrayList(libA));
 
-        assertEquals(null, loaders.getCachedNonBootclasspathSystemLib(
+        assertNull(loaders.getCachedNonBootclasspathSystemLib(
                 LIB_A, null, null, sharedLibraries));
     }
 
@@ -112,7 +117,7 @@ public class ApplicationLoadersTest {
         libB.addDependency(libA);
 
         loaders.createAndCacheNonBootclasspathSystemClassLoaders(
-                new SharedLibraryInfo[]{libA, libB});
+                Lists.newArrayList(libA, libB));
 
         ClassLoader loadA = loaders.getCachedNonBootclasspathSystemLib(
                 LIB_A, null, null, null);
@@ -121,7 +126,7 @@ public class ApplicationLoadersTest {
         ArrayList<ClassLoader> sharedLibraries = new ArrayList<>();
         sharedLibraries.add(loadA);
 
-        assertNotEquals(null, loaders.getCachedNonBootclasspathSystemLib(
+        assertNotNull(loaders.getCachedNonBootclasspathSystemLib(
                 LIB_DEP_A, null, null, sharedLibraries));
     }
 
@@ -132,7 +137,17 @@ public class ApplicationLoadersTest {
         SharedLibraryInfo libB = createLib(LIB_DEP_A);
         libB.addDependency(libA);
 
-        loaders.createAndCacheNonBootclasspathSystemClassLoaders(
-                new SharedLibraryInfo[]{libB, libA});
+        loaders.createAndCacheNonBootclasspathSystemClassLoaders(Lists.newArrayList(libB, libA));
+    }
+
+    @Test
+    public void testCacheApacheHttpLegacy() {
+        ApplicationLoaders loaders = new ApplicationLoaders();
+        SharedLibraryInfo libApacheHttp = createLib(LIB_APACHE_HTTP);
+
+        loaders.createAndCacheNonBootclasspathSystemClassLoaders(Lists.newArrayList(libApacheHttp));
+
+        assertNotNull(loaders.getCachedNonBootclasspathSystemLib(
+                LIB_APACHE_HTTP, null, null, null));
     }
 }

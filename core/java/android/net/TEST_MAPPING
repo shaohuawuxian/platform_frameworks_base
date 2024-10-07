@@ -16,5 +16,10 @@
     {
       "path": "frameworks/opt/net/wifi"
     }
+  ],
+  "presubmit": [
+    {
+      "name": "FrameworksCoreTests_android_net"
+    }
   ]
 }

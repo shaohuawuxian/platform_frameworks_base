@@ -60,6 +60,7 @@ public class Events {
     public static final int EVENT_DISMISS_USB_OVERHEAT_ALARM = 20; // (reason|int) (keyguard|bool)
     public static final int EVENT_ODI_CAPTIONS_CLICK = 21;
     public static final int EVENT_ODI_CAPTIONS_TOOLTIP_CLICK = 22;
+    public static final int EVENT_SLIDER_TOUCH_TRACKING = 23; // (tracking|bool)
 
     private static final String[] EVENT_TAGS = {
             "show_dialog",
@@ -84,7 +85,8 @@ public class Events {
             "show_usb_overheat_alarm",
             "dismiss_usb_overheat_alarm",
             "odi_captions_click",
-            "odi_captions_tooltip_click"
+            "odi_captions_tooltip_click",
+            "slider_touch_tracking"
     };
 
     public static final int DISMISS_REASON_UNKNOWN = 0;
@@ -97,6 +99,9 @@ public class Events {
     public static final int DISMISS_STREAM_GONE = 7;
     public static final int DISMISS_REASON_OUTPUT_CHOOSER = 8;
     public static final int DISMISS_REASON_USB_OVERHEAD_ALARM_CHANGED = 9;
+    public static final int DISMISS_REASON_CSD_WARNING_TIMEOUT = 10;
+    public static final int DISMISS_REASON_POSTURE_CHANGED = 11;
+
     public static final String[] DISMISS_REASONS = {
             "unknown",
             "touch_outside",
@@ -107,7 +112,9 @@ public class Events {
             "done_clicked",
             "a11y_stream_changed",
             "output_chooser",
-            "usb_temperature_below_threshold"
+            "usb_temperature_below_threshold",
+            "csd_warning_timeout",
+            "posture_changed"
     };
 
     public static final int SHOW_REASON_UNKNOWN = 0;
@@ -229,6 +236,14 @@ public class Events {
         VOLUME_DIALOG_SLIDER(150),
         @UiEvent(doc = "The audio stream was set to silent via slider")
         VOLUME_DIALOG_SLIDER_TO_ZERO(151),
+        @UiEvent(doc = "The right-most slider started tracking touch")
+        VOLUME_DIALOG_SLIDER_STARTED_TRACKING_TOUCH(1620),
+        @UiEvent(doc = "The right-most slider stopped tracking touch")
+        VOLUME_DIALOG_SLIDER_STOPPED_TRACKING_TOUCH(1621),
+        @UiEvent(doc = "ODI captions was clicked")
+        VOLUME_DIALOG_ODI_CAPTIONS_CLICKED(1503),
+        @UiEvent(doc = "ODI captions tooltip dismiss was clicked")
+        VOLUME_DIALOG_ODI_CAPTIONS_TOOLTIP_CLICKED(1504),
         @UiEvent(doc = "The audio volume was adjusted to silent via key")
         VOLUME_KEY_TO_ZERO(152),
         @UiEvent(doc = "The audio volume was adjusted to non-silent via key")
@@ -357,6 +372,10 @@ public class Events {
             if (tag == EVENT_SETTINGS_CLICK) {
                 sLegacyLogger.action(MetricsEvent.ACTION_VOLUME_SETTINGS);
                 sUiEventLogger.log(VolumeDialogEvent.VOLUME_DIALOG_SETTINGS_CLICK);
+            } else if (tag == EVENT_ODI_CAPTIONS_CLICK) {
+                sUiEventLogger.log(VolumeDialogEvent.VOLUME_DIALOG_ODI_CAPTIONS_CLICKED);
+            } else if (tag == EVENT_ODI_CAPTIONS_TOOLTIP_CLICK) {
+                sUiEventLogger.log(VolumeDialogEvent.VOLUME_DIALOG_ODI_CAPTIONS_TOOLTIP_CLICKED);
             }
             return sb.toString();
         }
@@ -478,6 +497,15 @@ public class Events {
                             .append(" keyguard=").append(keyguard);
                 }
                 break;
+            case EVENT_SLIDER_TOUCH_TRACKING:
+                final boolean startedTracking = (boolean) list[0];
+                final VolumeDialogEvent event;
+                if (startedTracking) {
+                    event = VolumeDialogEvent.VOLUME_DIALOG_SLIDER_STARTED_TRACKING_TOUCH;
+                } else {
+                    event = VolumeDialogEvent.VOLUME_DIALOG_SLIDER_STOPPED_TRACKING_TOUCH;
+                }
+                sUiEventLogger.log(event);
             default:
                 sb.append(Arrays.asList(list));
                 break;

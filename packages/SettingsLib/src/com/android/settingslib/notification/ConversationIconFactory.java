@@ -32,7 +32,7 @@ import android.util.IconDrawableFactory;
 import android.util.Log;
 
 import com.android.launcher3.icons.BaseIconFactory;
-import com.android.settingslib.R;
+import com.android.settingslib.Utils;
 
 /**
  * Factory for creating normalized conversation icons.
@@ -80,7 +80,7 @@ public class ConversationIconFactory extends BaseIconFactory {
         mPackageManager = pm;
         mIconDrawableFactory = iconDrawableFactory;
         mImportantConversationColor = context.getResources().getColor(
-                R.color.important_conversation, null);
+                com.android.launcher3.icons.R.color.important_conversation, null);
     }
 
     /**
@@ -99,7 +99,7 @@ public class ConversationIconFactory extends BaseIconFactory {
         try {
             final ApplicationInfo appInfo = mPackageManager.getApplicationInfoAsUser(
                     packageName, PackageManager.GET_META_DATA, userId);
-            badge = mIconDrawableFactory.getBadgedIcon(appInfo, userId);
+            badge = Utils.getBadgedIcon(mContext, appInfo);
         } catch (PackageManager.NameNotFoundException e) {
             badge = mPackageManager.getDefaultActivityIcon();
         }

@@ -16,13 +16,19 @@
 
 package android.graphics;
 
+import android.annotation.FloatRange;
 import android.annotation.Nullable;
+import android.annotation.SuppressLint;
 import android.compat.annotation.UnsupportedAppUsage;
+import android.hardware.DataSpace.NamedDataSpace;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.Message;
+import android.os.Trace;
 import android.view.Surface;
+import android.view.TextureView;
+import android.view.flags.Flags;
 
 import java.lang.ref.WeakReference;
 
@@ -41,6 +47,10 @@ import java.lang.ref.WeakReference;
  * destination of the older {@link android.hardware.Camera} API. Doing so will cause all the
  * frames from the image stream to be sent to the SurfaceTexture object rather than to the device's
  * display.
+ *
+ * <p>A typical pattern is to use SurfaceTexture to render frames to a {@link TextureView}; however,
+ * a TextureView is not <i>required</i> for using the texture object. The texture object may be used
+ * as part of an OpenGL ES shader.
  *
  * <p>When sampling from the texture one should first transform the texture coordinates using the
  * matrix queried via {@link #getTransformMatrix(float[])}.  The transform matrix may change each
@@ -72,6 +82,7 @@ public class SurfaceTexture {
     private final Looper mCreatorLooper;
     @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     private Handler mOnFrameAvailableHandler;
+    private Handler mOnSetFrameRateHandler;
 
     /**
      * These fields are used by native code, do not access or modify.
@@ -90,6 +101,21 @@ public class SurfaceTexture {
      */
     public interface OnFrameAvailableListener {
         void onFrameAvailable(SurfaceTexture surfaceTexture);
+    }
+
+    /**
+     * Callback interface for being notified that a producer set a frame rate
+     * @hide
+     */
+    public interface OnSetFrameRateListener {
+        /**
+         * Called when the producer sets a frame rate
+         * @hide
+         */
+        void onSetFrameRate(SurfaceTexture surfaceTexture,
+                            @FloatRange(from = 0.0) float frameRate,
+                                 @Surface.FrameRateCompatibility int compatibility,
+                                 @Surface.ChangeFrameRateStrategy int changeFrameRateStrategy);
     }
 
     /**
@@ -217,6 +243,48 @@ public class SurfaceTexture {
         }
     }
 
+    private static class SetFrameRateArgs {
+        SetFrameRateArgs(@FloatRange(from = 0.0) float frameRate,
+                                @Surface.FrameRateCompatibility int compatibility,
+                   @Surface.ChangeFrameRateStrategy int changeFrameRateStrategy) {
+            this.mFrameRate = frameRate;
+            this.mCompatibility = compatibility;
+            this.mChangeFrameRateStrategy = changeFrameRateStrategy;
+        }
+        final float mFrameRate;
+        final int mCompatibility;
+        final int mChangeFrameRateStrategy;
+    }
+
+    /**
+     * Register a callback to be invoked when the producer sets a frame rate using
+     * Surface.setFrameRate.
+     * @hide
+     */
+    public void setOnSetFrameRateListener(@Nullable final OnSetFrameRateListener listener,
+                                            @Nullable Handler handler) {
+        if (listener != null) {
+            Looper looper = handler != null ? handler.getLooper() :
+                    mCreatorLooper != null ? mCreatorLooper : Looper.getMainLooper();
+            mOnSetFrameRateHandler = new Handler(looper, null, true /*async*/) {
+                @Override
+                public void handleMessage(Message msg) {
+                    Trace.traceBegin(Trace.TRACE_TAG_VIEW, "onSetFrameRateHandler");
+                    try {
+                        SetFrameRateArgs args = (SetFrameRateArgs) msg.obj;
+                        listener.onSetFrameRate(SurfaceTexture.this,
+                                args.mFrameRate, args.mCompatibility,
+                                args.mChangeFrameRateStrategy);
+                    } finally {
+                        Trace.traceEnd(Trace.TRACE_TAG_VIEW);
+                    }
+                }
+            };
+        } else {
+            mOnSetFrameRateHandler = null;
+        }
+    }
+
     /**
      * Set the default size of the image buffers.  The image producer may override the buffer size,
      * in which case the producer-set buffer size will be used, not the default size set by this
@@ -250,7 +318,7 @@ public class SurfaceTexture {
     }
 
     /**
-     * Releases the the texture content. This is needed in single buffered mode to allow the image
+     * Releases the texture content. This is needed in single buffered mode to allow the image
      * content producer to take ownership of the image buffer.
      * <p>
      * For more information see {@link #SurfaceTexture(int, boolean)}.
@@ -288,7 +356,7 @@ public class SurfaceTexture {
      * context at a time.
      *
      * @param texName The name of the OpenGL ES texture that will be created.  This texture name
-     * must be unusued in the OpenGL ES context that is current on the calling thread.
+     * must be unused in the OpenGL ES context that is current on the calling thread.
      */
     public void attachToGLContext(int texName) {
         int err = nativeAttachToGLContext(texName);
@@ -348,6 +416,14 @@ public class SurfaceTexture {
     }
 
     /**
+     * Retrieve the dataspace associated with the texture image.
+     */
+    @SuppressLint("MethodNameUnits")
+    public @NamedDataSpace int getDataSpace() {
+        return nativeGetDataSpace();
+    }
+
+    /**
      * {@code release()} frees all the buffers and puts the SurfaceTexture into the
      * 'abandoned' state. Once put in this state the SurfaceTexture can never
      * leave it. When in the 'abandoned' state, all methods of the
@@ -355,7 +431,7 @@ public class SurfaceTexture {
      * error.
      * <p>
      * Note that while calling this method causes all the buffers to be freed
-     * from the perspective of the the SurfaceTexture, if there are additional
+     * from the perspective of the SurfaceTexture, if there are additional
      * references on the buffers (e.g. if a buffer is referenced by a client or
      * by OpenGL ES as a texture) then those buffer will remain allocated.
      * <p>
@@ -403,6 +479,35 @@ public class SurfaceTexture {
     }
 
     /**
+     * This method is invoked from native code only.
+     * @hide
+     */
+    @SuppressWarnings({"UnusedDeclaration"})
+    private static void postOnSetFrameRateEventFromNative(WeakReference<SurfaceTexture> weakSelf,
+            @FloatRange(from = 0.0) float frameRate,
+            @Surface.FrameRateCompatibility int compatibility,
+            @Surface.ChangeFrameRateStrategy int changeFrameRateStrategy) {
+        Trace.traceBegin(Trace.TRACE_TAG_VIEW, "postOnSetFrameRateEventFromNative");
+        try {
+            if (Flags.toolkitSetFrameRateReadOnly()) {
+                SurfaceTexture st = weakSelf.get();
+                if (st != null) {
+                    Handler handler = st.mOnSetFrameRateHandler;
+                    if (handler != null) {
+                        Message msg = new Message();
+                        msg.obj = new SetFrameRateArgs(frameRate, compatibility,
+                                changeFrameRateStrategy);
+                        handler.sendMessage(msg);
+                    }
+                }
+            }
+        } finally {
+            Trace.traceEnd(Trace.TRACE_TAG_VIEW);
+        }
+
+    }
+
+    /**
      * Returns {@code true} if the SurfaceTexture is single-buffered.
      * @hide
      */
@@ -416,6 +521,7 @@ public class SurfaceTexture {
     private native void nativeFinalize();
     private native void nativeGetTransformMatrix(float[] mtx);
     private native long nativeGetTimestamp();
+    private native int nativeGetDataSpace();
     private native void nativeSetDefaultBufferSize(int width, int height);
     private native void nativeUpdateTexImage();
     private native void nativeReleaseTexImage();

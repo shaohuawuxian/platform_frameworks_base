@@ -15,42 +15,51 @@
 package com.android.systemui.qs.customize;
 
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 
-import android.testing.AndroidTestingRunner;
 import android.testing.TestableLooper;
 import android.testing.TestableLooper.RunWithLooper;
 
+import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.filters.SmallTest;
 
 import com.android.internal.logging.testing.UiEventLoggerFake;
 import com.android.systemui.SysuiTestCase;
-import com.android.systemui.qs.QSTileHost;
+import com.android.systemui.flags.FakeFeatureFlags;
+import com.android.systemui.flags.Flags;
+import com.android.systemui.qs.QSHost;
 
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+import org.mockito.Mock;
+import org.mockito.MockitoAnnotations;
 
 import java.util.Collections;
 
-@RunWith(AndroidTestingRunner.class)
+@RunWith(AndroidJUnit4.class)
 @RunWithLooper
 @SmallTest
 public class TileAdapterTest extends SysuiTestCase {
 
     private TileAdapter mTileAdapter;
+    @Mock
+    private QSHost mQSHost;
 
     @Before
     public void setup() throws Exception {
+        FakeFeatureFlags fakeFeatureFlags = new FakeFeatureFlags();
+        fakeFeatureFlags.set(Flags.LOCKSCREEN_ENABLE_LANDSCAPE, false);
+
+        MockitoAnnotations.initMocks(this);
+
         TestableLooper.get(this).runWithLooper(() -> mTileAdapter =
-                new TileAdapter(mContext, new UiEventLoggerFake()));
+                new TileAdapter(mContext, mQSHost, new UiEventLoggerFake(), fakeFeatureFlags));
     }
 
     @Test
     public void testResetNotifiesHost() {
-        QSTileHost host = mock(QSTileHost.class);
-        mTileAdapter.resetTileSpecs(host, Collections.emptyList());
-        verify(host).changeTiles(any(), any());
+        mTileAdapter.resetTileSpecs(Collections.emptyList());
+        verify(mQSHost).changeTilesByUser(any(), any());
     }
 }

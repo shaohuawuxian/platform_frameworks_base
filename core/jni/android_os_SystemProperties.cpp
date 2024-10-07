@@ -34,8 +34,6 @@
 
 #if defined(__BIONIC__)
 # include <sys/system_properties.h>
-#else
-struct prop_info;
 #endif
 
 namespace android {
@@ -46,7 +44,6 @@ using android::base::ParseBoolResult;
 template<typename Functor>
 void ReadProperty(const prop_info* prop, Functor&& functor)
 {
-#if defined(__BIONIC__)
     auto thunk = [](void* cookie,
                     const char* /*name*/,
                     const char* value,
@@ -54,9 +51,6 @@ void ReadProperty(const prop_info* prop, Functor&& functor)
         std::forward<Functor>(*static_cast<Functor*>(cookie))(value);
     };
     __system_property_read_callback(prop, thunk, &functor);
-#else
-    LOG(FATAL) << "fast property access supported only on device";
-#endif
 }
 
 template<typename Functor>
@@ -66,16 +60,11 @@ void ReadProperty(JNIEnv* env, jstring keyJ, Functor&& functor)
     if (!key.c_str()) {
         return;
     }
-#if defined(__BIONIC__)
     const prop_info* prop = __system_property_find(key.c_str());
     if (!prop) {
         return;
     }
     ReadProperty(prop, std::forward<Functor>(functor));
-#else
-    std::forward<Functor>(functor)(
-        android::base::GetProperty(key.c_str(), "").c_str());
-#endif
 }
 
 jstring SystemProperties_getSS(JNIEnv* env, jclass clazz, jstring keyJ,
@@ -132,17 +121,12 @@ jboolean SystemProperties_get_boolean(JNIEnv *env, jclass, jstring keyJ,
 
 jlong SystemProperties_find(JNIEnv* env, jclass, jstring keyJ)
 {
-#if defined(__BIONIC__)
     ScopedUtfChars key(env, keyJ);
     if (!key.c_str()) {
         return 0;
     }
     const prop_info* prop = __system_property_find(key.c_str());
     return reinterpret_cast<jlong>(prop);
-#else
-    LOG(FATAL) << "fast property access supported only on device";
-    __builtin_unreachable();  // Silence warning
-#endif
 }
 
 jstring SystemProperties_getH(JNIEnv* env, jclass clazz, jlong propJ)
@@ -190,15 +174,27 @@ void SystemProperties_set(JNIEnv *env, jobject clazz, jstring keyJ,
             return;
         }
     }
+    // Calling SystemProperties.set() with a null value is equivalent to an
+    // empty string, but this is not true for the underlying libc function.
+    const char* value_c_str = value ? value->c_str() : "";
+    // Explicitly clear errno so we can recognize __system_property_set()
+    // failures from failed system calls (as opposed to "init rejected your
+    // request" failures).
+    errno = 0;
     bool success;
-#if defined(__BIONIC__)
-    success = !__system_property_set(key.c_str(), value ? value->c_str() : "");
-#else
-    success = android::base::SetProperty(key.c_str(), value ? value->c_str() : "");
-#endif
+    success = !__system_property_set(key.c_str(), value_c_str);
     if (!success) {
-        jniThrowException(env, "java/lang/RuntimeException",
-                          "failed to set system property (check logcat for reason)");
+        if (errno != 0) {
+            jniThrowExceptionFmt(env, "java/lang/RuntimeException",
+                                 "failed to set system property \"%s\" to \"%s\": %m",
+                                 key.c_str(), value_c_str);
+        } else {
+            // Must have made init unhappy, which will have logged something,
+            // but there's no API to ask for more detail.
+            jniThrowExceptionFmt(env, "java/lang/RuntimeException",
+                                 "failed to set system property \"%s\" to \"%s\" (check logcat for reason)",
+                                 key.c_str(), value_c_str);
+        }
     }
 }
 

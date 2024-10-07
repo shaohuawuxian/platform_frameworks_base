@@ -77,73 +77,41 @@ public final class WebViewDelegate {
     }
 
     /**
-     * Returns {@code true} if the draw GL functor can be invoked (see {@link #invokeDrawGlFunctor})
-     * and {@code false} otherwise.
-     *
+     * Throws {@link UnsupportedOperationException}
      * @deprecated Use {@link #drawWebViewFunctor(Canvas, int)}
      */
     @Deprecated
     public boolean canInvokeDrawGlFunctor(View containerView) {
-        return true;
+        throw new UnsupportedOperationException();
     }
 
     /**
-     * Invokes the draw GL functor. If waitForCompletion is {@code false} the functor
-     * may be invoked asynchronously.
-     *
-     * @param nativeDrawGLFunctor the pointer to the native functor that implements
-     *        system/core/include/utils/Functor.h
+     * Throws {@link UnsupportedOperationException}
      * @deprecated Use {@link #drawWebViewFunctor(Canvas, int)}
      */
     @Deprecated
     public void invokeDrawGlFunctor(View containerView, long nativeDrawGLFunctor,
             boolean waitForCompletion) {
-        ViewRootImpl.invokeFunctor(nativeDrawGLFunctor, waitForCompletion);
+        throw new UnsupportedOperationException();
     }
 
     /**
-     * Calls the function specified with the nativeDrawGLFunctor functor pointer. This
-     * functionality is used by the WebView for calling into their renderer from the
-     * framework display lists.
-     *
-     * @param canvas a hardware accelerated canvas (see {@link Canvas#isHardwareAccelerated()})
-     * @param nativeDrawGLFunctor the pointer to the native functor that implements
-     *        system/core/include/utils/Functor.h
-     * @throws IllegalArgumentException if the canvas is not hardware accelerated
+     * Throws {@link UnsupportedOperationException}
      * @deprecated Use {@link #drawWebViewFunctor(Canvas, int)}
      */
     @Deprecated
     public void callDrawGlFunction(Canvas canvas, long nativeDrawGLFunctor) {
-        if (!(canvas instanceof RecordingCanvas)) {
-            // Canvas#isHardwareAccelerated() is only true for subclasses of HardwareCanvas.
-            throw new IllegalArgumentException(canvas.getClass().getName()
-                    + " is not a DisplayList canvas");
-        }
-        ((RecordingCanvas) canvas).drawGLFunctor2(nativeDrawGLFunctor, null);
+        throw new UnsupportedOperationException();
     }
 
     /**
-     * Calls the function specified with the nativeDrawGLFunctor functor pointer. This
-     * functionality is used by the WebView for calling into their renderer from the
-     * framework display lists.
-     *
-     * @param canvas a hardware accelerated canvas (see {@link Canvas#isHardwareAccelerated()})
-     * @param nativeDrawGLFunctor the pointer to the native functor that implements
-     *        system/core/include/utils/Functor.h
-     * @param releasedRunnable Called when this nativeDrawGLFunctor is no longer referenced by this
-     *        canvas, so is safe to be destroyed.
-     * @throws IllegalArgumentException if the canvas is not hardware accelerated
+     * Throws {@link UnsupportedOperationException}
      * @deprecated Use {@link #drawWebViewFunctor(Canvas, int)}
      */
     @Deprecated
     public void callDrawGlFunction(@NonNull Canvas canvas, long nativeDrawGLFunctor,
             @Nullable Runnable releasedRunnable) {
-        if (!(canvas instanceof RecordingCanvas)) {
-            // Canvas#isHardwareAccelerated() is only true for subclasses of HardwareCanvas.
-            throw new IllegalArgumentException(canvas.getClass().getName()
-                    + " is not a DisplayList canvas");
-        }
-        ((RecordingCanvas) canvas).drawGLFunctor2(nativeDrawGLFunctor, releasedRunnable);
+        throw new UnsupportedOperationException();
     }
 
     /**
@@ -207,8 +175,16 @@ public final class WebViewDelegate {
 
     /**
      * Adds the WebView asset path to {@link android.content.res.AssetManager}.
+     * If {@link android.content.res.Flags#FLAG_REGISTER_RESOURCE_PATHS} is enabled, this function
+     * will be a no-op because the asset paths appending work will only be handled by
+     * {@link android.content.res.Resources#registerResourcePaths(String, ApplicationInfo)},
+     * otherwise it behaves the old way.
      */
     public void addWebViewAssetPath(Context context) {
+        if (android.content.res.Flags.registerResourcePaths()) {
+            return;
+        }
+
         final String[] newAssetPaths =
                 WebViewFactory.getLoadedPackageInfo().applicationInfo.getAllApkPaths();
         final ApplicationInfo appInfo = context.getApplicationInfo();
@@ -237,6 +213,14 @@ public final class WebViewDelegate {
      * Returns whether WebView should run in multiprocess mode.
      */
     public boolean isMultiProcessEnabled() {
+        if (Flags.updateServiceV2()) {
+            return true;
+        } else if (Flags.updateServiceIpcWrapper()) {
+            // We don't want to support this method in the new wrapper because updateServiceV2 is
+            // intended to ship in the same release (or sooner). It's only possible to disable it
+            // with an obscure adb command, so just return true here too.
+            return true;
+        }
         try {
             return WebViewFactory.getUpdateService().isMultiProcessEnabled();
         } catch (RemoteException e) {
@@ -249,5 +233,15 @@ public final class WebViewDelegate {
      */
     public String getDataDirectorySuffix() {
         return WebViewFactory.getDataDirectorySuffix();
+    }
+
+    /**
+     * Get the timestamps at which various WebView startup events occurred in this process.
+     * This method must be called on the same thread where the
+     * WebViewChromiumFactoryProvider#create method was invoked.
+     */
+    @NonNull
+    public WebViewFactory.StartupTimestamps getStartupTimestamps() {
+        return WebViewFactory.getStartupTimestamps();
     }
 }

@@ -28,6 +28,7 @@
 
 #include "Frame.h"
 #include "Properties.h"
+#include "RenderEffectCapabilityQuery.h"
 #include "utils/Color.h"
 #include "utils/StringUtils.h"
 
@@ -35,6 +36,9 @@
 
 // Android-specific addition that is used to show when frames began in systrace
 EGLAPI void EGLAPIENTRY eglBeginFrame(EGLDisplay dpy, EGLSurface surface);
+
+static constexpr auto P3_XRB = static_cast<android_dataspace>(
+        ADATASPACE_STANDARD_DCI_P3 | ADATASPACE_TRANSFER_SRGB | ADATASPACE_RANGE_EXTENDED);
 
 namespace android {
 namespace uirenderer {
@@ -76,6 +80,7 @@ static struct {
     bool glColorSpace = false;
     bool scRGB = false;
     bool displayP3 = false;
+    bool hdr = false;
     bool contextPriority = false;
     bool surfacelessContext = false;
     bool nativeFenceSync = false;
@@ -86,7 +91,9 @@ static struct {
 EglManager::EglManager()
         : mEglDisplay(EGL_NO_DISPLAY)
         , mEglConfig(nullptr)
-        , mEglConfigWideGamut(nullptr)
+        , mEglConfigF16(nullptr)
+        , mEglConfig1010102(nullptr)
+        , mEglConfigA8(nullptr)
         , mEglContext(EGL_NO_CONTEXT)
         , mPBufferSurface(EGL_NO_SURFACE)
         , mCurrentSurface(EGL_NO_SURFACE)
@@ -136,15 +143,21 @@ void EglManager::initialize() {
     LOG_ALWAYS_FATAL_IF(!DeviceInfo::get()->getWideColorSpace()->toXYZD50(&wideColorGamut),
                         "Could not get gamut matrix from wideColorSpace");
     bool hasWideColorSpaceExtension = false;
-    if (memcmp(&wideColorGamut, &SkNamedGamut::kDCIP3, sizeof(wideColorGamut)) == 0) {
+    if (memcmp(&wideColorGamut, &SkNamedGamut::kDisplayP3, sizeof(wideColorGamut)) == 0) {
         hasWideColorSpaceExtension = EglExtensions.displayP3;
     } else if (memcmp(&wideColorGamut, &SkNamedGamut::kSRGB, sizeof(wideColorGamut)) == 0) {
         hasWideColorSpaceExtension = EglExtensions.scRGB;
     } else {
         LOG_ALWAYS_FATAL("Unsupported wide color space.");
     }
-    mHasWideColorGamutSupport = EglExtensions.glColorSpace && hasWideColorSpaceExtension &&
-                                mEglConfigWideGamut != EGL_NO_CONFIG_KHR;
+    mHasWideColorGamutSupport = EglExtensions.glColorSpace && hasWideColorSpaceExtension;
+
+    auto* vendor = reinterpret_cast<const char*>(glGetString(GL_VENDOR));
+    auto* version = reinterpret_cast<const char*>(glGetString(GL_VERSION));
+    Properties::enableRenderEffectCache = supportsRenderEffectCache(
+        vendor, version);
+    ALOGV("RenderEffectCache supported %d on driver version %s",
+          Properties::enableRenderEffectCache, version);
 }
 
 EGLConfig EglManager::load8BitsConfig(EGLDisplay display, EglManager::SwapBehavior swapBehavior) {
@@ -164,6 +177,35 @@ EGLConfig EglManager::load8BitsConfig(EGLDisplay display, EglManager::SwapBehavi
                         0,
                         EGL_CONFIG_CAVEAT,
                         EGL_NONE,
+                        EGL_STENCIL_SIZE,
+                        STENCIL_BUFFER_SIZE,
+                        EGL_SURFACE_TYPE,
+                        EGL_WINDOW_BIT | eglSwapBehavior,
+                        EGL_NONE};
+    EGLConfig config = EGL_NO_CONFIG_KHR;
+    EGLint numConfigs = 1;
+    if (!eglChooseConfig(display, attribs, &config, numConfigs, &numConfigs) || numConfigs != 1) {
+        return EGL_NO_CONFIG_KHR;
+    }
+    return config;
+}
+
+EGLConfig EglManager::load1010102Config(EGLDisplay display, SwapBehavior swapBehavior) {
+    EGLint eglSwapBehavior =
+            (swapBehavior == SwapBehavior::Preserved) ? EGL_SWAP_BEHAVIOR_PRESERVED_BIT : 0;
+    // If we reached this point, we have a valid swap behavior
+    EGLint attribs[] = {EGL_RENDERABLE_TYPE,
+                        EGL_OPENGL_ES2_BIT,
+                        EGL_RED_SIZE,
+                        10,
+                        EGL_GREEN_SIZE,
+                        10,
+                        EGL_BLUE_SIZE,
+                        10,
+                        EGL_ALPHA_SIZE,
+                        2,
+                        EGL_DEPTH_SIZE,
+                        0,
                         EGL_STENCIL_SIZE,
                         STENCIL_BUFFER_SIZE,
                         EGL_SURFACE_TYPE,
@@ -208,12 +250,52 @@ EGLConfig EglManager::loadFP16Config(EGLDisplay display, SwapBehavior swapBehavi
     return config;
 }
 
-extern "C" EGLAPI const char* eglQueryStringImplementationANDROID(EGLDisplay dpy, EGLint name);
+EGLConfig EglManager::loadA8Config(EGLDisplay display, EglManager::SwapBehavior swapBehavior) {
+    EGLint eglSwapBehavior =
+            (swapBehavior == SwapBehavior::Preserved) ? EGL_SWAP_BEHAVIOR_PRESERVED_BIT : 0;
+    EGLint attribs[] = {EGL_RENDERABLE_TYPE,
+                        EGL_OPENGL_ES2_BIT,
+                        EGL_RED_SIZE,
+                        8,
+                        EGL_GREEN_SIZE,
+                        0,
+                        EGL_BLUE_SIZE,
+                        0,
+                        EGL_ALPHA_SIZE,
+                        0,
+                        EGL_DEPTH_SIZE,
+                        0,
+                        EGL_SURFACE_TYPE,
+                        EGL_WINDOW_BIT | eglSwapBehavior,
+                        EGL_NONE};
+    EGLint numConfigs = 1;
+    if (!eglChooseConfig(display, attribs, nullptr, numConfigs, &numConfigs)) {
+        return EGL_NO_CONFIG_KHR;
+    }
+
+    std::vector<EGLConfig> configs(numConfigs, EGL_NO_CONFIG_KHR);
+    if (!eglChooseConfig(display, attribs, configs.data(), numConfigs, &numConfigs)) {
+        return EGL_NO_CONFIG_KHR;
+    }
+
+    // The component sizes passed to eglChooseConfig are minimums, so configs
+    // contains entries that exceed them. Choose one that matches the sizes
+    // exactly.
+    for (EGLConfig config : configs) {
+        EGLint r{0}, g{0}, b{0}, a{0};
+        eglGetConfigAttrib(display, config, EGL_RED_SIZE, &r);
+        eglGetConfigAttrib(display, config, EGL_GREEN_SIZE, &g);
+        eglGetConfigAttrib(display, config, EGL_BLUE_SIZE, &b);
+        eglGetConfigAttrib(display, config, EGL_ALPHA_SIZE, &a);
+        if (8 == r && 0 == g && 0 == b && 0 == a) {
+            return config;
+        }
+    }
+    return EGL_NO_CONFIG_KHR;
+}
 
 void EglManager::initExtensions() {
     auto extensions = StringUtils::split(eglQueryString(mEglDisplay, EGL_EXTENSIONS));
-    auto extensionsAndroid =
-            StringUtils::split(eglQueryStringImplementationANDROID(mEglDisplay, EGL_EXTENSIONS));
 
     // For our purposes we don't care if EGL_BUFFER_AGE is a result of
     // EGL_EXT_buffer_age or EGL_KHR_partial_update as our usage is covered
@@ -230,14 +312,12 @@ void EglManager::initExtensions() {
     EglExtensions.pixelFormatFloat = extensions.has("EGL_EXT_pixel_format_float");
     EglExtensions.scRGB = extensions.has("EGL_EXT_gl_colorspace_scrgb");
     EglExtensions.displayP3 = extensions.has("EGL_EXT_gl_colorspace_display_p3_passthrough");
+    EglExtensions.hdr = extensions.has("EGL_EXT_gl_colorspace_bt2020_pq");
     EglExtensions.contextPriority = extensions.has("EGL_IMG_context_priority");
     EglExtensions.surfacelessContext = extensions.has("EGL_KHR_surfaceless_context");
     EglExtensions.fenceSync = extensions.has("EGL_KHR_fence_sync");
     EglExtensions.waitSync = extensions.has("EGL_KHR_wait_sync");
-
-    // EGL_ANDROID_native_fence_sync is not exposed to applications, so access
-    // this through the private Android-specific query instead.
-    EglExtensions.nativeFenceSync = extensionsAndroid.has("EGL_ANDROID_native_fence_sync");
+    EglExtensions.nativeFenceSync = extensions.has("EGL_ANDROID_native_fence_sync");
 }
 
 bool EglManager::hasEglContext() {
@@ -260,18 +340,20 @@ void EglManager::loadConfigs() {
             LOG_ALWAYS_FATAL("Failed to choose config, error = %s", eglErrorString());
         }
     }
-    SkColorType wideColorType = DeviceInfo::get()->getWideColorType();
 
     // When we reach this point, we have a valid swap behavior
-    if (wideColorType == SkColorType::kRGBA_F16_SkColorType && EglExtensions.pixelFormatFloat) {
-        mEglConfigWideGamut = loadFP16Config(mEglDisplay, mSwapBehavior);
-        if (mEglConfigWideGamut == EGL_NO_CONFIG_KHR) {
+    if (EglExtensions.pixelFormatFloat) {
+        mEglConfigF16 = loadFP16Config(mEglDisplay, mSwapBehavior);
+        if (mEglConfigF16 == EGL_NO_CONFIG_KHR) {
             ALOGE("Device claims wide gamut support, cannot find matching config, error = %s",
                   eglErrorString());
             EglExtensions.pixelFormatFloat = false;
         }
-    } else if (wideColorType == SkColorType::kN32_SkColorType) {
-        mEglConfigWideGamut = load8BitsConfig(mEglDisplay, mSwapBehavior);
+    }
+    mEglConfig1010102 = load1010102Config(mEglDisplay, mSwapBehavior);
+    if (mEglConfig1010102 == EGL_NO_CONFIG_KHR) {
+        ALOGW("Failed to initialize 101010-2 format, error = %s",
+              eglErrorString());
     }
 }
 
@@ -311,9 +393,14 @@ Result<EGLSurface, EGLint> EglManager::createSurface(EGLNativeWindowType window,
                                                      sk_sp<SkColorSpace> colorSpace) {
     LOG_ALWAYS_FATAL_IF(!hasEglContext(), "Not initialized");
 
-    bool wideColorGamut = colorMode == ColorMode::WideColorGamut && mHasWideColorGamutSupport &&
-                          EglExtensions.noConfigContext;
+    if (!EglExtensions.noConfigContext) {
+        // The caller shouldn't use A8 if we cannot switch modes.
+        LOG_ALWAYS_FATAL_IF(colorMode == ColorMode::A8,
+                            "Cannot use A8 without EGL_KHR_no_config_context!");
 
+        // Cannot switch modes without EGL_KHR_no_config_context.
+        colorMode = ColorMode::Default;
+    }
     // The color space we want to use depends on whether linear blending is turned
     // on and whether the app has requested wide color gamut rendering. When wide
     // color gamut rendering is off, the app simply renders in the display's native
@@ -338,26 +425,79 @@ Result<EGLSurface, EGLint> EglManager::createSurface(EGLNativeWindowType window,
     // list is considered empty if the first entry is EGL_NONE
     EGLint attribs[] = {EGL_NONE, EGL_NONE, EGL_NONE};
 
-    if (EglExtensions.glColorSpace) {
-        attribs[0] = EGL_GL_COLORSPACE_KHR;
-        if (wideColorGamut) {
-            skcms_Matrix3x3 colorGamut;
-            LOG_ALWAYS_FATAL_IF(!colorSpace->toXYZD50(&colorGamut),
-                                "Could not get gamut matrix from color space");
-            if (memcmp(&colorGamut, &SkNamedGamut::kDCIP3, sizeof(colorGamut)) == 0) {
-                attribs[1] = EGL_GL_COLORSPACE_DISPLAY_P3_PASSTHROUGH_EXT;
-            } else if (memcmp(&colorGamut, &SkNamedGamut::kSRGB, sizeof(colorGamut)) == 0) {
-                attribs[1] = EGL_GL_COLORSPACE_SCRGB_EXT;
-            } else {
-                LOG_ALWAYS_FATAL("Unreachable: unsupported wide color space.");
+    EGLConfig config = mEglConfig;
+    bool overrideWindowDataSpaceForHdr = false;
+    if (colorMode == ColorMode::A8) {
+        // A8 doesn't use a color space
+        if (!mEglConfigA8) {
+            mEglConfigA8 = loadA8Config(mEglDisplay, mSwapBehavior);
+            LOG_ALWAYS_FATAL_IF(!mEglConfigA8,
+                                "Requested ColorMode::A8, but EGL lacks support! error = %s",
+                                eglErrorString());
+        }
+        config = mEglConfigA8;
+    } else {
+        if (!mHasWideColorGamutSupport) {
+            colorMode = ColorMode::Default;
+        }
+
+        // TODO: maybe we want to get rid of the WCG check if overlay properties just works?
+        bool canUseFp16 = DeviceInfo::get()->isSupportFp16ForHdr() ||
+                DeviceInfo::get()->getWideColorType() == kRGBA_F16_SkColorType;
+
+        if (colorMode == ColorMode::Hdr) {
+            if (canUseFp16 && !DeviceInfo::get()->isSupportRgba10101010ForHdr()) {
+                if (mEglConfigF16 == EGL_NO_CONFIG_KHR) {
+                    // If the driver doesn't support fp16 then fallback to 8-bit
+                    canUseFp16 = false;
+                } else {
+                    config = mEglConfigF16;
+                }
             }
-        } else {
-            attribs[1] = EGL_GL_COLORSPACE_LINEAR_KHR;
+        }
+
+        if (EglExtensions.glColorSpace) {
+            attribs[0] = EGL_GL_COLORSPACE_KHR;
+            switch (colorMode) {
+                case ColorMode::Default:
+                    attribs[1] = EGL_GL_COLORSPACE_LINEAR_KHR;
+                    break;
+                case ColorMode::Hdr:
+                    if (canUseFp16) {
+                        attribs[1] = EGL_GL_COLORSPACE_SCRGB_EXT;
+                        break;
+                        // No fp16 support so fallthrough to HDR10
+                    }
+                // We don't have an EGL colorspace for extended range P3 that's used for HDR
+                // So override it after configuring the EGL context
+                case ColorMode::Hdr10:
+                    overrideWindowDataSpaceForHdr = true;
+                    attribs[1] = EGL_GL_COLORSPACE_DISPLAY_P3_PASSTHROUGH_EXT;
+                    break;
+                case ColorMode::WideColorGamut: {
+                    skcms_Matrix3x3 colorGamut;
+                    LOG_ALWAYS_FATAL_IF(!colorSpace->toXYZD50(&colorGamut),
+                                        "Could not get gamut matrix from color space");
+                    if (memcmp(&colorGamut, &SkNamedGamut::kDisplayP3, sizeof(colorGamut)) == 0) {
+                        attribs[1] = EGL_GL_COLORSPACE_DISPLAY_P3_PASSTHROUGH_EXT;
+                    } else if (memcmp(&colorGamut, &SkNamedGamut::kSRGB, sizeof(colorGamut)) == 0) {
+                        attribs[1] = EGL_GL_COLORSPACE_SCRGB_EXT;
+                    } else if (memcmp(&colorGamut, &SkNamedGamut::kRec2020, sizeof(colorGamut)) ==
+                               0) {
+                        attribs[1] = EGL_GL_COLORSPACE_BT2020_PQ_EXT;
+                    } else {
+                        LOG_ALWAYS_FATAL("Unreachable: unsupported wide color space.");
+                    }
+                    break;
+                }
+                case ColorMode::A8:
+                    LOG_ALWAYS_FATAL("Unreachable: A8 doesn't use a color space");
+                    break;
+            }
         }
     }
 
-    EGLSurface surface = eglCreateWindowSurface(
-            mEglDisplay, wideColorGamut ? mEglConfigWideGamut : mEglConfig, window, attribs);
+    EGLSurface surface = eglCreateWindowSurface(mEglDisplay, config, window, attribs);
     if (surface == EGL_NO_SURFACE) {
         return Error<EGLint>{eglGetError()};
     }
@@ -367,6 +507,14 @@ Result<EGLSurface, EGLint> EglManager::createSurface(EGLNativeWindowType window,
                                              EGL_BUFFER_DESTROYED) == EGL_FALSE,
                             "Failed to set swap behavior to destroyed for window %p, eglErr = %s",
                             (void*)window, eglErrorString());
+    }
+
+    if (overrideWindowDataSpaceForHdr) {
+        // This relies on knowing that EGL will not re-set the dataspace after the call to
+        // eglCreateWindowSurface. Since the handling of the colorspace extension is largely
+        // implemented in libEGL in the platform, we can safely assume this is the case
+        int32_t err = ANativeWindow_setBuffersDataSpace(window, P3_XRB);
+        LOG_ALWAYS_FATAL_IF(err, "Failed to ANativeWindow_setBuffersDataSpace %d", err);
     }
 
     return surface;

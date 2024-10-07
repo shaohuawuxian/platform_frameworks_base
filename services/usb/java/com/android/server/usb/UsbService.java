@@ -16,6 +16,9 @@
 
 package com.android.server.usb;
 
+import static android.hardware.usb.DisplayPortAltModeInfo.DISPLAYPORT_ALT_MODE_STATUS_UNKNOWN;
+import static android.hardware.usb.DisplayPortAltModeInfo.LINK_TRAINING_STATUS_UNKNOWN;
+import static android.hardware.usb.UsbOperationInternal.USB_OPERATION_ERROR_INTERNAL;
 import static android.hardware.usb.UsbPortStatus.DATA_ROLE_DEVICE;
 import static android.hardware.usb.UsbPortStatus.DATA_ROLE_HOST;
 import static android.hardware.usb.UsbPortStatus.MODE_DFP;
@@ -34,7 +37,9 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.pm.PackageManager;
+import android.hardware.usb.IDisplayPortAltModeInfoListener;
 import android.hardware.usb.IUsbManager;
+import android.hardware.usb.IUsbOperationInternal;
 import android.hardware.usb.ParcelableUsbPort;
 import android.hardware.usb.UsbAccessory;
 import android.hardware.usb.UsbDevice;
@@ -43,22 +48,31 @@ import android.hardware.usb.UsbPort;
 import android.hardware.usb.UsbPortStatus;
 import android.os.Binder;
 import android.os.Bundle;
+import android.os.Looper;
 import android.os.ParcelFileDescriptor;
+import android.os.RemoteException;
 import android.os.UserHandle;
 import android.os.UserManager;
 import android.service.usb.UsbServiceDumpProto;
+import android.util.ArrayMap;
 import android.util.ArraySet;
 import android.util.Slog;
 import android.util.proto.ProtoOutputStream;
 
 import com.android.internal.annotations.GuardedBy;
+import com.android.internal.annotations.VisibleForTesting;
+import com.android.internal.content.PackageMonitor;
+import com.android.internal.os.BackgroundThread;
 import com.android.internal.util.DumpUtils;
 import com.android.internal.util.IndentingPrintWriter;
 import com.android.internal.util.Preconditions;
 import com.android.internal.util.dump.DualDumpOutputStream;
+import com.android.internal.widget.LockPatternUtils;
 import com.android.server.FgThread;
 import com.android.server.SystemServerInitThreadPool;
 import com.android.server.SystemService;
+
+import dalvik.annotation.optimization.NeverCompile;
 
 import java.io.File;
 import java.io.FileDescriptor;
@@ -139,6 +153,8 @@ public class UsbService extends IUsbManager.Stub {
     private final UsbSettingsManager mSettingsManager;
     private final UsbPermissionManager mPermissionManager;
 
+    static final int PACKAGE_MONITOR_OPERATION_ID = 1;
+    static final int STRONG_AUTH_OPERATION_ID = 2;
     /**
      * The user id of the current user. There might be several profiles (with separate user ids)
      * per user.
@@ -147,6 +163,10 @@ public class UsbService extends IUsbManager.Stub {
     private @UserIdInt int mCurrentUserId;
 
     private final Object mLock = new Object();
+
+    // Key: USB port id
+    // Value: A set of UIDs of requesters who request disabling usb data
+    private final ArrayMap<String, ArraySet<Integer>> mUsbDisableRequesters = new ArrayMap<>();
 
     /**
      * @return the {@link UsbUserSettingsManager} for the given userId
@@ -200,7 +220,22 @@ public class UsbService extends IUsbManager.Stub {
         final IntentFilter filter = new IntentFilter();
         filter.setPriority(IntentFilter.SYSTEM_HIGH_PRIORITY);
         filter.addAction(DevicePolicyManager.ACTION_DEVICE_POLICY_MANAGER_STATE_CHANGED);
-        mContext.registerReceiver(receiver, filter, null, null);
+        mContext.registerReceiverAsUser(receiver, UserHandle.ALL, filter, null, null);
+    }
+
+    // Ideally we should use the injector pattern so we wouldn't need this constructor  for test
+    @VisibleForTesting
+    UsbService(Context context,
+                      UsbPortManager usbPortManager,
+                      UsbAlsaManager usbAlsaManager,
+                      UserManager userManager,
+                      UsbSettingsManager usbSettingsManager) {
+        mContext = context;
+        mPortManager = usbPortManager;
+        mAlsaManager = usbAlsaManager;
+        mUserManager = userManager;
+        mSettingsManager = usbSettingsManager;
+        mPermissionManager = new UsbPermissionManager(context, this);
     }
 
     /**
@@ -253,6 +288,14 @@ public class UsbService extends IUsbManager.Stub {
         if (mDeviceManager != null) {
             mDeviceManager.bootCompleted();
         }
+        if (android.hardware.usb.flags.Flags.enableUsbDataSignalStaking()) {
+            new PackageUninstallMonitor()
+                    .register(mContext, UserHandle.ALL, BackgroundThread.getHandler());
+
+            new LockPatternUtils(mContext)
+                    .registerStrongAuthTracker(new StrongAuthTracker(mContext,
+                            BackgroundThread.getHandler().getLooper()));
+        }
     }
 
     /** Called when a user is unlocked. */
@@ -281,7 +324,7 @@ public class UsbService extends IUsbManager.Stub {
                 int pid = Binder.getCallingPid();
                 int user = UserHandle.getUserId(uid);
 
-                long ident = clearCallingIdentity();
+                final long ident = clearCallingIdentity();
                 try {
                     synchronized (mLock) {
                         if (mUserManager.isSameProfileGroup(user, mCurrentUserId)) {
@@ -316,14 +359,15 @@ public class UsbService extends IUsbManager.Stub {
     public ParcelFileDescriptor openAccessory(UsbAccessory accessory) {
         if (mDeviceManager != null) {
             int uid = Binder.getCallingUid();
+            int pid = Binder.getCallingPid();
             int user = UserHandle.getUserId(uid);
 
-            long ident = clearCallingIdentity();
+            final long ident = clearCallingIdentity();
             try {
                 synchronized (mLock) {
                     if (mUserManager.isSameProfileGroup(user, mCurrentUserId)) {
                         return mDeviceManager.openAccessory(accessory, getPermissionsForUser(user),
-                                uid);
+                                pid, uid);
                     } else {
                         Slog.w(TAG, "Cannot open " + accessory + " for user " + user
                                 + " as user is not active.");
@@ -337,10 +381,11 @@ public class UsbService extends IUsbManager.Stub {
         return null;
     }
 
+    @android.annotation.EnforcePermission(android.Manifest.permission.ACCESS_MTP)
     /* Returns a dup of the control file descriptor for the given function. */
     @Override
     public ParcelFileDescriptor getControlFd(long function) {
-        mContext.enforceCallingOrSelfPermission(android.Manifest.permission.ACCESS_MTP, null);
+        getControlFd_enforcePermission();
         return mDeviceManager.getControlFd(function);
     }
 
@@ -497,17 +542,37 @@ public class UsbService extends IUsbManager.Stub {
         }
     }
 
+    @android.annotation.EnforcePermission(android.Manifest.permission.MANAGE_USB)
+    @Override
+    public boolean hasDevicePermissionWithIdentity(UsbDevice device, String packageName,
+            int pid, int uid) {
+        hasDevicePermissionWithIdentity_enforcePermission();
+
+        final int userId = UserHandle.getUserId(uid);
+        return getPermissionsForUser(userId).hasPermission(device, packageName, pid, uid);
+    }
+
     @Override
     public boolean hasAccessoryPermission(UsbAccessory accessory) {
         final int uid = Binder.getCallingUid();
+        final int pid = Binder.getCallingPid();
         final int userId = UserHandle.getUserId(uid);
 
         final long token = Binder.clearCallingIdentity();
         try {
-            return getPermissionsForUser(userId).hasPermission(accessory, uid);
+            return getPermissionsForUser(userId).hasPermission(accessory, pid, uid);
         } finally {
             Binder.restoreCallingIdentity(token);
         }
+    }
+
+    @android.annotation.EnforcePermission(android.Manifest.permission.MANAGE_USB)
+    @Override
+    public boolean hasAccessoryPermissionWithIdentity(UsbAccessory accessory, int pid, int uid) {
+        hasAccessoryPermissionWithIdentity_enforcePermission();
+
+        final int userId = UserHandle.getUserId(uid);
+        return getPermissionsForUser(userId).hasPermission(accessory, pid, uid);
     }
 
     @Override
@@ -528,19 +593,21 @@ public class UsbService extends IUsbManager.Stub {
     public void requestAccessoryPermission(
             UsbAccessory accessory, String packageName, PendingIntent pi) {
         final int uid = Binder.getCallingUid();
+        final int pid = Binder.getCallingPid();
         final int userId = UserHandle.getUserId(uid);
 
         final long token = Binder.clearCallingIdentity();
         try {
-            getPermissionsForUser(userId).requestPermission(accessory, packageName, pi, uid);
+            getPermissionsForUser(userId).requestPermission(accessory, packageName, pi, pid, uid);
         } finally {
             Binder.restoreCallingIdentity(token);
         }
     }
 
+    @android.annotation.EnforcePermission(android.Manifest.permission.MANAGE_USB)
     @Override
     public void grantDevicePermission(UsbDevice device, int uid) {
-        mContext.enforceCallingOrSelfPermission(android.Manifest.permission.MANAGE_USB, null);
+        grantDevicePermission_enforcePermission();
         final int userId = UserHandle.getUserId(uid);
 
         final long token = Binder.clearCallingIdentity();
@@ -551,9 +618,10 @@ public class UsbService extends IUsbManager.Stub {
         }
     }
 
+    @android.annotation.EnforcePermission(android.Manifest.permission.MANAGE_USB)
     @Override
     public void grantAccessoryPermission(UsbAccessory accessory, int uid) {
-        mContext.enforceCallingOrSelfPermission(android.Manifest.permission.MANAGE_USB, null);
+        grantAccessoryPermission_enforcePermission();
         final int userId = UserHandle.getUserId(uid);
 
         final long token = Binder.clearCallingIdentity();
@@ -596,17 +664,18 @@ public class UsbService extends IUsbManager.Stub {
         }
     }
 
+    @android.annotation.EnforcePermission(android.Manifest.permission.MANAGE_USB)
     @Override
-    public void setCurrentFunctions(long functions) {
-        mContext.enforceCallingOrSelfPermission(android.Manifest.permission.MANAGE_USB, null);
+    public void setCurrentFunctions(long functions, int operationId) {
+        setCurrentFunctions_enforcePermission();
         Preconditions.checkArgument(UsbManager.areSettableFunctions(functions));
         Preconditions.checkState(mDeviceManager != null);
-        mDeviceManager.setCurrentFunctions(functions);
+        mDeviceManager.setCurrentFunctions(functions, operationId);
     }
 
     @Override
-    public void setCurrentFunction(String functions, boolean usbDataUnlocked) {
-        setCurrentFunctions(UsbManager.usbFunctionsFromString(functions));
+    public void setCurrentFunction(String functions, boolean usbDataUnlocked, int operationId) {
+        setCurrentFunctions(UsbManager.usbFunctionsFromString(functions), operationId);
     }
 
     @Override
@@ -614,32 +683,64 @@ public class UsbService extends IUsbManager.Stub {
         return (getCurrentFunctions() & UsbManager.usbFunctionsFromString(function)) != 0;
     }
 
+    @android.annotation.EnforcePermission(android.Manifest.permission.MANAGE_USB)
     @Override
     public long getCurrentFunctions() {
-        mContext.enforceCallingOrSelfPermission(android.Manifest.permission.MANAGE_USB, null);
+        getCurrentFunctions_enforcePermission();
         Preconditions.checkState(mDeviceManager != null);
         return mDeviceManager.getCurrentFunctions();
     }
 
+    @android.annotation.EnforcePermission(android.Manifest.permission.MANAGE_USB)
     @Override
     public void setScreenUnlockedFunctions(long functions) {
-        mContext.enforceCallingOrSelfPermission(android.Manifest.permission.MANAGE_USB, null);
+        setScreenUnlockedFunctions_enforcePermission();
         Preconditions.checkArgument(UsbManager.areSettableFunctions(functions));
         Preconditions.checkState(mDeviceManager != null);
 
         mDeviceManager.setScreenUnlockedFunctions(functions);
     }
 
+    @android.annotation.EnforcePermission(android.Manifest.permission.MANAGE_USB)
     @Override
     public long getScreenUnlockedFunctions() {
-        mContext.enforceCallingOrSelfPermission(android.Manifest.permission.MANAGE_USB, null);
+        getScreenUnlockedFunctions_enforcePermission();
         Preconditions.checkState(mDeviceManager != null);
         return mDeviceManager.getScreenUnlockedFunctions();
     }
 
+    @android.annotation.EnforcePermission(android.Manifest.permission.MANAGE_USB)
+    @Override
+    public int getCurrentUsbSpeed() {
+        getCurrentUsbSpeed_enforcePermission();
+        Preconditions.checkNotNull(mDeviceManager, "DeviceManager must not be null");
+
+        final long ident = Binder.clearCallingIdentity();
+        try {
+            return mDeviceManager.getCurrentUsbSpeed();
+        } finally {
+            Binder.restoreCallingIdentity(ident);
+        }
+    }
+
+    @android.annotation.EnforcePermission(android.Manifest.permission.MANAGE_USB)
+    @Override
+    public int getGadgetHalVersion() {
+        getGadgetHalVersion_enforcePermission();
+        Preconditions.checkNotNull(mDeviceManager, "DeviceManager must not be null");
+
+        final long ident = Binder.clearCallingIdentity();
+        try {
+            return mDeviceManager.getGadgetHalVersion();
+        } finally {
+            Binder.restoreCallingIdentity(ident);
+        }
+    }
+
+    @android.annotation.EnforcePermission(android.Manifest.permission.MANAGE_USB)
     @Override
     public void resetUsbGadget() {
-        mContext.enforceCallingOrSelfPermission(android.Manifest.permission.MANAGE_USB, null);
+        resetUsbGadget_enforcePermission();
         Preconditions.checkNotNull(mDeviceManager, "DeviceManager must not be null");
 
         final long ident = Binder.clearCallingIdentity();
@@ -651,8 +752,35 @@ public class UsbService extends IUsbManager.Stub {
     }
 
     @Override
-    public List<ParcelableUsbPort> getPorts() {
+    public void resetUsbPort(String portId, int operationId,
+            IUsbOperationInternal callback) {
+        Objects.requireNonNull(portId, "resetUsbPort: portId must not be null. opId:"
+                + operationId);
+        Objects.requireNonNull(callback, "resetUsbPort: callback must not be null. opId:"
+                + operationId);
         mContext.enforceCallingOrSelfPermission(android.Manifest.permission.MANAGE_USB, null);
+
+        final long ident = Binder.clearCallingIdentity();
+
+        try {
+            if (mPortManager != null) {
+                mPortManager.resetUsbPort(portId, operationId, callback, null);
+            } else {
+                try {
+                    callback.onOperationComplete(USB_OPERATION_ERROR_INTERNAL);
+                } catch (RemoteException e) {
+                    Slog.e(TAG, "resetUsbPort: Failed to call onOperationComplete", e);
+                }
+            }
+        } finally {
+            Binder.restoreCallingIdentity(ident);
+        }
+    }
+
+    @android.annotation.EnforcePermission(android.Manifest.permission.MANAGE_USB)
+    @Override
+    public List<ParcelableUsbPort> getPorts() {
+        getPorts_enforcePermission();
 
         final long ident = Binder.clearCallingIdentity();
         try {
@@ -688,6 +816,20 @@ public class UsbService extends IUsbManager.Stub {
         }
     }
 
+    @android.annotation.EnforcePermission(android.Manifest.permission.MANAGE_USB)
+    @Override
+    public boolean isModeChangeSupported(String portId) {
+        isModeChangeSupported_enforcePermission();
+        Objects.requireNonNull(portId, "portId must not be null");
+
+        final long ident = Binder.clearCallingIdentity();
+        try {
+            return mPortManager != null ? mPortManager.isModeChangeSupported(portId) : false;
+        } finally {
+            Binder.restoreCallingIdentity(ident);
+        }
+    }
+
     @Override
     public void setPortRoles(String portId, int powerRole, int dataRole) {
         Objects.requireNonNull(portId, "portId must not be null");
@@ -698,6 +840,28 @@ public class UsbService extends IUsbManager.Stub {
         try {
             if (mPortManager != null) {
                 mPortManager.setPortRoles(portId, powerRole, dataRole, null);
+            }
+        } finally {
+            Binder.restoreCallingIdentity(ident);
+        }
+    }
+
+    @Override
+    public void enableLimitPowerTransfer(String portId, boolean limit, int operationId,
+            IUsbOperationInternal callback) {
+        Objects.requireNonNull(portId, "portId must not be null. opID:" + operationId);
+        mContext.enforceCallingOrSelfPermission(android.Manifest.permission.MANAGE_USB, null);
+
+        final long ident = Binder.clearCallingIdentity();
+        try {
+            if (mPortManager != null) {
+                mPortManager.enableLimitPowerTransfer(portId, limit, operationId, callback, null);
+            } else {
+                try {
+                    callback.onOperationComplete(USB_OPERATION_ERROR_INTERNAL);
+                } catch (RemoteException e) {
+                    Slog.e(TAG, "enableLimitPowerTransfer: Failed to call onOperationComplete", e);
+                }
             }
         } finally {
             Binder.restoreCallingIdentity(ident);
@@ -719,9 +883,146 @@ public class UsbService extends IUsbManager.Stub {
         }
     }
 
+    @android.annotation.EnforcePermission(android.Manifest.permission.MANAGE_USB)
+    @Override
+    public int getUsbHalVersion() {
+        getUsbHalVersion_enforcePermission();
+
+        final long ident = Binder.clearCallingIdentity();
+        try {
+            if (mPortManager != null) {
+                return mPortManager.getUsbHalVersion();
+            } else {
+                return UsbManager.USB_HAL_NOT_SUPPORTED;
+            }
+        } finally {
+            Binder.restoreCallingIdentity(ident);
+        }
+    }
+
+    @Override
+    public boolean enableUsbData(String portId, boolean enable, int operationId,
+                                 IUsbOperationInternal callback) {
+        return enableUsbDataInternal(portId, enable, operationId, callback, Binder.getCallingUid());
+    }
+
+    /**
+     *  Internal function abstracted for testing with callerUid
+     */
+    @VisibleForTesting
+    boolean enableUsbDataInternal(String portId, boolean enable, int operationId,
+            IUsbOperationInternal callback, int callerUid) {
+        Objects.requireNonNull(portId, "enableUsbData: portId must not be null. opId:"
+                + operationId);
+        Objects.requireNonNull(callback, "enableUsbData: callback must not be null. opId:"
+                + operationId);
+        mContext.enforceCallingOrSelfPermission(android.Manifest.permission.MANAGE_USB, null);
+
+        if (android.hardware.usb.flags.Flags.enableUsbDataSignalStaking()) {
+            if (!shouldUpdateUsbSignaling(portId, enable, callerUid)) {
+                try {
+                    callback.onOperationComplete(USB_OPERATION_ERROR_INTERNAL);
+                } catch (RemoteException e) {
+                    Slog.e(TAG, "enableUsbData: Failed to call onOperationComplete", e);
+                }
+                return false;
+            }
+        }
+
+        final long ident = Binder.clearCallingIdentity();
+        boolean wait;
+        try {
+            if (mPortManager != null) {
+                wait = mPortManager.enableUsbData(portId, enable, operationId, callback, null);
+            } else {
+                wait = false;
+                try {
+                    callback.onOperationComplete(USB_OPERATION_ERROR_INTERNAL);
+                } catch (RemoteException e) {
+                    Slog.e(TAG, "enableUsbData: Failed to call onOperationComplete", e);
+                }
+            }
+        } finally {
+            Binder.restoreCallingIdentity(ident);
+        }
+        return wait;
+    }
+
+    /**
+     * If enable = true, exclude UID from update list.
+     * If enable = false, include UID in update list.
+     * Return false if enable = true and the list is empty (no updates).
+     * Return true otherwise (let downstream decide on updates).
+     */
+    private boolean shouldUpdateUsbSignaling(String portId, boolean enable, int uid) {
+        synchronized (mUsbDisableRequesters) {
+            if (!mUsbDisableRequesters.containsKey(portId)) {
+                mUsbDisableRequesters.put(portId, new ArraySet<>());
+            }
+
+            ArraySet<Integer> uidsOfDisableRequesters = mUsbDisableRequesters.get(portId);
+
+            if (enable) {
+                uidsOfDisableRequesters.remove(uid);
+                // re-enable USB port (return true) if there are no other disable requesters
+                return uidsOfDisableRequesters.isEmpty();
+            } else {
+                uidsOfDisableRequesters.add(uid);
+            }
+        }
+        return true;
+    }
+
+    @Override
+    public void enableUsbDataWhileDocked(String portId, int operationId,
+                                         IUsbOperationInternal callback) {
+        enableUsbDataWhileDockedInternal(portId, operationId, callback, Binder.getCallingUid());
+    }
+
+    /**
+     *  Internal function abstracted for testing with callerUid
+     */
+    @VisibleForTesting
+     void enableUsbDataWhileDockedInternal(String portId, int operationId,
+            IUsbOperationInternal callback, int callerUid) {
+        Objects.requireNonNull(portId, "enableUsbDataWhileDocked: portId must not be null. opId:"
+                + operationId);
+        Objects.requireNonNull(callback,
+                "enableUsbDataWhileDocked: callback must not be null. opId:"
+                + operationId);
+        mContext.enforceCallingOrSelfPermission(android.Manifest.permission.MANAGE_USB, null);
+
+        if (android.hardware.usb.flags.Flags.enableUsbDataSignalStaking()) {
+            if (!shouldUpdateUsbSignaling(portId, true, callerUid)) {
+                try {
+                    callback.onOperationComplete(USB_OPERATION_ERROR_INTERNAL);
+                } catch (RemoteException e) {
+                    Slog.e(TAG, "enableUsbDataWhileDocked: Failed to call onOperationComplete", e);
+                }
+                return;
+            }
+        }
+
+        final long ident = Binder.clearCallingIdentity();
+        try {
+            if (mPortManager != null) {
+                mPortManager.enableUsbDataWhileDocked(portId, operationId, callback, null);
+            } else {
+                try {
+                    callback.onOperationComplete(USB_OPERATION_ERROR_INTERNAL);
+                } catch (RemoteException e) {
+                    Slog.e(TAG, "enableUsbData: Failed to call onOperationComplete", e);
+                }
+            }
+        } finally {
+            Binder.restoreCallingIdentity(ident);
+        }
+    }
+
+    @android.annotation.EnforcePermission(android.Manifest.permission.MANAGE_USB)
     @Override
     public void setUsbDeviceConnectionHandler(ComponentName usbDeviceConnectionHandler) {
-        mContext.enforceCallingOrSelfPermission(android.Manifest.permission.MANAGE_USB, null);
+        setUsbDeviceConnectionHandler_enforcePermission();
         synchronized (mLock) {
             if (mCurrentUserId == UserHandle.getCallingUserId()) {
                 if (mHostManager != null) {
@@ -734,6 +1035,46 @@ public class UsbService extends IUsbManager.Stub {
         }
     }
 
+    @Override
+    public boolean registerForDisplayPortEvents(
+            @NonNull IDisplayPortAltModeInfoListener listener) {
+        Objects.requireNonNull(listener, "registerForDisplayPortEvents: listener " +
+                "must not be null.");
+
+        mContext.enforceCallingOrSelfPermission(android.Manifest.permission.MANAGE_USB, null);
+
+        final long ident = Binder.clearCallingIdentity();
+        try {
+            if (mPortManager != null) {
+                return mPortManager.registerForDisplayPortEvents(listener);
+            }
+        } finally {
+            Binder.restoreCallingIdentity(ident);
+        }
+
+        return false;
+    }
+
+    @Override
+    public void unregisterForDisplayPortEvents(
+            @NonNull IDisplayPortAltModeInfoListener listener) {
+        Objects.requireNonNull(listener, "unregisterForDisplayPortEvents: listener " +
+                "must not be null.");
+
+        mContext.enforceCallingOrSelfPermission(android.Manifest.permission.MANAGE_USB, null);
+
+        final long ident = Binder.clearCallingIdentity();
+        try {
+            if (mPortManager != null) {
+                mPortManager.unregisterForDisplayPortEvents(listener);
+            }
+        } finally {
+            Binder.restoreCallingIdentity(ident);
+        }
+    }
+
+
+    @NeverCompile // Avoid size overhead of debugging code.
     @Override
     public void dump(FileDescriptor fd, PrintWriter writer, String[] args) {
         if (!DumpUtils.checkDumpPermission(mContext, TAG, writer)) return;
@@ -818,9 +1159,13 @@ public class UsbService extends IUsbManager.Stub {
                     mPortManager.dump(new DualDumpOutputStream(new IndentingPrintWriter(pw, "  ")),
                             "", 0);
                 }
-            } else if ("add-port".equals(args[0]) && args.length == 3) {
+        } else if ("add-port".equals(args[0]) && args.length >= 3) {
                 final String portId = args[1];
                 final int supportedModes;
+
+                int i;
+                boolean supportsComplianceWarnings = false;
+                boolean supportsDisplayPortAltMode = false;
                 switch (args[2]) {
                     case "ufp":
                         supportedModes = MODE_UFP;
@@ -838,8 +1183,22 @@ public class UsbService extends IUsbManager.Stub {
                         pw.println("Invalid mode: " + args[2]);
                         return;
                 }
+                for (i=3; i<args.length; i++) {
+                    switch (args[i]) {
+                    case "--compliance-warnings":
+                        supportsComplianceWarnings = true;
+                        continue;
+                    case "--displayport":
+                        supportsDisplayPortAltMode = true;
+                        continue;
+                    default:
+                        pw.println("Invalid Identifier: " + args[i]);
+                    }
+                }
                 if (mPortManager != null) {
-                    mPortManager.addSimulatedPort(portId, supportedModes, pw);
+                    mPortManager.addSimulatedPort(portId, supportedModes,
+                        supportsComplianceWarnings, supportsDisplayPortAltMode,
+                        pw);
                     pw.println();
                     mPortManager.dump(new DualDumpOutputStream(new IndentingPrintWriter(pw, "  ")),
                             "", 0);
@@ -924,6 +1283,66 @@ public class UsbService extends IUsbManager.Stub {
                     mPortManager.dump(new DualDumpOutputStream(new IndentingPrintWriter(pw, "  ")),
                             "", 0);
                 }
+            } else if ("set-compliance-reasons".equals(args[0]) && args.length == 3) {
+                final String portId = args[1];
+                final String complianceWarnings = args[2];
+                if (mPortManager != null) {
+                    mPortManager.simulateComplianceWarnings(portId, complianceWarnings, pw);
+                    pw.println();
+                    mPortManager.dump(new DualDumpOutputStream(new IndentingPrintWriter(pw, "  ")),
+                            "", 0);
+                }
+            } else if ("clear-compliance-reasons".equals(args[0]) && args.length == 2) {
+                final String portId = args[1];
+                if (mPortManager != null) {
+                    mPortManager.simulateComplianceWarnings(portId, "", pw);
+                    pw.println();
+                    mPortManager.dump(new DualDumpOutputStream(new IndentingPrintWriter(pw, "  ")),
+                            "", 0);
+                }
+            } else if ("set-displayport-status".equals(args[0]) && args.length == 7) {
+                final String portId = args[1];
+                final int partnerSinkStatus = Integer.parseInt(args[2]);
+                final int cableStatus = Integer.parseInt(args[3]);
+                final int displayPortNumLanes = Integer.parseInt(args[4]);
+                final boolean hpd = Boolean.parseBoolean(args[5]);
+                final int linkTrainingStatus = Integer.parseInt(args[6]);
+                if (mPortManager != null) {
+                    mPortManager.simulateDisplayPortAltModeInfo(portId,
+                            partnerSinkStatus, cableStatus, displayPortNumLanes,
+                            hpd, linkTrainingStatus, pw);
+                    pw.println();
+                    mPortManager.dump(new DualDumpOutputStream(new IndentingPrintWriter(pw, "  ")),
+                            "", 0);
+                }
+            } else if ("reset-displayport-status".equals(args[0]) && args.length == 2) {
+                final String portId = args[1];
+                if (mPortManager != null) {
+                    mPortManager.simulateDisplayPortAltModeInfo(portId,
+                            DISPLAYPORT_ALT_MODE_STATUS_UNKNOWN,
+                            DISPLAYPORT_ALT_MODE_STATUS_UNKNOWN,
+                            0,
+                            false,
+                            LINK_TRAINING_STATUS_UNKNOWN,
+                            pw);
+                    pw.println();
+                    mPortManager.dump(new DualDumpOutputStream(new IndentingPrintWriter(pw, "  ")),
+                            "", 0);
+                }
+            } else if ("enable-usb-data".equals(args[0]) && args.length == 3) {
+                final String portId = args[1];
+                final boolean enable = Boolean.parseBoolean(args[2]);
+
+                if (mPortManager != null) {
+                    for (UsbPort p : mPortManager.getPorts()) {
+                        if (p.getId().equals(portId)) {
+                            int res = p.enableUsbData(enable);
+                            Slog.i(TAG, "enableUsbData " + portId + " status " + res);
+                            break;
+                        }
+                    }
+                }
+
             } else if ("ports".equals(args[0]) && args.length == 1) {
                 if (mPortManager != null) {
                     mPortManager.dump(new DualDumpOutputStream(new IndentingPrintWriter(pw, "  ")),
@@ -935,7 +1354,10 @@ public class UsbService extends IUsbManager.Stub {
                 pw.println("Dump current USB state or issue command:");
                 pw.println("  ports");
                 pw.println("  set-port-roles <id> <source|sink|no-power> <host|device|no-data>");
-                pw.println("  add-port <id> <ufp|dfp|dual|none>");
+                pw.println("  add-port <id> <ufp|dfp|dual|none> <optional args>");
+                pw.println("    <optional args> include:");
+                pw.println("      --compliance-warnings: enables compliance warnings on port");
+                pw.println("      --displayport: enables DisplayPort Alt Mode on port");
                 pw.println("  connect-port <id> <ufp|dfp><?> <source|sink><?> <host|device><?>");
                 pw.println("    (add ? suffix if mode, power role, or data role can be changed)");
                 pw.println("  disconnect-port <id>");
@@ -946,7 +1368,8 @@ public class UsbService extends IUsbManager.Stub {
                 pw.println("  dumpsys usb set-port-roles \"default\" source device");
                 pw.println();
                 pw.println("Example USB type C port simulation with full capabilities:");
-                pw.println("  dumpsys usb add-port \"matrix\" dual");
+                pw.println("  dumpsys usb add-port \"matrix\" dual --compliance-warnings "
+                        + "--displayport");
                 pw.println("  dumpsys usb connect-port \"matrix\" ufp? sink? device?");
                 pw.println("  dumpsys usb ports");
                 pw.println("  dumpsys usb disconnect-port \"matrix\"");
@@ -973,6 +1396,41 @@ public class UsbService extends IUsbManager.Stub {
                 pw.println("  dumpsys usb set-contaminant-status \"matrix\" true");
                 pw.println("  dumpsys usb set-contaminant-status \"matrix\" false");
                 pw.println();
+                pw.println("Example simulate compliance warnings:");
+                pw.println("  dumpsys usb add-port \"matrix\" dual --compliance-warnings");
+                pw.println("  dumpsys usb set-compliance-reasons \"matrix\" <reason-list>");
+                pw.println("  dumpsys usb clear-compliance-reasons \"matrix\"");
+                pw.println("<reason-list> is expected to be formatted as \"1, ..., N\"");
+                pw.println("with reasons that need to be simulated.");
+                pw.println("  1: other");
+                pw.println("  2: debug accessory");
+                pw.println("  3: bc12");
+                pw.println("  4: missing rp");
+                pw.println("  5: input power limited");
+                pw.println("  6: missing data lines");
+                pw.println("  7: enumeration fail");
+                pw.println("  8: flaky connection");
+                pw.println("  9: unreliable io");
+                pw.println();
+                pw.println("Example simulate DisplayPort Alt Mode Changes:");
+                pw.println("  dumpsys usb add-port \"matrix\" dual --displayport");
+                pw.println("  dumpsys usb set-displayport-status \"matrix\" <partner-sink>"
+                        + " <cable> <num-lanes> <hpd> <link-training-status>");
+                pw.println("The required fields are as followed:");
+                pw.println("    <partner-sink>: type DisplayPortAltModeStatus");
+                pw.println("    <cable>: type DisplayPortAltModeStatus");
+                pw.println("    <num-lanes>: type int, expected 0, 2, or 4");
+                pw.println("    <hpd>: type boolean, expected true or false");
+                pw.println("    <link-training-status>: type LinkTrainingStatus");
+                pw.println("  dumpsys usb reset-displayport-status \"matrix\"");
+                pw.println("reset-displayport-status can also be used in order to set");
+                pw.println("the DisplayPortInfo to default values.");
+                pw.println();
+                pw.println("Example enableUsbData");
+                pw.println("This dumpsys command functions for both simulated and real ports.");
+                pw.println("  dumpsys usb enable-usb-data \"matrix\" true");
+                pw.println("  dumpsys usb enable-usb-data \"matrix\" false");
+                pw.println();
                 pw.println("Example USB device descriptors:");
                 pw.println("  dumpsys usb dump-descriptors -dump-short");
                 pw.println("  dumpsys usb dump-descriptors -dump-tree");
@@ -986,5 +1444,56 @@ public class UsbService extends IUsbManager.Stub {
 
     private static String removeLastChar(String value) {
         return value.substring(0, value.length() - 1);
+    }
+
+    /**
+     * Upon app removal, clear associated UIDs from the mUsbDisableRequesters list
+     * and re-enable USB data signaling if no remaining apps require USB disabling.
+     */
+    private class PackageUninstallMonitor extends PackageMonitor {
+        @Override
+        public void onUidRemoved(int uid) {
+            synchronized (mUsbDisableRequesters) {
+                for (String portId : mUsbDisableRequesters.keySet()) {
+                    ArraySet<Integer> disabledUid = mUsbDisableRequesters.get(portId);
+                    if (disabledUid != null) {
+                        disabledUid.remove(uid);
+                        if (disabledUid.isEmpty()) {
+                            enableUsbData(portId, true, PACKAGE_MONITOR_OPERATION_ID,
+                                    new IUsbOperationInternal.Default());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Implements a callback within StrongAuthTracker to disable USB data signaling
+     * when the device enters lockdown mode. This likely involves updating a state
+     * that controls USB data behavior.
+     */
+    private class StrongAuthTracker extends LockPatternUtils.StrongAuthTracker {
+        private boolean mLockdownModeStatus;
+
+        StrongAuthTracker(Context context, Looper looper) {
+            super(context, looper);
+        }
+
+        @Override
+        public synchronized void onStrongAuthRequiredChanged(int userId) {
+
+            boolean lockDownTriggeredByUser = (getStrongAuthForUser(userId)
+                    & STRONG_AUTH_REQUIRED_AFTER_USER_LOCKDOWN) != 0;
+            //if it goes into the same lockdown status, no change is needed
+            if (mLockdownModeStatus == lockDownTriggeredByUser) {
+                return;
+            }
+            mLockdownModeStatus = lockDownTriggeredByUser;
+            for (UsbPort port: mPortManager.getPorts()) {
+                enableUsbData(port.getId(), !lockDownTriggeredByUser, STRONG_AUTH_OPERATION_ID,
+                        new IUsbOperationInternal.Default());
+            }
+        }
     }
 }

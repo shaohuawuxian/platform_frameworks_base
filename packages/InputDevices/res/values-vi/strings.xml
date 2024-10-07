@@ -19,6 +19,7 @@
     <string name="keyboard_layout_swiss_german_label" msgid="2305520941993314258">"Tiếng Đức Thụy Sĩ"</string>
     <string name="keyboard_layout_belgian" msgid="2011984572838651558">"Tiếng Bỉ"</string>
     <string name="keyboard_layout_bulgarian" msgid="8951224309972028398">"Tiếng Bungary"</string>
+    <string name="keyboard_layout_bulgarian_phonetic" msgid="7568914730360106653">"Tiếng Bulgaria, Phiên âm"</string>
     <string name="keyboard_layout_italian" msgid="6497079660449781213">"Tiếng Ý"</string>
     <string name="keyboard_layout_danish" msgid="8036432066627127851">"Tiếng Đan Mạch"</string>
     <string name="keyboard_layout_norwegian" msgid="9090097917011040937">"Tiếng Na Uy"</string>
@@ -49,4 +50,10 @@
     <string name="keyboard_layout_belarusian" msgid="7619281752698687588">"Tiếng Belarus"</string>
     <string name="keyboard_layout_mongolian" msgid="7678483495823936626">"Tiếng Mông Cổ"</string>
     <string name="keyboard_layout_georgian" msgid="4596185456863747454">"Tiếng Georgia"</string>
+    <string name="keyboard_layout_thai_kedmanee" msgid="6637147314580760938">"Tiếng Thái (Kedmanee)"</string>
+    <string name="keyboard_layout_thai_pattachote" msgid="2547992342794252205">"Tiếng Thái (Pattachote)"</string>
+    <string name="keyboard_layout_serbian_latin" msgid="3128791759390046571">"Tiếng Serbia (Latinh)"</string>
+    <string name="keyboard_layout_montenegrin_latin" msgid="1467832503378949945">"Tiếng Montenegro (Latinh)"</string>
+    <string name="keyboard_layout_serbian_cyrillic" msgid="7013541044323542196">"Tiếng Serbia (Chữ Kirin)"</string>
+    <string name="keyboard_layout_montenegrin_cyrillic" msgid="2391253952894077421">"Tiếng Montenegro (Chữ Kirin)"</string>
 </resources>

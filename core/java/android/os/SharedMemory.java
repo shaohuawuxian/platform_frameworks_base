@@ -25,6 +25,8 @@ import android.system.OsConstants;
 
 import dalvik.system.VMRuntime;
 
+import libcore.io.IoUtils;
+
 import java.io.Closeable;
 import java.io.FileDescriptor;
 import java.io.IOException;
@@ -91,6 +93,26 @@ public final class SharedMemory implements Parcelable, Closeable {
         if (!mFileDescriptor.valid()) {
             throw new IllegalStateException("SharedMemory is closed");
         }
+    }
+
+    /**
+     * Creates an instance from existing shared memory passed as {@link ParcelFileDescriptor}.
+     *
+     * <p> The {@code fd} should be a shared memory created from
+       {@code SharedMemory or ASharedMemory}. This can be useful when shared memory is passed as
+       file descriptor through JNI or binder service implemented in cpp.
+     * <p> Note that newly created {@code SharedMemory} takes ownership of passed {@code fd} and
+     * the original {@code fd} becomes detached (Check {@link ParcelFileDescriptor#detachFd()}).
+     * If the caller wants to use the file descriptor after the call, the caller should duplicate
+     * the file descriptor (Check {@link ParcelFileDescriptor#dup()}) and pass the duped version
+     * instead.
+     *
+     * @param fd File descriptor of shared memory passed as {@link ParcelFileDescriptor}.
+     */
+    public static @NonNull SharedMemory fromFileDescriptor(@NonNull ParcelFileDescriptor fd) {
+        FileDescriptor f = new FileDescriptor();
+        f.setInt$(fd.detachFd());
+        return new SharedMemory(f);
     }
 
     private static final int PROT_MASK = OsConstants.PROT_READ | OsConstants.PROT_WRITE
@@ -310,14 +332,15 @@ public final class SharedMemory implements Parcelable, Closeable {
 
         private Closer(FileDescriptor fd, MemoryRegistration memoryReference) {
             mFd = fd;
+            IoUtils.setFdOwner(mFd, this);
             mMemoryReference = memoryReference;
         }
 
         @Override
         public void run() {
-            try {
-                Os.close(mFd);
-            } catch (ErrnoException e) { /* swallow error */ }
+            IoUtils.closeQuietly(mFd);
+            mFd = null;
+
             mMemoryReference.release();
             mMemoryReference = null;
         }

@@ -16,14 +16,14 @@
 
 package com.android.server.vcn;
 
-import static com.android.server.vcn.UnderlyingNetworkTracker.UnderlyingNetworkRecord;
+import static android.net.NetworkCapabilities.TRANSPORT_CELLULAR;
+
 import static com.android.server.vcn.VcnGatewayConnection.VcnIkeSession;
 import static com.android.server.vcn.VcnGatewayConnection.VcnNetworkAgent;
 import static com.android.server.vcn.VcnTestUtils.setupIpSecManager;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertTrue;
 import static org.mockito.Matchers.any;
 import static org.mockito.Matchers.eq;
 import static org.mockito.Mockito.CALLS_REAL_METHODS;
@@ -37,6 +37,7 @@ import static org.mockito.Mockito.verifyNoMoreInteractions;
 
 import android.annotation.NonNull;
 import android.content.Context;
+import android.net.ConnectivityDiagnosticsManager;
 import android.net.ConnectivityManager;
 import android.net.InetAddresses;
 import android.net.IpSecConfig;
@@ -47,8 +48,12 @@ import android.net.LinkAddress;
 import android.net.LinkProperties;
 import android.net.Network;
 import android.net.NetworkCapabilities;
+import android.net.TelephonyNetworkSpecifier;
 import android.net.ipsec.ike.ChildSessionCallback;
 import android.net.ipsec.ike.IkeSessionCallback;
+import android.net.ipsec.ike.IkeSessionConfiguration;
+import android.net.ipsec.ike.IkeSessionConnectionInfo;
+import android.net.vcn.FeatureFlags;
 import android.net.vcn.VcnGatewayConnectionConfig;
 import android.net.vcn.VcnGatewayConnectionConfigTest;
 import android.os.ParcelUuid;
@@ -62,7 +67,11 @@ import com.android.server.IpSecService;
 import com.android.server.vcn.TelephonySubscriptionTracker.TelephonySubscriptionSnapshot;
 import com.android.server.vcn.Vcn.VcnGatewayStatusCallback;
 import com.android.server.vcn.VcnGatewayConnection.VcnChildSessionCallback;
+import com.android.server.vcn.VcnGatewayConnection.VcnIkeSession;
+import com.android.server.vcn.VcnGatewayConnection.VcnNetworkAgent;
 import com.android.server.vcn.VcnGatewayConnection.VcnWakeLock;
+import com.android.server.vcn.routeselection.UnderlyingNetworkController;
+import com.android.server.vcn.routeselection.UnderlyingNetworkRecord;
 
 import org.junit.Before;
 import org.mockito.ArgumentCaptor;
@@ -80,6 +89,13 @@ public class VcnGatewayConnectionTestBase {
         doReturn(TEST_SUB_GRP).when(TEST_SUB_INFO).getGroupUuid();
     }
 
+    protected static final InetAddress TEST_ADDR = InetAddresses.parseNumericAddress("2001:db8::1");
+    protected static final InetAddress TEST_ADDR_2 =
+            InetAddresses.parseNumericAddress("2001:db8::2");
+    protected static final InetAddress TEST_ADDR_V4 =
+            InetAddresses.parseNumericAddress("192.0.2.1");
+    protected static final InetAddress TEST_ADDR_V4_2 =
+            InetAddresses.parseNumericAddress("192.0.2.2");
     protected static final InetAddress TEST_DNS_ADDR =
             InetAddresses.parseNumericAddress("2001:DB8:0:1::");
     protected static final InetAddress TEST_DNS_ADDR_2 =
@@ -99,11 +115,22 @@ public class VcnGatewayConnectionTestBase {
     protected static final long ELAPSED_REAL_TIME = 123456789L;
     protected static final String TEST_IPSEC_TUNNEL_IFACE = "IPSEC_IFACE";
 
+    protected static UnderlyingNetworkRecord getTestNetworkRecord(
+            Network network,
+            NetworkCapabilities networkCapabilities,
+            LinkProperties linkProperties,
+            boolean isBlocked) {
+        return new UnderlyingNetworkRecord(network, networkCapabilities, linkProperties, isBlocked);
+    }
+
     protected static final String TEST_TCP_BUFFER_SIZES_1 = "1,2,3,4";
     protected static final UnderlyingNetworkRecord TEST_UNDERLYING_NETWORK_RECORD_1 =
-            new UnderlyingNetworkRecord(
+            getTestNetworkRecord(
                     mock(Network.class, CALLS_REAL_METHODS),
-                    new NetworkCapabilities(),
+                    new NetworkCapabilities.Builder()
+                            .addTransportType(TRANSPORT_CELLULAR)
+                            .setNetworkSpecifier(new TelephonyNetworkSpecifier(TEST_SUB_ID))
+                            .build(),
                     new LinkProperties(),
                     false /* blocked */);
 
@@ -114,7 +141,7 @@ public class VcnGatewayConnectionTestBase {
 
     protected static final String TEST_TCP_BUFFER_SIZES_2 = "2,3,4,5";
     protected static final UnderlyingNetworkRecord TEST_UNDERLYING_NETWORK_RECORD_2 =
-            new UnderlyingNetworkRecord(
+            getTestNetworkRecord(
                     mock(Network.class, CALLS_REAL_METHODS),
                     new NetworkCapabilities(),
                     new LinkProperties(),
@@ -127,16 +154,20 @@ public class VcnGatewayConnectionTestBase {
 
     protected static final TelephonySubscriptionSnapshot TEST_SUBSCRIPTION_SNAPSHOT =
             new TelephonySubscriptionSnapshot(
-                    Collections.singletonMap(TEST_SUB_ID, TEST_SUB_INFO), Collections.EMPTY_MAP);
+                    TEST_SUB_ID,
+                    Collections.singletonMap(TEST_SUB_ID, TEST_SUB_INFO),
+                    Collections.EMPTY_MAP,
+                    Collections.EMPTY_MAP);
 
     @NonNull protected final Context mContext;
     @NonNull protected final TestLooper mTestLooper;
     @NonNull protected final VcnNetworkProvider mVcnNetworkProvider;
+    @NonNull protected final FeatureFlags mFeatureFlags;
     @NonNull protected final VcnContext mVcnContext;
     @NonNull protected final VcnGatewayConnectionConfig mConfig;
     @NonNull protected final VcnGatewayStatusCallback mGatewayStatusCallback;
     @NonNull protected final VcnGatewayConnection.Dependencies mDeps;
-    @NonNull protected final UnderlyingNetworkTracker mUnderlyingNetworkTracker;
+    @NonNull protected final UnderlyingNetworkController mUnderlyingNetworkController;
     @NonNull protected final VcnWakeLock mWakeLock;
     @NonNull protected final WakeupMessage mTeardownTimeoutAlarm;
     @NonNull protected final WakeupMessage mDisconnectRequestAlarm;
@@ -145,6 +176,10 @@ public class VcnGatewayConnectionTestBase {
 
     @NonNull protected final IpSecService mIpSecSvc;
     @NonNull protected final ConnectivityManager mConnMgr;
+    @NonNull protected final ConnectivityDiagnosticsManager mConnDiagMgr;
+
+    @NonNull protected final IkeSessionConnectionInfo mIkeConnectionInfo;
+    @NonNull protected final IkeSessionConfiguration mIkeSessionConfiguration;
 
     protected VcnIkeSession mMockIkeSession;
     protected VcnGatewayConnection mGatewayConnection;
@@ -153,11 +188,12 @@ public class VcnGatewayConnectionTestBase {
         mContext = mock(Context.class);
         mTestLooper = new TestLooper();
         mVcnNetworkProvider = mock(VcnNetworkProvider.class);
+        mFeatureFlags = mock(FeatureFlags.class);
         mVcnContext = mock(VcnContext.class);
         mConfig = VcnGatewayConnectionConfigTest.buildTestConfig();
         mGatewayStatusCallback = mock(VcnGatewayStatusCallback.class);
         mDeps = mock(VcnGatewayConnection.Dependencies.class);
-        mUnderlyingNetworkTracker = mock(UnderlyingNetworkTracker.class);
+        mUnderlyingNetworkController = mock(UnderlyingNetworkController.class);
         mWakeLock = mock(VcnWakeLock.class);
         mTeardownTimeoutAlarm = mock(WakeupMessage.class);
         mDisconnectRequestAlarm = mock(WakeupMessage.class);
@@ -171,16 +207,34 @@ public class VcnGatewayConnectionTestBase {
         VcnTestUtils.setupSystemService(
                 mContext, mConnMgr, Context.CONNECTIVITY_SERVICE, ConnectivityManager.class);
 
+        mConnDiagMgr = mock(ConnectivityDiagnosticsManager.class);
+        VcnTestUtils.setupSystemService(
+                mContext,
+                mConnDiagMgr,
+                Context.CONNECTIVITY_DIAGNOSTICS_SERVICE,
+                ConnectivityDiagnosticsManager.class);
+
+        mIkeConnectionInfo =
+                new IkeSessionConnectionInfo(TEST_ADDR, TEST_ADDR_2, mock(Network.class));
+        mIkeSessionConfiguration = new IkeSessionConfiguration.Builder(mIkeConnectionInfo).build();
+
         doReturn(mContext).when(mVcnContext).getContext();
         doReturn(mTestLooper.getLooper()).when(mVcnContext).getLooper();
         doReturn(mVcnNetworkProvider).when(mVcnContext).getVcnNetworkProvider();
+        doReturn(mFeatureFlags).when(mVcnContext).getFeatureFlags();
+        doReturn(true).when(mVcnContext).isFlagSafeModeTimeoutConfigEnabled();
+        doReturn(true).when(mVcnContext).isFlagIpSecTransformStateEnabled();
+        doReturn(true).when(mVcnContext).isFlagNetworkMetricMonitorEnabled();
 
-        doReturn(mUnderlyingNetworkTracker)
+        doReturn(mUnderlyingNetworkController)
                 .when(mDeps)
-                .newUnderlyingNetworkTracker(any(), any(), any(), any());
+                .newUnderlyingNetworkController(any(), any(), any(), any(), any());
         doReturn(mWakeLock)
                 .when(mDeps)
                 .newWakeLock(eq(mContext), eq(PowerManager.PARTIAL_WAKE_LOCK), any());
+        doReturn(1)
+                .when(mDeps)
+                .getParallelTunnelCount(eq(TEST_SUBSCRIPTION_SNAPSHOT), eq(TEST_SUB_GRP));
 
         setUpWakeupMessage(mTeardownTimeoutAlarm, VcnGatewayConnection.TEARDOWN_TIMEOUT_ALARM);
         setUpWakeupMessage(mDisconnectRequestAlarm, VcnGatewayConnection.DISCONNECT_REQUEST_ALARM);
@@ -190,8 +244,15 @@ public class VcnGatewayConnectionTestBase {
         doReturn(ELAPSED_REAL_TIME).when(mDeps).getElapsedRealTime();
     }
 
+    protected void setUpWakeupMessage(
+            @NonNull WakeupMessage msg,
+            @NonNull String cmdName,
+            VcnGatewayConnection.Dependencies deps) {
+        doReturn(msg).when(deps).newWakeupMessage(eq(mVcnContext), any(), eq(cmdName), any());
+    }
+
     private void setUpWakeupMessage(@NonNull WakeupMessage msg, @NonNull String cmdName) {
-        doReturn(msg).when(mDeps).newWakeupMessage(eq(mVcnContext), any(), eq(cmdName), any());
+        setUpWakeupMessage(msg, cmdName, mDeps);
     }
 
     @Before
@@ -299,6 +360,11 @@ public class VcnGatewayConnectionTestBase {
                 expectCanceled);
     }
 
+    protected void verifySafeModeStateAndCallbackFired(int invocationCount, boolean isInSafeMode) {
+        verify(mGatewayStatusCallback, times(invocationCount)).onSafeModeStatusChanged();
+        assertEquals(isInSafeMode, mGatewayConnection.isInSafeMode());
+    }
+
     protected void verifySafeModeTimeoutNotifiesCallbackAndUnregistersNetworkAgent(
             @NonNull State expectedState) {
         // Set a VcnNetworkAgent, and expect it to be unregistered and cleared
@@ -312,9 +378,8 @@ public class VcnGatewayConnectionTestBase {
         delayedEvent.run();
         mTestLooper.dispatchAll();
 
-        verify(mGatewayStatusCallback).onSafeModeStatusChanged();
         assertEquals(expectedState, mGatewayConnection.getCurrentState());
-        assertTrue(mGatewayConnection.isInSafeMode());
+        verifySafeModeStateAndCallbackFired(1, true);
 
         verify(mockNetworkAgent).unregister();
         assertNull(mGatewayConnection.getNetworkAgent());

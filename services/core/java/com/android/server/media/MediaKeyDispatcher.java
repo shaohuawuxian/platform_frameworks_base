@@ -44,7 +44,6 @@ import java.util.Map;
  * Note: When instantiating this class, {@link MediaSessionService} will only use the constructor
  * without any parameters.
  */
-// TODO: Move this class to apex/media/
 public abstract class MediaKeyDispatcher {
     @IntDef(flag = true, value = {
             KEY_EVENT_SINGLE_TAP,
@@ -77,7 +76,7 @@ public abstract class MediaKeyDispatcher {
         mOverriddenKeyEvents.put(KeyEvent.KEYCODE_VOLUME_MUTE, 0);
     }
 
-    // TODO: Move this method into SessionPolicyProvider.java for better readability.
+    // TODO: Move this method into MediaSessionPolicyProvider.java for better readability.
     /**
      * Implement this to customize the logic for which MediaSession should consume which key event.
      *
@@ -100,15 +99,13 @@ public abstract class MediaKeyDispatcher {
     /**
      * Implement this to customize the logic for which MediaButtonReceiver should consume a
      * dispatched key event.
-     *
-     * Note: This pending intent will have lower priority over the {@link MediaSession.Token}
+     * <p>
+     * This pending intent will have lower priority over the {@link MediaSession.Token}
      * returned from {@link #getMediaSession(KeyEvent, int, boolean)}.
+     * <p>
+     * Use a pending intent with an explicit intent; setting a pending intent with an implicit
+     * intent that cannot be resolved to a certain component name will fail.
      *
-     * @param keyEvent a non-null KeyEvent whose key code is one of the supported media buttons.
-     * @param uid the uid value retrieved by calling {@link Binder#getCallingUid()} from
-     *         {@link ISessionManager#dispatchMediaKeyEvent(String, boolean, KeyEvent, boolean)}
-     * @param asSystemService {@code true} if the event came from the system service via hardware
-     *         devices. {@code false} if the event came from the app process through key injection.
      * @return a {@link PendingIntent} instance that should receive the dispatched key event.
      */
     @Nullable
@@ -119,24 +116,11 @@ public abstract class MediaKeyDispatcher {
 
     /**
      * Gets the map of key code -> {@link KeyEventType} that have been overridden.
-     * <p>
-     * The list of valid key codes are the following:
-     * <ul>
-     * <li> {@link KeyEvent#KEYCODE_MEDIA_PLAY}
-     * <li> {@link KeyEvent#KEYCODE_MEDIA_PAUSE}
-     * <li> {@link KeyEvent#KEYCODE_MEDIA_PLAY_PAUSE}
-     * <li> {@link KeyEvent#KEYCODE_MUTE}
-     * <li> {@link KeyEvent#KEYCODE_HEADSETHOOK}
-     * <li> {@link KeyEvent#KEYCODE_MEDIA_STOP}
-     * <li> {@link KeyEvent#KEYCODE_MEDIA_NEXT}
-     * <li> {@link KeyEvent#KEYCODE_MEDIA_PREVIOUS}
-     * <li> {@link KeyEvent#KEYCODE_VOLUME_UP}
-     * <li> {@link KeyEvent#KEYCODE_VOLUME_DOWN}
-     * <li> {@link KeyEvent#KEYCODE_VOLUME_MUTE}
-     * </ul>
-     * @see {@link KeyEvent#isMediaSessionKey(int)}
+     *
+     * <p>For the list of relevant key codes, see {@link KeyEvent#isMediaSessionKey(int)}.
      */
-    @KeyEventType Map<Integer, Integer> getOverriddenKeyEvents() {
+    @KeyEventType
+    Map<Integer, Integer> getOverriddenKeyEvents() {
         return mOverriddenKeyEvents;
     }
 

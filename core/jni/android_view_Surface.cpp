@@ -23,18 +23,23 @@
 #include "core_jni_helpers.h"
 
 #include <android/graphics/canvas.h>
-#include <android_runtime/android_graphics_GraphicBuffer.h>
+#include <android_runtime/android_hardware_HardwareBuffer.h>
 #include <android_runtime/android_graphics_SurfaceTexture.h>
 #include <android_runtime/android_view_Surface.h>
 #include <android_runtime/Log.h>
+#ifdef __ANDROID__
 #include <private/android/AHardwareBufferHelpers.h>
 
 #include "android_os_Parcel.h"
 #include <binder/Parcel.h>
 
+#include <gui/BLASTBufferQueue.h>
+#endif
 #include <gui/Surface.h>
-#include <gui/view/Surface.h>
+#ifdef __ANDROID__
 #include <gui/SurfaceControl.h>
+#include <gui/view/Surface.h>
+#endif
 
 #include <ui/GraphicBuffer.h>
 #include <ui/Rect.h>
@@ -66,6 +71,7 @@ static struct {
     jfieldID bottom;
 } gRectClassInfo;
 
+#ifdef __ANDROID__
 class JNamedColorSpace {
 public:
     // ColorSpace.Named.SRGB.ordinal() = 0;
@@ -83,6 +89,7 @@ constexpr ui::Dataspace fromNamedColorSpaceValueToDataspace(const jint colorSpac
             return ui::Dataspace::V0_SRGB;
     }
 }
+#endif
 
 // ----------------------------------------------------------------------------
 
@@ -143,6 +150,7 @@ static inline bool isSurfaceValid(const sp<Surface>& sur) {
 
 // ----------------------------------------------------------------------------
 
+#ifdef __ANDROID__
 static jlong nativeCreateFromSurfaceTexture(JNIEnv* env, jclass clazz,
         jobject surfaceTextureObj) {
     sp<IGraphicBufferProducer> producer(SurfaceTexture_getProducer(env, surfaceTextureObj));
@@ -161,6 +169,7 @@ static jlong nativeCreateFromSurfaceTexture(JNIEnv* env, jclass clazz,
     surface->incStrong(&sRefBaseOwner);
     return jlong(surface.get());
 }
+#endif
 
 static void nativeRelease(JNIEnv* env, jclass clazz, jlong nativeObject) {
     sp<Surface> sur(reinterpret_cast<Surface *>(nativeObject));
@@ -268,7 +277,7 @@ static void nativeAllocateBuffers(JNIEnv* /* env */ , jclass /* clazz */,
 }
 
 // ----------------------------------------------------------------------------
-
+#ifdef __ANDROID__
 static jlong nativeCreateFromSurfaceControl(JNIEnv* env, jclass clazz,
         jlong surfaceControlNativeObj) {
     sp<SurfaceControl> ctrl(reinterpret_cast<SurfaceControl *>(surfaceControlNativeObj));
@@ -293,6 +302,26 @@ static jlong nativeGetFromSurfaceControl(JNIEnv* env, jclass clazz,
     }
 
     sp<Surface> surface(ctrl->getSurface());
+    if (surface != NULL) {
+        surface->incStrong(&sRefBaseOwner);
+    }
+
+    return reinterpret_cast<jlong>(surface.get());
+}
+
+static jlong nativeGetFromBlastBufferQueue(JNIEnv* env, jclass clazz, jlong nativeObject,
+                                           jlong blastBufferQueueNativeObj) {
+    Surface* self(reinterpret_cast<Surface*>(nativeObject));
+    sp<BLASTBufferQueue> queue = reinterpret_cast<BLASTBufferQueue*>(blastBufferQueueNativeObj);
+    const sp<IGraphicBufferProducer>& bufferProducer = queue->getIGraphicBufferProducer();
+    // If the underlying IGBP's are the same, we don't need to do anything.
+    if (self != nullptr &&
+        IInterface::asBinder(self->getIGraphicBufferProducer()) ==
+                IInterface::asBinder(bufferProducer)) {
+        return nativeObject;
+    }
+
+    sp<Surface> surface = queue->getSurface(true /* includeSurfaceControlHandle */);
     if (surface != NULL) {
         surface->incStrong(&sRefBaseOwner);
     }
@@ -328,7 +357,8 @@ static jlong nativeReadFromParcel(JNIEnv* env, jclass clazz,
     sp<Surface> sur;
     if (surfaceShim.graphicBufferProducer != nullptr) {
         // we have a new IGraphicBufferProducer, create a new Surface for it
-        sur = new Surface(surfaceShim.graphicBufferProducer, true);
+        sur = new Surface(surfaceShim.graphicBufferProducer, true,
+                          surfaceShim.surfaceControlHandle);
         // and keep a reference before passing to java
         sur->incStrong(&sRefBaseOwner);
     }
@@ -352,11 +382,13 @@ static void nativeWriteToParcel(JNIEnv* env, jclass clazz,
     android::view::Surface surfaceShim;
     if (self != nullptr) {
         surfaceShim.graphicBufferProducer = self->getIGraphicBufferProducer();
+        surfaceShim.surfaceControlHandle = self->getSurfaceControlHandle();
     }
     // Calling code in Surface.java has already written the name of the Surface
     // to the Parcel
     surfaceShim.writeToParcel(parcel, /*nameAlreadyWritten*/true);
 }
+#endif
 
 static jint nativeGetWidth(JNIEnv* env, jclass clazz, jlong nativeObject) {
     Surface* surface = reinterpret_cast<Surface*>(nativeObject);
@@ -389,15 +421,18 @@ static jint nativeForceScopedDisconnect(JNIEnv *env, jclass clazz, jlong nativeO
     return surface->disconnect(-1, IGraphicBufferProducer::DisconnectMode::AllLocal);
 }
 
-static jint nativeAttachAndQueueBufferWithColorSpace(JNIEnv *env, jclass clazz, jlong nativeObject,
-        jobject graphicBuffer, jint colorSpaceId) {
+#ifdef __ANDROID__
+static jint nativeAttachAndQueueBufferWithColorSpace(JNIEnv* env, jclass clazz, jlong nativeObject,
+                                                     jobject hardwareBuffer, jint colorSpaceId) {
     Surface* surface = reinterpret_cast<Surface*>(nativeObject);
-    sp<GraphicBuffer> gb(android_graphics_GraphicBuffer_getNativeGraphicsBuffer(env,
-                                                                                graphicBuffer));
+    AHardwareBuffer* ahb =
+            android_hardware_HardwareBuffer_getNativeHardwareBuffer(env, hardwareBuffer);
+    GraphicBuffer* gb = AHardwareBuffer_to_GraphicBuffer(ahb);
     int err = Surface::attachAndQueueBufferWithDataspace(surface, gb,
             fromNamedColorSpaceValueToDataspace(colorSpaceId));
     return err;
 }
+#endif
 
 static jint nativeSetSharedBufferModeEnabled(JNIEnv* env, jclass clazz, jlong nativeObject,
         jboolean enabled) {
@@ -414,51 +449,59 @@ static jint nativeSetAutoRefreshEnabled(JNIEnv* env, jclass clazz, jlong nativeO
 }
 
 static jint nativeSetFrameRate(JNIEnv* env, jclass clazz, jlong nativeObject, jfloat frameRate,
-                               jint compatibility) {
+                               jint compatibility, jint changeFrameRateStrategy) {
     Surface* surface = reinterpret_cast<Surface*>(nativeObject);
     ANativeWindow* anw = static_cast<ANativeWindow*>(surface);
     // Our compatibility is a Surface.FRAME_RATE_COMPATIBILITY_* value, and
     // NATIVE_WINDOW_SET_FRAME_RATE takes an
     // ANATIVEWINDOW_FRAME_RATE_COMPATIBILITY_* value. The values are identical
     // though, so no need to explicitly convert.
-    return anw->perform(surface, NATIVE_WINDOW_SET_FRAME_RATE, float(frameRate), compatibility);
+    return anw->perform(surface, NATIVE_WINDOW_SET_FRAME_RATE, double(frameRate), compatibility,
+                        int(changeFrameRateStrategy));
+}
+
+static void nativeDestroy(JNIEnv* env, jclass clazz, jlong nativeObject) {
+    sp<Surface> surface(reinterpret_cast<Surface*>(nativeObject));
+    surface->destroy();
 }
 
 // ----------------------------------------------------------------------------
 
 static const JNINativeMethod gSurfaceMethods[] = {
-    {"nativeCreateFromSurfaceTexture", "(Landroid/graphics/SurfaceTexture;)J",
-            (void*)nativeCreateFromSurfaceTexture },
-    {"nativeRelease", "(J)V",
-            (void*)nativeRelease },
-    {"nativeIsValid", "(J)Z",
-            (void*)nativeIsValid },
-    {"nativeIsConsumerRunningBehind", "(J)Z",
-            (void*)nativeIsConsumerRunningBehind },
-    {"nativeLockCanvas", "(JLandroid/graphics/Canvas;Landroid/graphics/Rect;)J",
-            (void*)nativeLockCanvas },
-    {"nativeUnlockCanvasAndPost", "(JLandroid/graphics/Canvas;)V",
-            (void*)nativeUnlockCanvasAndPost },
-    {"nativeAllocateBuffers", "(J)V",
-            (void*)nativeAllocateBuffers },
-    {"nativeCreateFromSurfaceControl", "(J)J",
-            (void*)nativeCreateFromSurfaceControl },
-    {"nativeGetFromSurfaceControl", "(JJ)J",
-            (void*)nativeGetFromSurfaceControl },
-    {"nativeReadFromParcel", "(JLandroid/os/Parcel;)J",
-            (void*)nativeReadFromParcel },
-    {"nativeWriteToParcel", "(JLandroid/os/Parcel;)V",
-            (void*)nativeWriteToParcel },
-    {"nativeGetWidth", "(J)I", (void*)nativeGetWidth },
-    {"nativeGetHeight", "(J)I", (void*)nativeGetHeight },
-    {"nativeGetNextFrameNumber", "(J)J", (void*)nativeGetNextFrameNumber },
-    {"nativeSetScalingMode", "(JI)I", (void*)nativeSetScalingMode },
-    {"nativeForceScopedDisconnect", "(J)I", (void*)nativeForceScopedDisconnect},
-    {"nativeAttachAndQueueBufferWithColorSpace", "(JLandroid/graphics/GraphicBuffer;I)I",
-            (void*)nativeAttachAndQueueBufferWithColorSpace},
-    {"nativeSetSharedBufferModeEnabled", "(JZ)I", (void*)nativeSetSharedBufferModeEnabled},
-    {"nativeSetAutoRefreshEnabled", "(JZ)I", (void*)nativeSetAutoRefreshEnabled},
-    {"nativeSetFrameRate", "(JFI)I", (void*)nativeSetFrameRate},
+#ifdef __ANDROID__
+        {"nativeCreateFromSurfaceTexture", "(Landroid/graphics/SurfaceTexture;)J",
+         (void*)nativeCreateFromSurfaceTexture},
+#endif
+        {"nativeRelease", "(J)V", (void*)nativeRelease},
+        {"nativeIsValid", "(J)Z", (void*)nativeIsValid},
+        {"nativeIsConsumerRunningBehind", "(J)Z", (void*)nativeIsConsumerRunningBehind},
+        {"nativeLockCanvas", "(JLandroid/graphics/Canvas;Landroid/graphics/Rect;)J",
+         (void*)nativeLockCanvas},
+        {"nativeUnlockCanvasAndPost", "(JLandroid/graphics/Canvas;)V",
+         (void*)nativeUnlockCanvasAndPost},
+        {"nativeAllocateBuffers", "(J)V", (void*)nativeAllocateBuffers},
+#ifdef __ANDROID__
+        {"nativeCreateFromSurfaceControl", "(J)J", (void*)nativeCreateFromSurfaceControl},
+        {"nativeGetFromSurfaceControl", "(JJ)J", (void*)nativeGetFromSurfaceControl},
+        {"nativeReadFromParcel", "(JLandroid/os/Parcel;)J", (void*)nativeReadFromParcel},
+        {"nativeWriteToParcel", "(JLandroid/os/Parcel;)V", (void*)nativeWriteToParcel},
+#endif
+        {"nativeGetWidth", "(J)I", (void*)nativeGetWidth},
+        {"nativeGetHeight", "(J)I", (void*)nativeGetHeight},
+        {"nativeGetNextFrameNumber", "(J)J", (void*)nativeGetNextFrameNumber},
+        {"nativeSetScalingMode", "(JI)I", (void*)nativeSetScalingMode},
+        {"nativeForceScopedDisconnect", "(J)I", (void*)nativeForceScopedDisconnect},
+#ifdef __ANDROID__
+        {"nativeAttachAndQueueBufferWithColorSpace", "(JLandroid/hardware/HardwareBuffer;I)I",
+         (void*)nativeAttachAndQueueBufferWithColorSpace},
+#endif
+        {"nativeSetSharedBufferModeEnabled", "(JZ)I", (void*)nativeSetSharedBufferModeEnabled},
+        {"nativeSetAutoRefreshEnabled", "(JZ)I", (void*)nativeSetAutoRefreshEnabled},
+        {"nativeSetFrameRate", "(JFII)I", (void*)nativeSetFrameRate},
+#ifdef __ANDROID__
+        {"nativeGetFromBlastBufferQueue", "(JJ)J", (void*)nativeGetFromBlastBufferQueue},
+#endif
+        {"nativeDestroy", "(J)V", (void*)nativeDestroy},
 };
 
 int register_android_view_Surface(JNIEnv* env)

@@ -19,6 +19,7 @@
     <string name="keyboard_layout_swiss_german_label" msgid="2305520941993314258">"സ്വിസ് ജര്‍മന്‍"</string>
     <string name="keyboard_layout_belgian" msgid="2011984572838651558">"ബെൽജിയൻ"</string>
     <string name="keyboard_layout_bulgarian" msgid="8951224309972028398">"ബൾഗേറിയൻ"</string>
+    <string name="keyboard_layout_bulgarian_phonetic" msgid="7568914730360106653">"ബൾഗേറിയൻ, ഉച്ചാരണശബ്‌ദം"</string>
     <string name="keyboard_layout_italian" msgid="6497079660449781213">"ഇറ്റാലിയൻ"</string>
     <string name="keyboard_layout_danish" msgid="8036432066627127851">"ഡാനിഷ്"</string>
     <string name="keyboard_layout_norwegian" msgid="9090097917011040937">"നോർവീജിയൻ"</string>
@@ -49,4 +50,10 @@
     <string name="keyboard_layout_belarusian" msgid="7619281752698687588">"ബെലാറുഷ്യൻ"</string>
     <string name="keyboard_layout_mongolian" msgid="7678483495823936626">"മംഗോളിയൻ"</string>
     <string name="keyboard_layout_georgian" msgid="4596185456863747454">"ജോര്‍ജ്ജിയൻ"</string>
+    <string name="keyboard_layout_thai_kedmanee" msgid="6637147314580760938">"തായ് (Kedmanee)"</string>
+    <string name="keyboard_layout_thai_pattachote" msgid="2547992342794252205">"തായ് (Pattachote)"</string>
+    <string name="keyboard_layout_serbian_latin" msgid="3128791759390046571">"സെർബിയൻ (ലാറ്റിൻ)"</string>
+    <string name="keyboard_layout_montenegrin_latin" msgid="1467832503378949945">"മോണ്ടിനെഗ്രിൻ (ലാറ്റിൻ)"</string>
+    <string name="keyboard_layout_serbian_cyrillic" msgid="7013541044323542196">"സെർബിയൻ (സിറിലിക്)"</string>
+    <string name="keyboard_layout_montenegrin_cyrillic" msgid="2391253952894077421">"മോണ്ടിനെഗ്രിൻ (സിറിലിക്)"</string>
 </resources>

@@ -25,7 +25,7 @@ import java.util.Set;
  *
  * @hide
  */
-public final class CasResource {
+public class CasResource {
 
     private final int mSystemId;
 
@@ -38,7 +38,7 @@ public final class CasResource {
      */
     private Map<Integer, Integer> mOwnerClientIdsToSessionNum = new HashMap<>();
 
-    private CasResource(Builder builder) {
+    CasResource(Builder builder) {
         this.mSystemId = builder.mSystemId;
         this.mMaxSessionNum = builder.mMaxSessionNum;
         this.mAvailableSessionNum = builder.mMaxSessionNum;
@@ -89,8 +89,34 @@ public final class CasResource {
      * @param ownerId the removing client id of the owner.
      */
     public void removeOwner(int ownerId) {
-        mAvailableSessionNum += mOwnerClientIdsToSessionNum.get(ownerId);
-        mOwnerClientIdsToSessionNum.remove(ownerId);
+        if (mOwnerClientIdsToSessionNum.containsKey(ownerId)) {
+            mAvailableSessionNum += mOwnerClientIdsToSessionNum.get(ownerId);
+            mOwnerClientIdsToSessionNum.remove(ownerId);
+        }
+    }
+
+    /**
+     * Remove a single session from resource
+     *
+     * @param ownerId the client Id of the owner of the session
+     */
+    public void removeSession(int ownerId) {
+        if (mOwnerClientIdsToSessionNum.containsKey(ownerId)) {
+            int sessionNum = mOwnerClientIdsToSessionNum.get(ownerId);
+            if (sessionNum > 0) {
+                mOwnerClientIdsToSessionNum.put(ownerId, --sessionNum);
+                mAvailableSessionNum++;
+            }
+        }
+    }
+
+    /**
+     * Check if there are any open sessions owned by a client
+     *
+     * @param ownerId the client Id of the owner of the sessions
+     */
+    public boolean hasOpenSessions(int ownerId) {
+        return mOwnerClientIdsToSessionNum.get(ownerId) > 0;
     }
 
     public Set<Integer> getOwnerClientIds() {
@@ -111,7 +137,7 @@ public final class CasResource {
     public static class Builder {
 
         private int mSystemId;
-        private int mMaxSessionNum;
+        protected int mMaxSessionNum;
 
         Builder(int systemId) {
             this.mSystemId = systemId;
@@ -138,7 +164,7 @@ public final class CasResource {
         }
     }
 
-    private String ownersMapToString() {
+    protected String ownersMapToString() {
         StringBuilder string = new StringBuilder("{");
         for (int clienId : mOwnerClientIdsToSessionNum.keySet()) {
             string.append(" clientId=")

@@ -30,12 +30,21 @@ public interface ConfigurationController extends CallbackController<Configuratio
     /** Alert controller of a change in between light and dark themes. */
     void notifyThemeChanged();
 
+    /** Query the current configuration's layout direction */
+    boolean isLayoutRtl();
+
+    /** Logging only; Query the current configuration's night mode name */
+    String getNightModeName();
+
     interface ConfigurationListener {
         default void onConfigChanged(Configuration newConfig) {}
         default void onDensityOrFontScaleChanged() {}
-        default void onOverlayChanged() {}
+        default void onSmallestScreenWidthChanged() {}
+        default void onMaxBoundsChanged() {}
         default void onUiModeChanged() {}
         default void onThemeChanged() {}
         default void onLocaleListChanged() {}
+        default void onLayoutDirectionChanged(boolean isLayoutRtl) {}
+        default void onOrientationChanged(int orientation) {}
     }
 }

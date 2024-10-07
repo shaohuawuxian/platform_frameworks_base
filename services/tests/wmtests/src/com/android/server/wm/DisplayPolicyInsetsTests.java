@@ -29,6 +29,8 @@ import android.view.DisplayInfo;
 
 import androidx.test.filters.SmallTest;
 
+import com.android.window.flags.Flags;
+
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.ErrorCollector;
@@ -36,6 +38,8 @@ import org.junit.runner.RunWith;
 
 @SmallTest
 @Presubmit
+@WindowTestsBase.SetupWindows(
+        addWindows = { WindowTestsBase.W_STATUS_BAR, WindowTestsBase.W_NAVIGATION_BAR })
 @RunWith(WindowTestRunner.class)
 public class DisplayPolicyInsetsTests extends DisplayPolicyTestsBase {
 
@@ -64,8 +68,14 @@ public class DisplayPolicyInsetsTests extends DisplayPolicyTestsBase {
     public void landscape() {
         final DisplayInfo di = displayInfoForRotation(ROTATION_90, false /* withCutout */);
 
-        verifyStableInsets(di, 0, STATUS_BAR_HEIGHT, NAV_BAR_HEIGHT, 0);
-        verifyNonDecorInsets(di, 0, 0, NAV_BAR_HEIGHT, 0);
+        if (mDisplayPolicy.navigationBarCanMove()) {
+            verifyStableInsets(di, 0, STATUS_BAR_HEIGHT, NAV_BAR_HEIGHT, 0);
+            verifyNonDecorInsets(di, 0, 0, NAV_BAR_HEIGHT, 0);
+        } else {
+            // if the navigation bar cannot move then it is always on the bottom
+            verifyStableInsets(di, 0, STATUS_BAR_HEIGHT, 0, NAV_BAR_HEIGHT);
+            verifyNonDecorInsets(di, 0, 0, 0, NAV_BAR_HEIGHT);
+        }
         verifyConsistency(di);
     }
 
@@ -73,8 +83,14 @@ public class DisplayPolicyInsetsTests extends DisplayPolicyTestsBase {
     public void landscape_withCutout() {
         final DisplayInfo di = displayInfoForRotation(ROTATION_90, true /* withCutout */);
 
-        verifyStableInsets(di, DISPLAY_CUTOUT_HEIGHT, STATUS_BAR_HEIGHT, NAV_BAR_HEIGHT, 0);
-        verifyNonDecorInsets(di, DISPLAY_CUTOUT_HEIGHT, 0, NAV_BAR_HEIGHT, 0);
+        if (mDisplayPolicy.navigationBarCanMove()) {
+            verifyStableInsets(di, DISPLAY_CUTOUT_HEIGHT, STATUS_BAR_HEIGHT, NAV_BAR_HEIGHT, 0);
+            verifyNonDecorInsets(di, DISPLAY_CUTOUT_HEIGHT, 0, NAV_BAR_HEIGHT, 0);
+        } else {
+            // if the navigation bar cannot move then it is always on the bottom
+            verifyStableInsets(di, DISPLAY_CUTOUT_HEIGHT, STATUS_BAR_HEIGHT, 0, NAV_BAR_HEIGHT);
+            verifyNonDecorInsets(di, DISPLAY_CUTOUT_HEIGHT, 0, 0, NAV_BAR_HEIGHT);
+        }
         verifyConsistency(di);
     }
 
@@ -82,8 +98,14 @@ public class DisplayPolicyInsetsTests extends DisplayPolicyTestsBase {
     public void seascape() {
         final DisplayInfo di = displayInfoForRotation(ROTATION_270, false /* withCutout */);
 
-        verifyStableInsets(di, NAV_BAR_HEIGHT, STATUS_BAR_HEIGHT, 0, 0);
-        verifyNonDecorInsets(di, NAV_BAR_HEIGHT, 0, 0, 0);
+        if (mDisplayPolicy.navigationBarCanMove()) {
+            verifyStableInsets(di, NAV_BAR_HEIGHT, STATUS_BAR_HEIGHT, 0, 0);
+            verifyNonDecorInsets(di, NAV_BAR_HEIGHT, 0, 0, 0);
+        } else {
+            // if the navigation bar cannot move then it is always on the bottom
+            verifyStableInsets(di, 0, STATUS_BAR_HEIGHT, 0, NAV_BAR_HEIGHT);
+            verifyNonDecorInsets(di, 0, 0, 0, NAV_BAR_HEIGHT);
+        }
         verifyConsistency(di);
     }
 
@@ -91,8 +113,14 @@ public class DisplayPolicyInsetsTests extends DisplayPolicyTestsBase {
     public void seascape_withCutout() {
         final DisplayInfo di = displayInfoForRotation(ROTATION_270, true /* withCutout */);
 
-        verifyStableInsets(di, NAV_BAR_HEIGHT, STATUS_BAR_HEIGHT, DISPLAY_CUTOUT_HEIGHT, 0);
-        verifyNonDecorInsets(di, NAV_BAR_HEIGHT, 0, DISPLAY_CUTOUT_HEIGHT, 0);
+        if (mDisplayPolicy.navigationBarCanMove()) {
+            verifyStableInsets(di, NAV_BAR_HEIGHT, STATUS_BAR_HEIGHT, DISPLAY_CUTOUT_HEIGHT, 0);
+            verifyNonDecorInsets(di, NAV_BAR_HEIGHT, 0, DISPLAY_CUTOUT_HEIGHT, 0);
+        } else {
+            // if the navigation bar cannot move then it is always on the bottom
+            verifyStableInsets(di, 0, STATUS_BAR_HEIGHT, DISPLAY_CUTOUT_HEIGHT, NAV_BAR_HEIGHT);
+            verifyNonDecorInsets(di, 0, 0, DISPLAY_CUTOUT_HEIGHT, NAV_BAR_HEIGHT);
+        }
         verifyConsistency(di);
     }
 
@@ -114,21 +142,33 @@ public class DisplayPolicyInsetsTests extends DisplayPolicyTestsBase {
         verifyConsistency(di);
     }
 
-    private void verifyStableInsets(DisplayInfo di, int left, int top, int right, int bottom) {
-        mErrorCollector.checkThat("stableInsets", getStableInsetsLw(di), equalTo(new Rect(
-                left, top, right, bottom)));
+    private void verifyStableInsets(DisplayInfo di, int left, int top,
+            int right, int bottom) {
+        if (Flags.insetsDecoupledConfiguration()) {
+            // TODO: update the verification to match the new behavior.
+            return;
+        }
+        mErrorCollector.checkThat("stableInsets", getStableInsets(di),
+                equalTo(new Rect(left, top, right, bottom)));
     }
 
-    private void verifyNonDecorInsets(DisplayInfo di, int left, int top, int right, int bottom) {
-        mErrorCollector.checkThat("nonDecorInsets", getNonDecorInsetsLw(di), equalTo(new Rect(
-                left, top, right, bottom)));
+    private void verifyNonDecorInsets(DisplayInfo di, int left, int top,
+            int right, int bottom) {
+        if (Flags.insetsDecoupledConfiguration()) {
+            // TODO: update the verification to match the new behavior.
+            return;
+        }
+        mErrorCollector.checkThat("nonDecorInsets",
+                getNonDecorInsets(di), equalTo(new Rect(left, top, right, bottom)));
     }
 
-    private void verifyConsistency(DisplayInfo di) {
-        verifyConsistency("configDisplay", di, getStableInsetsLw(di),
-                getConfigDisplayWidth(di), getConfigDisplayHeight(di));
-        verifyConsistency("nonDecorDisplay", di, getNonDecorInsetsLw(di),
-                getNonDecorDisplayWidth(di), getNonDecorDisplayHeight(di));
+    private void verifyConsistency(DisplayInfo  di) {
+        final DisplayPolicy.DecorInsets.Info info = mDisplayPolicy.getDecorInsetsInfo(
+                di.rotation, di.logicalWidth, di.logicalHeight);
+        verifyConsistency("configDisplay", di, info.mConfigInsets,
+                info.mConfigFrame.width(), info.mConfigFrame.height());
+        verifyConsistency("nonDecorDisplay", di, info.mNonDecorInsets,
+                info.mNonDecorFrame.width(), info.mNonDecorFrame.height());
     }
 
     private void verifyConsistency(String what, DisplayInfo di, Rect insets, int width,
@@ -139,41 +179,18 @@ public class DisplayPolicyInsetsTests extends DisplayPolicyTestsBase {
                 equalTo(di.logicalHeight - insets.top - insets.bottom));
     }
 
-    private Rect getStableInsetsLw(DisplayInfo di) {
-        Rect result = new Rect();
-        mDisplayPolicy.getStableInsetsLw(di.rotation, di.logicalWidth, di.logicalHeight,
-                di.displayCutout, result);
-        return result;
+    private Rect getStableInsets(DisplayInfo di) {
+        return mDisplayPolicy.getDecorInsetsInfo(
+                di.rotation, di.logicalWidth, di.logicalHeight).mConfigInsets;
     }
 
-    private Rect getNonDecorInsetsLw(DisplayInfo di) {
-        Rect result = new Rect();
-        mDisplayPolicy.getNonDecorInsetsLw(di.rotation, di.logicalWidth, di.logicalHeight,
-                di.displayCutout, result);
-        return result;
+    private Rect getNonDecorInsets(DisplayInfo di) {
+        return mDisplayPolicy.getDecorInsetsInfo(
+                di.rotation, di.logicalWidth, di.logicalHeight).mNonDecorInsets;
     }
 
-    private int getNonDecorDisplayWidth(DisplayInfo di) {
-        return mDisplayPolicy.getNonDecorDisplayWidth(di.logicalWidth, di.logicalHeight,
-                di.rotation, 0 /* ui */, di.displayCutout);
-    }
-
-    private int getNonDecorDisplayHeight(DisplayInfo di) {
-        return mDisplayPolicy.getNonDecorDisplayHeight(di.logicalWidth, di.logicalHeight,
-                di.rotation, 0 /* ui */, di.displayCutout);
-    }
-
-    private int getConfigDisplayWidth(DisplayInfo di) {
-        return mDisplayPolicy.getConfigDisplayWidth(di.logicalWidth, di.logicalHeight,
-                di.rotation, 0 /* ui */, di.displayCutout);
-    }
-
-    private int getConfigDisplayHeight(DisplayInfo di) {
-        return mDisplayPolicy.getConfigDisplayHeight(di.logicalWidth, di.logicalHeight,
-                di.rotation, 0 /* ui */, di.displayCutout);
-    }
-
-    private static DisplayInfo displayInfoForRotation(int rotation, boolean withDisplayCutout) {
-        return displayInfoAndCutoutForRotation(rotation, withDisplayCutout, false).first;
+    private DisplayInfo displayInfoForRotation(int rotation, boolean withDisplayCutout) {
+        return displayInfoAndCutoutForRotation(
+                rotation, withDisplayCutout, false /* isLongEdgeCutout */);
     }
 }

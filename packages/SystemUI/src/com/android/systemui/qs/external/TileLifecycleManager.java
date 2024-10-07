@@ -15,6 +15,14 @@
  */
 package com.android.systemui.qs.external;
 
+import static android.os.PowerWhitelistManager.REASON_TILE_ONCLICK;
+import static android.provider.DeviceConfig.NAMESPACE_SYSTEMUI;
+import static android.service.quicksettings.TileService.START_ACTIVITY_NEEDS_PENDING_INTENT;
+
+import static com.android.systemui.Flags.qsCustomTileClickGuaranteedBugFix;
+
+import android.app.ActivityManager;
+import android.app.compat.CompatChanges;
 import android.content.BroadcastReceiver;
 import android.content.ComponentName;
 import android.content.Context;
@@ -27,22 +35,36 @@ import android.net.Uri;
 import android.os.Binder;
 import android.os.Handler;
 import android.os.IBinder;
+import android.os.IDeviceIdleController;
 import android.os.RemoteException;
 import android.os.UserHandle;
+import android.provider.DeviceConfig;
 import android.service.quicksettings.IQSService;
 import android.service.quicksettings.IQSTileService;
-import android.service.quicksettings.Tile;
 import android.service.quicksettings.TileService;
+import android.text.format.DateUtils;
 import android.util.ArraySet;
 import android.util.Log;
 
-import androidx.annotation.VisibleForTesting;
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
+import androidx.annotation.WorkerThread;
 
 import com.android.systemui.broadcast.BroadcastDispatcher;
+import com.android.systemui.dagger.qualifiers.Background;
+import com.android.systemui.dagger.qualifiers.Main;
+import com.android.systemui.util.concurrency.DelayableExecutor;
 
+import dagger.assisted.Assisted;
+import dagger.assisted.AssistedFactory;
+import dagger.assisted.AssistedInject;
+
+import java.util.NoSuchElementException;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Predicate;
 
 /**
  * Manages the lifecycle of a TileService.
@@ -53,19 +75,30 @@ import java.util.concurrent.atomic.AtomicBoolean;
  */
 public class TileLifecycleManager extends BroadcastReceiver implements
         IQSTileService, ServiceConnection, IBinder.DeathRecipient {
-    public static final boolean DEBUG = false;
+
+    private final boolean mDebug = Log.isLoggable(TAG, Log.DEBUG);
 
     private static final String TAG = "TileLifecycleManager";
+
+    private static final int META_DATA_QUERY_FLAGS =
+            PackageManager.GET_META_DATA
+                    | PackageManager.MATCH_UNINSTALLED_PACKAGES
+                    | PackageManager.MATCH_DIRECT_BOOT_UNAWARE
+                    | PackageManager.MATCH_DIRECT_BOOT_AWARE;
 
     private static final int MSG_ON_ADDED = 0;
     private static final int MSG_ON_REMOVED = 1;
     private static final int MSG_ON_CLICK = 2;
     private static final int MSG_ON_UNLOCK_COMPLETE = 3;
+    private static final int MSG_ON_STOP_LISTENING = 4;
 
     // Bind retry control.
     private static final int MAX_BIND_RETRIES = 5;
-    private static final int DEFAULT_BIND_RETRY_DELAY = 1000;
-
+    private static final long DEFAULT_BIND_RETRY_DELAY = 5 * DateUtils.SECOND_IN_MILLIS;
+    private static final long LOW_MEMORY_BIND_RETRY_DELAY = 20 * DateUtils.SECOND_IN_MILLIS;
+    private static final long TILE_SERVICE_ONCLICK_ALLOW_LIST_DEFAULT_DURATION_MS = 15_000;
+    private static final String PROPERTY_TILE_SERVICE_ONCLICK_ALLOW_LIST_DURATION =
+            "property_tile_service_onclick_allow_list_duration";
     // Shared prefs that hold tile lifecycle info.
     private static final String TILES = "tiles_prefs";
 
@@ -73,44 +106,73 @@ public class TileLifecycleManager extends BroadcastReceiver implements
     private final Handler mHandler;
     private final Intent mIntent;
     private final UserHandle mUser;
+    private final DelayableExecutor mExecutor;
     private final IBinder mToken = new Binder();
     private final PackageManagerAdapter mPackageManagerAdapter;
     private final BroadcastDispatcher mBroadcastDispatcher;
+    private final ActivityManager mActivityManager;
+    private final IDeviceIdleController mDeviceIdleController;
 
     private Set<Integer> mQueuedMessages = new ArraySet<>();
-    private QSTileServiceWrapper mWrapper;
+    @NonNull
+    private volatile Optional<QSTileServiceWrapper> mOptionalWrapper = Optional.empty();
     private boolean mListening;
     private IBinder mClickBinder;
 
     private int mBindTryCount;
-    private int mBindRetryDelay = DEFAULT_BIND_RETRY_DELAY;
-    private boolean mBound;
+    private long mBindRetryDelay = DEFAULT_BIND_RETRY_DELAY;
+    private AtomicBoolean isDeathRebindScheduled = new AtomicBoolean(false);
+    private AtomicBoolean mBound = new AtomicBoolean(false);
     private AtomicBoolean mPackageReceiverRegistered = new AtomicBoolean(false);
     private AtomicBoolean mUserReceiverRegistered = new AtomicBoolean(false);
-    private boolean mUnbindImmediate;
+    private AtomicBoolean mUnbindImmediate = new AtomicBoolean(false);
+    @Nullable
     private TileChangeListener mChangeListener;
     // Return value from bindServiceAsUser, determines whether safe to call unbind.
-    private boolean mIsBound;
+    private AtomicBoolean mIsBound = new AtomicBoolean(false);
+    private long mTempAllowFgsLaunchDuration = TILE_SERVICE_ONCLICK_ALLOW_LIST_DEFAULT_DURATION_MS;
+    private final DeviceConfig.OnPropertiesChangedListener mDeviceConfigChangedListener;
+    private AtomicBoolean mDeviceConfigChangedListenerRegistered = new AtomicBoolean(false);
 
-    public TileLifecycleManager(Handler handler, Context context, IQSService service, Tile tile,
-            Intent intent, UserHandle user, BroadcastDispatcher broadcastDispatcher) {
-        this(handler, context, service, tile, intent, user, new PackageManagerAdapter(context),
-                broadcastDispatcher);
-    }
-
-    @VisibleForTesting
-    TileLifecycleManager(Handler handler, Context context, IQSService service, Tile tile,
-            Intent intent, UserHandle user, PackageManagerAdapter packageManagerAdapter,
-            BroadcastDispatcher broadcastDispatcher) {
+    @AssistedInject
+    TileLifecycleManager(@Main Handler handler, Context context, IQSService service,
+            PackageManagerAdapter packageManagerAdapter, BroadcastDispatcher broadcastDispatcher,
+            @Assisted Intent intent, @Assisted UserHandle user, ActivityManager activityManager,
+            IDeviceIdleController deviceIdleController, @Background DelayableExecutor executor) {
         mContext = context;
         mHandler = handler;
         mIntent = intent;
         mIntent.putExtra(TileService.EXTRA_SERVICE, service.asBinder());
         mIntent.putExtra(TileService.EXTRA_TOKEN, mToken);
         mUser = user;
+        mExecutor = executor;
         mPackageManagerAdapter = packageManagerAdapter;
         mBroadcastDispatcher = broadcastDispatcher;
-        if (DEBUG) Log.d(TAG, "Creating " + mIntent + " " + mUser);
+        mActivityManager = activityManager;
+        mDeviceIdleController = deviceIdleController;
+        mDeviceConfigChangedListener = properties -> {
+            if (!DeviceConfig.NAMESPACE_SYSTEMUI.equals(properties.getNamespace())) {
+                return;
+            }
+            mTempAllowFgsLaunchDuration = properties.getLong(
+                    PROPERTY_TILE_SERVICE_ONCLICK_ALLOW_LIST_DURATION,
+                    TILE_SERVICE_ONCLICK_ALLOW_LIST_DEFAULT_DURATION_MS);
+        };
+
+        if (mDebug) Log.d(TAG, "Creating " + mIntent + " " + mUser);
+    }
+
+    /** Injectable factory for TileLifecycleManager. */
+    @AssistedFactory
+    public interface Factory {
+        /**
+         *
+         */
+        TileLifecycleManager create(Intent intent, UserHandle userHandle);
+    }
+
+    public int getUserId() {
+        return mUser.getIdentifier();
     }
 
     public ComponentName getComponent() {
@@ -123,14 +185,10 @@ public class TileLifecycleManager extends BroadcastReceiver implements
         }
     }
 
-    public void setBindRetryDelay(int delayMs) {
-        mBindRetryDelay = delayMs;
-    }
-
     public boolean isActiveTile() {
         try {
             ServiceInfo info = mPackageManagerAdapter.getServiceInfo(mIntent.getComponent(),
-                    PackageManager.MATCH_UNINSTALLED_PACKAGES | PackageManager.GET_META_DATA);
+                    META_DATA_QUERY_FLAGS);
             return info.metaData != null
                     && info.metaData.getBoolean(TileService.META_DATA_ACTIVE_TILE, false);
         } catch (PackageManager.NameNotFoundException e) {
@@ -142,13 +200,13 @@ public class TileLifecycleManager extends BroadcastReceiver implements
      * Determines whether the associated TileService is a Boolean Tile.
      *
      * @return true if {@link TileService#META_DATA_TOGGLEABLE_TILE} is set to {@code true} for this
-     *         tile
+     * tile
      * @see TileService#META_DATA_TOGGLEABLE_TILE
      */
     public boolean isToggleableTile() {
         try {
             ServiceInfo info = mPackageManagerAdapter.getServiceInfo(mIntent.getComponent(),
-                    PackageManager.MATCH_UNINSTALLED_PACKAGES | PackageManager.GET_META_DATA);
+                    META_DATA_QUERY_FLAGS);
             return info.metaData != null
                     && info.metaData.getBoolean(TileService.META_DATA_TOGGLEABLE_TILE, false);
         } catch (PackageManager.NameNotFoundException e) {
@@ -160,19 +218,29 @@ public class TileLifecycleManager extends BroadcastReceiver implements
      * Binds just long enough to send any queued messages, then unbinds.
      */
     public void flushMessagesAndUnbind() {
-        mUnbindImmediate = true;
-        setBindService(true);
+        mExecutor.execute(() -> {
+            mUnbindImmediate.set(true);
+            setBindService(true);
+        });
     }
 
-    public void setBindService(boolean bind) {
-        if (mBound && mUnbindImmediate) {
+    @WorkerThread
+    private void setBindService(boolean bind) {
+        if (mBound.get() && mUnbindImmediate.get()) {
             // If we are already bound and expecting to unbind, this means we should stay bound
             // because something else wants to hold the connection open.
-            mUnbindImmediate = false;
+            mUnbindImmediate.set(false);
             return;
         }
-        mBound = bind;
+        mBound.set(bind);
         if (bind) {
+            if (mDeviceConfigChangedListenerRegistered.compareAndSet(false, true)) {
+                DeviceConfig.addOnPropertiesChangedListener(NAMESPACE_SYSTEMUI, mExecutor,
+                        mDeviceConfigChangedListener);
+                mTempAllowFgsLaunchDuration = DeviceConfig.getLong(NAMESPACE_SYSTEMUI,
+                        PROPERTY_TILE_SERVICE_ONCLICK_ALLOW_LIST_DURATION,
+                        TILE_SERVICE_ONCLICK_ALLOW_LIST_DEFAULT_DURATION_MS);
+            }
             if (mBindTryCount == MAX_BIND_RETRIES) {
                 // Too many failures, give up on this tile until an update.
                 startPackageListening();
@@ -181,34 +249,65 @@ public class TileLifecycleManager extends BroadcastReceiver implements
             if (!checkComponentState()) {
                 return;
             }
-            if (DEBUG) Log.d(TAG, "Binding service " + mIntent + " " + mUser);
+            if (mDebug) Log.d(TAG, "Binding service " + mIntent + " " + mUser);
             mBindTryCount++;
             try {
-                mIsBound = mContext.bindServiceAsUser(mIntent, this,
-                        Context.BIND_AUTO_CREATE
-                                | Context.BIND_FOREGROUND_SERVICE_WHILE_AWAKE
-                                | Context.BIND_ALLOW_BACKGROUND_ACTIVITY_STARTS
-                                | Context.BIND_WAIVE_PRIORITY,
-                        mUser);
+                // Only try a new binding if we are not currently bound.
+                mIsBound.compareAndSet(false, bindServices());
+                if (!mIsBound.get()) {
+                    Log.d(TAG, "Failed to bind to service");
+                    mContext.unbindService(this);
+                }
             } catch (SecurityException e) {
                 Log.e(TAG, "Failed to bind to service", e);
-                mIsBound = false;
+                mIsBound.set(false);
             }
         } else {
-            if (DEBUG) Log.d(TAG, "Unbinding service " + mIntent + " " + mUser);
-            // Give it another chance next time it needs to be bound, out of kindness.
-            mBindTryCount = 0;
-            mWrapper = null;
-            if (mIsBound) {
+            unbindService();
+        }
+    }
+
+    /**
+     * Binds or unbinds to IQSService
+     */
+    public void executeSetBindService(boolean bind) {
+        mExecutor.execute(() -> setBindService(bind));
+    }
+
+    private boolean bindServices() {
+        String packageName = mIntent.getComponent().getPackageName();
+        int flags = Context.BIND_AUTO_CREATE
+                | Context.BIND_FOREGROUND_SERVICE_WHILE_AWAKE
+                | Context.BIND_WAIVE_PRIORITY;
+        if (CompatChanges.isChangeEnabled(START_ACTIVITY_NEEDS_PENDING_INTENT, packageName,
+                mUser)) {
+            return mContext.bindServiceAsUser(mIntent, this, flags, mUser);
+        }
+        return mContext.bindServiceAsUser(mIntent, this,
+                flags | Context.BIND_ALLOW_BACKGROUND_ACTIVITY_STARTS,
+                mUser);
+    }
+
+    @WorkerThread
+    private void unbindService() {
+        if (mDebug) Log.d(TAG, "Unbinding service " + mIntent + " " + mUser);
+        // Give it another chance next time it needs to be bound, out of kindness.
+        mBindTryCount = 0;
+        freeWrapper();
+        if (mIsBound.get()) {
+            try {
                 mContext.unbindService(this);
-                mIsBound = false;
+            } catch (Exception e) {
+                Log.e(TAG, "Failed to unbind service "
+                        + mIntent.getComponent().flattenToShortString(), e);
             }
+            mIsBound.set(false);
         }
     }
 
     @Override
     public void onServiceConnected(ComponentName name, IBinder service) {
-        if (DEBUG) Log.d(TAG, "onServiceConnected " + name);
+        if (mDebug) Log.d(TAG, "onServiceConnected " + name);
         // Got a connection, set the binding count to 0.
         mBindTryCount = 0;
         final QSTileServiceWrapper wrapper = new QSTileServiceWrapper(Stub.asInterface(service));
@@ -216,14 +315,25 @@ public class TileLifecycleManager extends BroadcastReceiver implements
             service.linkToDeath(this, 0);
         } catch (RemoteException e) {
         }
-        mWrapper = wrapper;
+        mOptionalWrapper = Optional.of(wrapper);
         handlePendingMessages();
     }
 
     @Override
-    public void onServiceDisconnected(ComponentName name) {
-        if (DEBUG) Log.d(TAG, "onServiceDisconnected " + name);
+    public void onNullBinding(ComponentName name) {
+        executeSetBindService(false);
+    }
+
+    @Override
+    public void onBindingDied(ComponentName name) {
+        if (mDebug) Log.d(TAG, "onBindingDied " + name);
         handleDeath();
+    }
+
+    @Override
+    public void onServiceDisconnected(ComponentName name) {
+        if (mDebug) Log.d(TAG, "onServiceDisconnected " + name);
+        freeWrapper();
     }
 
     private void handlePendingMessages() {
@@ -235,69 +345,123 @@ public class TileLifecycleManager extends BroadcastReceiver implements
             mQueuedMessages.clear();
         }
         if (queue.contains(MSG_ON_ADDED)) {
-            if (DEBUG) Log.d(TAG, "Handling pending onAdded");
+            if (mDebug) Log.d(TAG, "Handling pending onAdded " + getComponent());
             onTileAdded();
         }
         if (mListening) {
-            if (DEBUG) Log.d(TAG, "Handling pending onStartListening");
+            if (mDebug) Log.d(TAG, "Handling pending onStartListening " + getComponent());
             onStartListening();
         }
         if (queue.contains(MSG_ON_CLICK)) {
-            if (DEBUG) Log.d(TAG, "Handling pending onClick");
+            if (mDebug) Log.d(TAG, "Handling pending onClick " + getComponent());
             if (!mListening) {
-                Log.w(TAG, "Managed to get click on non-listening state...");
+                Log.w(TAG, "Managed to get click on non-listening state... " + getComponent());
                 // Skipping click since lost click privileges.
             } else {
                 onClick(mClickBinder);
             }
         }
         if (queue.contains(MSG_ON_UNLOCK_COMPLETE)) {
-            if (DEBUG) Log.d(TAG, "Handling pending onUnlockComplete");
+            if (mDebug) Log.d(TAG, "Handling pending onUnlockComplete " + getComponent());
             if (!mListening) {
-                Log.w(TAG, "Managed to get unlock on non-listening state...");
+                Log.w(TAG,
+                        "Managed to get unlock on non-listening state... " + getComponent());
                 // Skipping unlock since lost click privileges.
             } else {
                 onUnlockComplete();
             }
         }
+        if (qsCustomTileClickGuaranteedBugFix()) {
+            if (queue.contains(MSG_ON_STOP_LISTENING)) {
+                if (mDebug) Log.d(TAG, "Handling pending onStopListening " + getComponent());
+                if (mListening) {
+                    onStopListening();
+                } else {
+                    Log.w(TAG, "Trying to stop listening when not listening " + getComponent());
+                }
+            }
+        }
         if (queue.contains(MSG_ON_REMOVED)) {
-            if (DEBUG) Log.d(TAG, "Handling pending onRemoved");
+            if (mDebug) Log.d(TAG, "Handling pending onRemoved " + getComponent());
             if (mListening) {
-                Log.w(TAG, "Managed to get remove in listening state...");
+                Log.w(TAG, "Managed to get remove in listening state... " + getComponent());
                 onStopListening();
             }
             onTileRemoved();
         }
-        if (mUnbindImmediate) {
-            mUnbindImmediate = false;
-            setBindService(false);
-        }
+        mExecutor.execute(() -> {
+            if (mUnbindImmediate.get()) {
+                mUnbindImmediate.set(false);
+                setBindService(false);
+            }
+        });
     }
 
     public void handleDestroy() {
-        if (DEBUG) Log.d(TAG, "handleDestroy");
+        if (mDebug) Log.d(TAG, "handleDestroy");
         if (mPackageReceiverRegistered.get() || mUserReceiverRegistered.get()) {
             stopPackageListening();
         }
         mChangeListener = null;
+        if (mDeviceConfigChangedListener != null) {
+            DeviceConfig.removeOnPropertiesChangedListener(mDeviceConfigChangedListener);
+        }
     }
 
+    /**
+     * Handles a dead binder.
+     *
+     * It means that we need to clean up the binding (calling unbindService). After that, if we
+     * are supposed to be bound, we will try to bind after some amount of time.
+     */
     private void handleDeath() {
-        if (mWrapper == null) return;
-        mWrapper = null;
-        if (!mBound) return;
-        if (DEBUG) Log.d(TAG, "handleDeath");
-        if (checkComponentState()) {
-            mHandler.postDelayed(new Runnable() {
-                @Override
-                public void run() {
-                    if (mBound) {
-                        // Retry binding.
-                        setBindService(true);
-                    }
-                }
-            }, mBindRetryDelay);
+        if (!mIsBound.get()) {
+            // If we are already not bound, don't do anything else.
+            return;
         }
+        mExecutor.execute(() -> {
+            if (!mIsBound.get()) {
+                // If we are already not bound, don't do anything else.
+                return;
+            }
+            // Clearly we shouldn't be bound anymore
+            if (mDebug) Log.d(TAG, "handleDeath " + getComponent());
+            // Binder died, make sure that we unbind. However, we don't want to call setBindService
+            // as we still may want to rebind.
+            unbindService();
+            // If mBound is true (meaning that we should be bound), then reschedule binding for
+            // later.
+            if (mBound.get() && checkComponentState()) {
+                if (isDeathRebindScheduled.compareAndSet(false, true)) {
+                    mExecutor.executeDelayed(() -> {
+                        // Only rebind if we are supposed to, but remove the scheduling anyway.
+                        if (mBound.get()) {
+                            setBindService(true);
+                        }
+                        isDeathRebindScheduled.set(false);
+                    }, getRebindDelay());
+                }
+            }
+        });
+    }
+
+    /**
+     * @return the delay to automatically rebind after a service died. It provides a longer delay if
+     * the device is a low memory state because the service is likely to get killed again by the
+     * system. In this case we want to rebind later and not to cause a loop of a frequent rebinds.
+     */
+    private long getRebindDelay() {
+        final ActivityManager.MemoryInfo info = new ActivityManager.MemoryInfo();
+        mActivityManager.getMemoryInfo(info);
+
+        final long delay;
+        if (info.lowMemory) {
+            delay = LOW_MEMORY_BIND_RETRY_DELAY;
+        } else {
+            delay = mBindRetryDelay;
+        }
+        if (mDebug) Log.i(TAG, "Rebinding with a delay=" + delay + " - " + getComponent());
+        return delay;
     }
 
     private boolean checkComponentState() {
@@ -309,16 +473,17 @@ public class TileLifecycleManager extends BroadcastReceiver implements
     }
 
     private void startPackageListening() {
-        if (DEBUG) Log.d(TAG, "startPackageListening");
+        if (mDebug) Log.d(TAG, "startPackageListening " + getComponent());
         IntentFilter filter = new IntentFilter(Intent.ACTION_PACKAGE_ADDED);
         filter.addAction(Intent.ACTION_PACKAGE_CHANGED);
         filter.addDataScheme("package");
         try {
             mPackageReceiverRegistered.set(true);
-            mContext.registerReceiverAsUser(this, mUser, filter, null, mHandler);
+            mContext.registerReceiverAsUser(
+                    this, mUser, filter, null, mHandler, Context.RECEIVER_EXPORTED);
         } catch (Exception ex) {
             mPackageReceiverRegistered.set(false);
-            Log.e(TAG, "Could not register package receiver", ex);
+            Log.e(TAG, "Could not register package receiver " + getComponent(), ex);
         }
         filter = new IntentFilter(Intent.ACTION_USER_UNLOCKED);
         try {
@@ -326,12 +491,12 @@ public class TileLifecycleManager extends BroadcastReceiver implements
             mBroadcastDispatcher.registerReceiverWithHandler(this, filter, mHandler, mUser);
         } catch (Exception ex) {
             mUserReceiverRegistered.set(false);
-            Log.e(TAG, "Could not register unlock receiver", ex);
+            Log.e(TAG, "Could not register unlock receiver " + getComponent(), ex);
         }
     }
 
     private void stopPackageListening() {
-        if (DEBUG) Log.d(TAG, "stopPackageListening");
+        if (mDebug) Log.d(TAG, "stopPackageListening " + getComponent());
         if (mUserReceiverRegistered.compareAndSet(true, false)) {
             mBroadcastDispatcher.unregisterReceiver(this);
         }
@@ -346,7 +511,7 @@ public class TileLifecycleManager extends BroadcastReceiver implements
 
     @Override
     public void onReceive(Context context, Intent intent) {
-        if (DEBUG) Log.d(TAG, "onReceive: " + intent);
+        if (mDebug) Log.d(TAG, "onReceive: " + intent);
         if (!Intent.ACTION_USER_UNLOCKED.equals(intent.getAction())) {
             Uri data = intent.getData();
             String pkgName = data.getEncodedSchemeSpecificPart();
@@ -358,11 +523,15 @@ public class TileLifecycleManager extends BroadcastReceiver implements
             mChangeListener.onTileChanged(mIntent.getComponent());
         }
         stopPackageListening();
-        if (mBound) {
-            // Trying to bind again will check the state of the package before bothering to bind.
-            if (DEBUG) Log.d(TAG, "Trying to rebind");
-            setBindService(true);
-        }
+        mExecutor.execute(() -> {
+            if (mBound.get()) {
+                // Trying to bind again will check the state of the package before bothering to
+                // bind.
+                if (mDebug) Log.d(TAG, "Trying to rebind " + getComponent());
+                setBindService(true);
+            }
+
+        });
     }
 
     private boolean isComponentAvailable() {
@@ -370,7 +539,9 @@ public class TileLifecycleManager extends BroadcastReceiver implements
         try {
             ServiceInfo si = mPackageManagerAdapter.getServiceInfo(mIntent.getComponent(),
                     0, mUser.getIdentifier());
-            if (DEBUG && si == null) Log.d(TAG, "Can't find component " + mIntent.getComponent());
+            if (mDebug && si == null) {
+                Log.d(TAG, "Can't find component " + mIntent.getComponent());
+            }
             return si != null;
         } catch (RemoteException e) {
             // Shouldn't happen.
@@ -384,8 +555,11 @@ public class TileLifecycleManager extends BroadcastReceiver implements
             mPackageManagerAdapter.getPackageInfoAsUser(packageName, 0, mUser.getIdentifier());
             return true;
         } catch (PackageManager.NameNotFoundException e) {
-            if (DEBUG) Log.d(TAG, "Package not available: " + packageName, e);
-            else Log.d(TAG, "Package not available: " + packageName);
+            if (mDebug) {
+                Log.d(TAG, "Package not available: " + packageName, e);
+            } else {
+                Log.d(TAG, "Package not available: " + packageName);
+            }
         }
         return false;
     }
@@ -398,8 +572,8 @@ public class TileLifecycleManager extends BroadcastReceiver implements
 
     @Override
     public void onTileAdded() {
-        if (DEBUG) Log.d(TAG, "onTileAdded");
-        if (mWrapper == null || !mWrapper.onTileAdded()) {
+        if (mDebug) Log.d(TAG, "onTileAdded " + getComponent());
+        if (isNullOrFailedAction(mOptionalWrapper, QSTileServiceWrapper::onTileAdded)) {
             queueMessage(MSG_ON_ADDED);
             handleDeath();
         }
@@ -407,8 +581,8 @@ public class TileLifecycleManager extends BroadcastReceiver implements
 
     @Override
     public void onTileRemoved() {
-        if (DEBUG) Log.d(TAG, "onTileRemoved");
-        if (mWrapper == null || !mWrapper.onTileRemoved()) {
+        if (mDebug) Log.d(TAG, "onTileRemoved " + getComponent());
+        if (isNullOrFailedAction(mOptionalWrapper, QSTileServiceWrapper::onTileRemoved)) {
             queueMessage(MSG_ON_REMOVED);
             handleDeath();
         }
@@ -416,26 +590,41 @@ public class TileLifecycleManager extends BroadcastReceiver implements
 
     @Override
     public void onStartListening() {
-        if (DEBUG) Log.d(TAG, "onStartListening");
+        if (mDebug) Log.d(TAG, "onStartListening " + getComponent());
         mListening = true;
-        if (mWrapper != null && !mWrapper.onStartListening()) {
+        if (isNotNullAndFailedAction(mOptionalWrapper, QSTileServiceWrapper::onStartListening)) {
             handleDeath();
         }
     }
 
     @Override
     public void onStopListening() {
-        if (DEBUG) Log.d(TAG, "onStopListening");
-        mListening = false;
-        if (mWrapper != null && !mWrapper.onStopListening()) {
-            handleDeath();
+        if (qsCustomTileClickGuaranteedBugFix() && hasPendingClick()) {
+            Log.d(TAG, "Enqueue stop listening");
+            queueMessage(MSG_ON_STOP_LISTENING);
+        } else {
+            if (mDebug) Log.d(TAG, "onStopListening " + getComponent());
+            mListening = false;
+            if (isNotNullAndFailedAction(mOptionalWrapper, QSTileServiceWrapper::onStopListening)) {
+                handleDeath();
+            }
         }
     }
 
     @Override
     public void onClick(IBinder iBinder) {
-        if (DEBUG) Log.d(TAG, "onClick " + iBinder + " " + mUser);
-        if (mWrapper == null || !mWrapper.onClick(iBinder)) {
+        if (mDebug) Log.d(TAG, "onClick " + iBinder + " " + getComponent() + " " + mUser);
+        if (isNullOrFailedAction(mOptionalWrapper, (wrapper) -> {
+            final String packageName = mIntent.getComponent().getPackageName();
+            try {
+                mDeviceIdleController.addPowerSaveTempWhitelistApp(packageName,
+                        mTempAllowFgsLaunchDuration, mUser.getIdentifier(), REASON_TILE_ONCLICK,
+                        "tile onclick");
+            } catch (RemoteException e) {
+                Log.d(TAG, "Caught exception trying to add client package to temp allow list", e);
+            }
+            return wrapper.onClick(iBinder);
+        })) {
             mClickBinder = iBinder;
             queueMessage(MSG_ON_CLICK);
             handleDeath();
@@ -444,21 +633,22 @@ public class TileLifecycleManager extends BroadcastReceiver implements
 
     @Override
     public void onUnlockComplete() {
-        if (DEBUG) Log.d(TAG, "onUnlockComplete");
-        if (mWrapper == null || !mWrapper.onUnlockComplete()) {
+        if (mDebug) Log.d(TAG, "onUnlockComplete " + getComponent());
+        if (isNullOrFailedAction(mOptionalWrapper, QSTileServiceWrapper::onUnlockComplete)) {
             queueMessage(MSG_ON_UNLOCK_COMPLETE);
             handleDeath();
         }
     }
 
+    @Nullable
     @Override
     public IBinder asBinder() {
-        return mWrapper != null ? mWrapper.asBinder() : null;
+        return mOptionalWrapper.map(QSTileServiceWrapper::asBinder).orElse(null);
     }
 
     @Override
     public void binderDied() {
-        if (DEBUG) Log.d(TAG, "binderDeath");
+        if (mDebug) Log.d(TAG, "binderDeath " + getComponent());
         handleDeath();
     }
 
@@ -466,16 +656,43 @@ public class TileLifecycleManager extends BroadcastReceiver implements
         return mToken;
     }
 
+    private void freeWrapper() {
+        if (mOptionalWrapper.isPresent()) {
+            try {
+                mOptionalWrapper.ifPresent(
+                        (wrapper) -> wrapper.asBinder().unlinkToDeath(this, 0)
+                );
+            } catch (NoSuchElementException e) {
+                Log.w(TAG, "Trying to unlink not linked recipient for component"
+                        + mIntent.getComponent().flattenToShortString());
+            }
+            mOptionalWrapper = Optional.empty();
+        }
+    }
+
     public interface TileChangeListener {
         void onTileChanged(ComponentName tile);
     }
 
-    public static boolean isTileAdded(Context context, ComponentName component) {
-        return context.getSharedPreferences(TILES, 0).getBoolean(component.flattenToString(), false);
+    /**
+     * Returns true if the Optional is empty OR performing the action on the content of the Optional
+     * (when not empty) fails.
+     */
+    private static boolean isNullOrFailedAction(
+            Optional<QSTileServiceWrapper> optionalWrapper,
+            Predicate<QSTileServiceWrapper> action
+    ) {
+        return !optionalWrapper.map(action::test).orElse(false);
     }
 
-    public static void setTileAdded(Context context, ComponentName component, boolean added) {
-        context.getSharedPreferences(TILES, 0).edit().putBoolean(component.flattenToString(),
-                added).commit();
+    /**
+     * Returns true if the Optional is not empty AND performing the action on the content of
+     * the Optional fails.
+     */
+    private static boolean isNotNullAndFailedAction(
+            Optional<QSTileServiceWrapper> optionalWrapper,
+            Predicate<QSTileServiceWrapper> action
+    ) {
+        return  !optionalWrapper.map(action::test).orElse(true);
     }
 }

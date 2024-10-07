@@ -20,20 +20,33 @@ import static android.provider.DeviceConfig.Properties;
 
 import static com.google.common.truth.Truth.assertThat;
 
+import static org.junit.Assert.assertTrue;
 import static org.testng.Assert.assertThrows;
 
+import android.app.ActivityThread;
 import android.content.ContentResolver;
 import android.os.Bundle;
 import android.platform.test.annotations.Presubmit;
 
 import androidx.test.InstrumentationRegistry;
+import androidx.test.filters.FlakyTest;
 import androidx.test.filters.SmallTest;
 import androidx.test.runner.AndroidJUnit4;
 
 import org.junit.After;
 import org.junit.Assert;
+import org.junit.Ignore;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Objects;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicReference;
 
 /** Tests that ensure appropriate settings are backed up. */
 @Presubmit
@@ -43,6 +56,7 @@ public class DeviceConfigTest {
     private static final long WAIT_FOR_PROPERTY_CHANGE_TIMEOUT_MILLIS = 2000; // 2 sec
     private static final String DEFAULT_VALUE = "test_default_value";
     private static final String NAMESPACE = "namespace1";
+    private static final String NAMESPACE2 = "namespace2";
     private static final String KEY = "key1";
     private static final String KEY2 = "key2";
     private static final String KEY3 = "key3";
@@ -57,6 +71,90 @@ public class DeviceConfigTest {
         deleteViaContentProvider(NAMESPACE, KEY);
         deleteViaContentProvider(NAMESPACE, KEY2);
         deleteViaContentProvider(NAMESPACE, KEY3);
+        DeviceConfig.clearAllLocalOverrides();
+        DeviceConfig.setSyncDisabledMode(DeviceConfig.SYNC_DISABLED_MODE_NONE);
+    }
+
+    /**
+     * Test that creating a sticky local override for a flag prevents further writes to that flag.
+     */
+    @Test
+    public void testAddStickyLocalOverridePreventsWrites() {
+        DeviceConfig.setLocalOverride(NAMESPACE, KEY, VALUE);
+
+        String key1Value = DeviceConfig.getProperty(NAMESPACE, KEY);
+        assertThat(key1Value).isEqualTo(VALUE);
+
+        DeviceConfig.setProperty(NAMESPACE, KEY, VALUE2, /* makeDefault= */ false);
+        key1Value = DeviceConfig.getProperty(NAMESPACE, KEY);
+        assertThat(key1Value).isEqualTo(VALUE);
+    }
+
+    /**
+     * Test that when we locally override a flag, we can still write other flags.
+     */
+    @Test
+    public void testAddStickyLocalOverrideDoesNotAffectOtherFlags() {
+        DeviceConfig.setLocalOverride(NAMESPACE, KEY, VALUE);
+        DeviceConfig.setProperty(NAMESPACE, KEY2, VALUE2, /* makeDefault= */ false);
+        String key2Value = DeviceConfig.getProperty(NAMESPACE, KEY2);
+        assertThat(key2Value).isEqualTo(VALUE2);
+    }
+
+    /**
+     * Test that when we apply some overrides, they show up in the override list.
+     */
+    @Test
+    public void testGetStickyLocalOverrides() {
+        DeviceConfig.setProperty(NAMESPACE, KEY, VALUE2, false);
+        DeviceConfig.setProperty(NAMESPACE, KEY2, VALUE, false);
+        DeviceConfig.setLocalOverride(NAMESPACE, KEY, VALUE);
+        DeviceConfig.setLocalOverride(NAMESPACE, KEY2, VALUE2);
+
+        Map<String, Map<String, String>> expectedOverrides = new HashMap<>();
+        Map<String, String> expectedInnerMap = new HashMap<>();
+        expectedInnerMap.put(KEY, VALUE2);
+        expectedInnerMap.put(KEY2, VALUE);
+        expectedOverrides.put(NAMESPACE, expectedInnerMap);
+
+        assertThat(DeviceConfig.getUnderlyingValuesForOverriddenFlags())
+                .isEqualTo(expectedOverrides);
+    }
+
+    /**
+     * Test that when we clear all overrides, the override list is empty.
+     */
+    @Test
+    public void testClearStickyLocalOverrides() {
+        DeviceConfig.setLocalOverride(NAMESPACE2, KEY, VALUE);
+        DeviceConfig.setLocalOverride(NAMESPACE2, KEY2, VALUE2);
+
+        DeviceConfig.clearAllLocalOverrides();
+
+        Map<String, Map<String, String>> overrides =
+                DeviceConfig.getUnderlyingValuesForOverriddenFlags();
+        assertThat(overrides).isEmpty();
+    }
+
+    /**
+     * Test that when we clear a single override, it doesn't appear in the list.
+     */
+    @Test
+    public void testClearStickyLocalOverride() {
+        DeviceConfig.setProperty(NAMESPACE, KEY, VALUE2, false);
+        DeviceConfig.setProperty(NAMESPACE2, KEY2, VALUE, false);
+        DeviceConfig.setLocalOverride(NAMESPACE, KEY, VALUE);
+        DeviceConfig.setLocalOverride(NAMESPACE2, KEY2, VALUE2);
+
+        DeviceConfig.clearLocalOverride(NAMESPACE, KEY);
+
+        Map<String, Map<String, String>> expectedOverrides = new HashMap<>();
+        Map<String, String> expectedInnerMap = new HashMap<>();
+        expectedInnerMap.put(KEY2, VALUE);
+        expectedOverrides.put(NAMESPACE2, expectedInnerMap);
+
+        assertThat(DeviceConfig.getUnderlyingValuesForOverriddenFlags())
+                .isEqualTo(expectedOverrides);
     }
 
     @Test
@@ -531,6 +629,7 @@ public class DeviceConfigTest {
     }
 
     @Test
+    @FlakyTest(bugId = 299483542)
     public void setProperties_multipleNamespaces() throws DeviceConfig.BadConfigException {
         final String namespace2 = "namespace2";
         Properties properties1 = new Properties.Builder(NAMESPACE).setString(KEY, VALUE)
@@ -538,8 +637,8 @@ public class DeviceConfigTest {
         Properties properties2 = new Properties.Builder(namespace2).setString(KEY2, VALUE)
                 .setString(KEY3, VALUE2).build();
 
-        DeviceConfig.setProperties(properties1);
-        DeviceConfig.setProperties(properties2);
+        assertTrue(DeviceConfig.setProperties(properties1));
+        assertTrue(DeviceConfig.setProperties(properties2));
 
         Properties properties = DeviceConfig.getProperties(NAMESPACE);
         assertThat(properties.getKeyset()).containsExactly(KEY, KEY2);
@@ -701,74 +800,236 @@ public class DeviceConfigTest {
         assertThat(result.getString(KEY4, DEFAULT_VALUE)).isEqualTo(DEFAULT_VALUE);
     }
 
-    // TODO(mpape): resolve b/142727848 and re-enable listener tests
-//    @Test
-//    public void onPropertiesChangedListener_setPropertyCallback() throws InterruptedException {
-//        final CountDownLatch countDownLatch = new CountDownLatch(1);
-//
-//        DeviceConfig.OnPropertiesChangedListener changeListener = (properties) -> {
-//            assertThat(properties.getNamespace()).isEqualTo(NAMESPACE);
-//            assertThat(properties.getKeyset()).contains(KEY);
-//            assertThat(properties.getString(KEY, "default_value")).isEqualTo(VALUE);
-//            countDownLatch.countDown();
-//        };
-//
-//        try {
-//            DeviceConfig.addOnPropertiesChangedListener(NAMESPACE,
-//                    ActivityThread.currentApplication().getMainExecutor(), changeListener);
-//            DeviceConfig.setProperty(NAMESPACE, KEY, VALUE, false);
-//            assertThat(countDownLatch.await(
-//                    WAIT_FOR_PROPERTY_CHANGE_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS)).isTrue();
-//        } catch (InterruptedException e) {
-//            Assert.fail(e.getMessage());
-//        } finally {
-//            DeviceConfig.removeOnPropertiesChangedListener(changeListener);
-//        }
-//    }
-//
-//    @Test
-//    public void onPropertiesChangedListener_setPropertiesCallback() throws InterruptedException {
-//        final CountDownLatch countDownLatch = new CountDownLatch(1);
-//        DeviceConfig.setProperty(NAMESPACE, KEY, VALUE, false);
-//        DeviceConfig.setProperty(NAMESPACE, KEY2, VALUE2, false);
-//
-//        Map<String, String> keyValues = new HashMap<>(2);
-//        keyValues.put(KEY, VALUE2);
-//        keyValues.put(KEY3, VALUE3);
-//        Properties setProperties = new Properties(NAMESPACE, keyValues);
-//
-//        DeviceConfig.OnPropertiesChangedListener changeListener = (properties) -> {
-//            assertThat(properties.getNamespace()).isEqualTo(NAMESPACE);
-//            assertThat(properties.getKeyset()).containsExactly(KEY, KEY2, KEY3);
-//            // KEY updated from VALUE to VALUE2
-//            assertThat(properties.getString(KEY, "default_value")).isEqualTo(VALUE2);
-//            // KEY2 deleted (returns default_value)
-//            assertThat(properties.getString(KEY2, "default_value")).isEqualTo("default_value");
-//            //KEY3 added with VALUE3
-//            assertThat(properties.getString(KEY3, "default_value")).isEqualTo(VALUE3);
-//            countDownLatch.countDown();
-//        };
-//
-//        try {
-//            DeviceConfig.addOnPropertiesChangedListener(NAMESPACE,
-//                    ActivityThread.currentApplication().getMainExecutor(), changeListener);
-//            DeviceConfig.setProperties(setProperties);
-//            assertThat(countDownLatch.await(
-//                    WAIT_FOR_PROPERTY_CHANGE_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS)).isTrue();
-//        } catch (InterruptedException e) {
-//            Assert.fail(e.getMessage());
-//        } finally {
-//            DeviceConfig.removeOnPropertiesChangedListener(changeListener);
-//        }
-//    }
+    @Test
+    public void onPropertiesChangedListener_setPropertyCallback() throws InterruptedException {
+        final AtomicReference<Properties> changedProperties = new AtomicReference<>();
+        final CompletableFuture<Boolean> completed = new CompletableFuture<>();
+
+        DeviceConfig.OnPropertiesChangedListener changeListener = (properties) -> {
+            changedProperties.set(properties);
+            completed.complete(true);
+        };
+
+        try {
+            DeviceConfig.addOnPropertiesChangedListener(NAMESPACE,
+                    Objects.requireNonNull(ActivityThread.currentApplication()).getMainExecutor(),
+                    changeListener);
+            DeviceConfig.setProperty(NAMESPACE, KEY, VALUE, false);
+
+            assertThat(completed.get(
+                    WAIT_FOR_PROPERTY_CHANGE_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS)).isTrue();
+
+            Properties properties = changedProperties.get();
+            assertThat(properties.getNamespace()).isEqualTo(NAMESPACE);
+            assertThat(properties.getKeyset()).contains(KEY);
+            assertThat(properties.getString(KEY, "default_value")).isEqualTo(VALUE);
+        } catch (ExecutionException | TimeoutException | InterruptedException e) {
+            Assert.fail(e.getMessage());
+        } finally {
+            DeviceConfig.removeOnPropertiesChangedListener(changeListener);
+        }
+    }
+
+    @Test
+    @FlakyTest(bugId = 299483542)
+    public void onPropertiesChangedListener_setPropertiesCallback() {
+        DeviceConfig.setProperty(NAMESPACE, KEY, VALUE, false);
+        DeviceConfig.setProperty(NAMESPACE, KEY2, VALUE2, false);
+
+        Map<String, String> keyValues = new HashMap<>(2);
+        keyValues.put(KEY, VALUE2);
+        keyValues.put(KEY3, VALUE3);
+        Properties setProperties = new Properties(NAMESPACE, keyValues);
+
+        final AtomicReference<Properties> changedProperties = new AtomicReference<>();
+        final CompletableFuture<Boolean> completed = new CompletableFuture<>();
+
+        DeviceConfig.OnPropertiesChangedListener changeListener = (properties) -> {
+            changedProperties.set(properties);
+            completed.complete(true);
+        };
+
+        try {
+            DeviceConfig.addOnPropertiesChangedListener(NAMESPACE,
+                    Objects.requireNonNull(ActivityThread.currentApplication()).getMainExecutor(),
+                    changeListener);
+            DeviceConfig.setProperties(setProperties);
+
+            assertThat(completed.get(
+                    WAIT_FOR_PROPERTY_CHANGE_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS)).isTrue();
+
+            if (changedProperties.get().getKeyset().size() != 3) {
+                // Sometimes there are a few onChanged callback calls. Let's wait a bit more.
+                final int oneMoreOnChangedDelayMs = 100;
+                Thread.currentThread().sleep(oneMoreOnChangedDelayMs);
+            }
+
+            Properties properties = changedProperties.get();
+            assertThat(properties.getNamespace()).isEqualTo(NAMESPACE);
+            assertThat(properties.getKeyset()).containsExactly(KEY, KEY2, KEY3);
+            // KEY updated from VALUE to VALUE2
+            assertThat(properties.getString(KEY, "default_value")).isEqualTo(VALUE2);
+            // KEY2 deleted (returns default_value)
+            assertThat(properties.getString(KEY2, "default_value")).isEqualTo("default_value");
+            // KEY3 added with VALUE3
+            assertThat(properties.getString(KEY3, "default_value")).isEqualTo(VALUE3);
+        } catch (ExecutionException | TimeoutException | InterruptedException e) {
+            Assert.fail(e.getMessage());
+        } catch (DeviceConfig.BadConfigException e) {
+            Assert.fail(e.getMessage());
+        } finally {
+            DeviceConfig.removeOnPropertiesChangedListener(changeListener);
+        }
+    }
+
+    @Test
+    @Ignore("b/300174188")
+    public void syncDisabling() throws Exception {
+        Properties properties1 = new Properties.Builder(NAMESPACE)
+                .setString(KEY, VALUE)
+                .build();
+        Properties properties2 = new Properties.Builder(NAMESPACE)
+                .setString(KEY, VALUE2)
+                .build();
+
+        try {
+            // Ensure the device starts in a known state.
+            DeviceConfig.setSyncDisabledMode(DeviceConfig.SYNC_DISABLED_MODE_NONE);
+
+            // Assert starting state.
+            assertThat(DeviceConfig.getSyncDisabledMode())
+                    .isEqualTo(DeviceConfig.SYNC_DISABLED_MODE_NONE);
+            assertThat(DeviceConfig.setProperties(properties1)).isTrue();
+            assertThat(DeviceConfig.getProperties(NAMESPACE, KEY).getString(KEY, DEFAULT_VALUE))
+                    .isEqualTo(VALUE);
+
+            // Test disabled (persistent). Persistence is not actually tested, that would require
+            // a host test.
+            DeviceConfig.setSyncDisabledMode(DeviceConfig.SYNC_DISABLED_MODE_PERSISTENT);
+            assertThat(DeviceConfig.getSyncDisabledMode())
+                    .isEqualTo(DeviceConfig.SYNC_DISABLED_MODE_PERSISTENT);
+            assertThat(DeviceConfig.setProperties(properties2)).isFalse();
+            assertThat(DeviceConfig.getProperties(NAMESPACE, KEY).getString(KEY, DEFAULT_VALUE))
+                    .isEqualTo(VALUE);
+
+            // Return to not disabled.
+            DeviceConfig.setSyncDisabledMode(DeviceConfig.SYNC_DISABLED_MODE_NONE);
+            assertThat(DeviceConfig.getSyncDisabledMode())
+                    .isEqualTo(DeviceConfig.SYNC_DISABLED_MODE_NONE);
+            assertThat(DeviceConfig.setProperties(properties2)).isTrue();
+            assertThat(DeviceConfig.getProperties(NAMESPACE, KEY).getString(KEY, DEFAULT_VALUE))
+                    .isEqualTo(VALUE2);
+
+            // Test disabled (persistent). Absence of persistence is not actually tested, that would
+            // require a host test.
+            DeviceConfig.setSyncDisabledMode(DeviceConfig.SYNC_DISABLED_MODE_UNTIL_REBOOT);
+            assertThat(DeviceConfig.getSyncDisabledMode())
+                    .isEqualTo(DeviceConfig.SYNC_DISABLED_MODE_UNTIL_REBOOT);
+            assertThat(DeviceConfig.setProperties(properties1)).isFalse();
+            assertThat(DeviceConfig.getProperties(NAMESPACE, KEY).getString(KEY, DEFAULT_VALUE))
+                    .isEqualTo(VALUE2);
+
+            // Return to not disabled.
+            DeviceConfig.setSyncDisabledMode(DeviceConfig.SYNC_DISABLED_MODE_NONE);
+            assertThat(DeviceConfig.getSyncDisabledMode())
+                    .isEqualTo(DeviceConfig.SYNC_DISABLED_MODE_NONE);
+            assertThat(DeviceConfig.setProperties(properties1)).isTrue();
+            assertThat(DeviceConfig.getProperties(NAMESPACE, KEY).getString(KEY, DEFAULT_VALUE))
+                    .isEqualTo(VALUE);
+        } finally {
+            // Try to return to the default sync disabled state in case of failure.
+            DeviceConfig.setSyncDisabledMode(DeviceConfig.SYNC_DISABLED_MODE_NONE);
+
+            // NAMESPACE will be cleared by cleanUp()
+        }
+    }
 
     private static boolean deleteViaContentProvider(String namespace, String key) {
         ContentResolver resolver = InstrumentationRegistry.getContext().getContentResolver();
         String compositeName = namespace + "/" + key;
         Bundle result = resolver.call(
-                DeviceConfig.CONTENT_URI, Settings.CALL_METHOD_DELETE_CONFIG, compositeName, null);
+                Settings.Config.CONTENT_URI,
+                Settings.CALL_METHOD_DELETE_CONFIG,
+                compositeName,
+                null);
         assertThat(result).isNotNull();
         return compositeName.equals(result.getString(Settings.NameValueTable.VALUE));
     }
 
+    @Test
+    public void deleteProperty_nullNamespace() {
+        try {
+            DeviceConfig.deleteProperty(null, KEY);
+            Assert.fail("Null namespace should have resulted in an NPE.");
+        } catch (NullPointerException e) {
+            // expected
+        }
+    }
+
+    @Test
+    public void deleteProperty_nullName() {
+        try {
+            DeviceConfig.deleteProperty(NAMESPACE, null);
+            Assert.fail("Null name should have resulted in an NPE.");
+        } catch (NullPointerException e) {
+            // expected
+        }
+    }
+
+    @Test
+    public void deletePropertyString() {
+        final String value = "new_value";
+        final String default_value = "default";
+        DeviceConfig.setProperty(NAMESPACE, KEY, value, false);
+        DeviceConfig.deleteProperty(NAMESPACE, KEY);
+        final String result = DeviceConfig.getString(NAMESPACE, KEY, default_value);
+        assertThat(result).isEqualTo(default_value);
+    }
+
+    @Test
+    public void deletePropertyBoolean() {
+        final boolean value = true;
+        final boolean default_value = false;
+        DeviceConfig.setProperty(NAMESPACE, KEY, String.valueOf(value), false);
+        DeviceConfig.deleteProperty(NAMESPACE, KEY);
+        final boolean result = DeviceConfig.getBoolean(NAMESPACE, KEY, default_value);
+        assertThat(result).isEqualTo(default_value);
+    }
+
+    @Test
+    public void deletePropertyInt() {
+        final int value = 123;
+        final int default_value = 999;
+        DeviceConfig.setProperty(NAMESPACE, KEY, String.valueOf(value), false);
+        DeviceConfig.deleteProperty(NAMESPACE, KEY);
+        final int result = DeviceConfig.getInt(NAMESPACE, KEY, default_value);
+        assertThat(result).isEqualTo(default_value);
+    }
+
+    @Test
+    public void deletePropertyLong() {
+        final long value = 456789;
+        final long default_value = 123456;
+        DeviceConfig.setProperty(NAMESPACE, KEY, String.valueOf(value), false);
+        DeviceConfig.deleteProperty(NAMESPACE, KEY);
+        final long result = DeviceConfig.getLong(NAMESPACE, KEY, default_value);
+        assertThat(result).isEqualTo(default_value);
+    }
+
+    @Test
+    public void deletePropertyFloat() {
+        final float value = 456.789f;
+        final float default_value = 123.456f;
+        DeviceConfig.setProperty(NAMESPACE, KEY, String.valueOf(value), false);
+        DeviceConfig.deleteProperty(NAMESPACE, KEY);
+        final float result = DeviceConfig.getFloat(NAMESPACE, KEY, default_value);
+        assertThat(result).isEqualTo(default_value);
+    }
+
+    @Test
+    public void deleteProperty_empty() {
+        assertThat(DeviceConfig.deleteProperty(NAMESPACE, KEY)).isTrue();
+        final String result = DeviceConfig.getString(NAMESPACE, KEY, null);
+        assertThat(result).isNull();
+    }
 }

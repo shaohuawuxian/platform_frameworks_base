@@ -1,4 +1,5 @@
 package {
+    default_team: "trendy_team_framework_accessibility",
     // See: http://go/android-license-faq
     // A large-scale-change added 'default_applicable_licenses' to import
     // all of the 'license_kinds' from "frameworks_base_license"
@@ -9,7 +10,6 @@ package {
 
 cc_library_shared {
     name: "libperftestscore_jni",
-    sdk_version: "21",
 
     srcs: ["SystemPerfTest.cpp"],
 
@@ -20,4 +20,10 @@ cc_library_shared {
         "-Wunreachable-code",
     ],
     header_libs: ["jni_headers"],
+
+    shared_libs: [
+        "libandroid_runtime",
+        "liblog",
+        "libnativehelper",
+    ],
 }

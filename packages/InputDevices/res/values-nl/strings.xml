@@ -19,6 +19,7 @@
     <string name="keyboard_layout_swiss_german_label" msgid="2305520941993314258">"Zwitsers Duits"</string>
     <string name="keyboard_layout_belgian" msgid="2011984572838651558">"Belgisch"</string>
     <string name="keyboard_layout_bulgarian" msgid="8951224309972028398">"Bulgaars"</string>
+    <string name="keyboard_layout_bulgarian_phonetic" msgid="7568914730360106653">"Bulgaars, fonetisch"</string>
     <string name="keyboard_layout_italian" msgid="6497079660449781213">"Italiaans"</string>
     <string name="keyboard_layout_danish" msgid="8036432066627127851">"Deens"</string>
     <string name="keyboard_layout_norwegian" msgid="9090097917011040937">"Noors"</string>
@@ -49,4 +50,10 @@
     <string name="keyboard_layout_belarusian" msgid="7619281752698687588">"Wit-Russisch"</string>
     <string name="keyboard_layout_mongolian" msgid="7678483495823936626">"Mongools"</string>
     <string name="keyboard_layout_georgian" msgid="4596185456863747454">"Georgisch"</string>
+    <string name="keyboard_layout_thai_kedmanee" msgid="6637147314580760938">"Thai (Kedmanee)"</string>
+    <string name="keyboard_layout_thai_pattachote" msgid="2547992342794252205">"Thai (Pattachote)"</string>
+    <string name="keyboard_layout_serbian_latin" msgid="3128791759390046571">"Servisch (Latijns)"</string>
+    <string name="keyboard_layout_montenegrin_latin" msgid="1467832503378949945">"Montenegrijns (Latijns)"</string>
+    <string name="keyboard_layout_serbian_cyrillic" msgid="7013541044323542196">"Servisch (Cyrillisch)"</string>
+    <string name="keyboard_layout_montenegrin_cyrillic" msgid="2391253952894077421">"Montenegrijns (Cyrillisch)"</string>
 </resources>

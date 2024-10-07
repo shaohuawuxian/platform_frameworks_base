@@ -27,13 +27,12 @@ import static org.mockito.Mockito.verify;
 
 import android.content.Context;
 import android.graphics.Point;
-import android.os.IBinder;
-import android.testing.AndroidTestingRunner;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowManager;
 
+import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.filters.SmallTest;
 
 import com.android.systemui.SysuiTestCase;
@@ -46,11 +45,10 @@ import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 
 @SmallTest
-@RunWith(AndroidTestingRunner.class)
+@RunWith(AndroidJUnit4.class)
 public class MirrorWindowControlTest extends SysuiTestCase {
 
     @Mock WindowManager mWindowManager;
-    @Mock IBinder mIBinder;
     View mView;
     int mViewWidth;
     int mViewHeight;
@@ -77,7 +75,7 @@ public class MirrorWindowControlTest extends SysuiTestCase {
 
     @Test
     public void showControl_createViewAndAddView() {
-        mStubMirrorWindowControl.showControl(mIBinder);
+        mStubMirrorWindowControl.showControl();
 
         assertTrue(mStubMirrorWindowControl.mInvokeOnCreateView);
         ArgumentCaptor<ViewGroup.LayoutParams> lpCaptor = ArgumentCaptor.forClass(
@@ -89,7 +87,7 @@ public class MirrorWindowControlTest extends SysuiTestCase {
 
     @Test
     public void destroyControl_removeView() {
-        mStubMirrorWindowControl.showControl(mIBinder);
+        mStubMirrorWindowControl.showControl();
         ArgumentCaptor<View> captor = ArgumentCaptor.forClass(View.class);
         verify(mWindowManager).addView(captor.capture(), any(LayoutParams.class));
 
@@ -102,7 +100,7 @@ public class MirrorWindowControlTest extends SysuiTestCase {
     public void move_offsetIsCorrect() {
         ArgumentCaptor<ViewGroup.LayoutParams> lpCaptor = ArgumentCaptor.forClass(
                 ViewGroup.LayoutParams.class);
-        mStubMirrorWindowControl.showControl(mIBinder);
+        mStubMirrorWindowControl.showControl();
         verify(mWindowManager).addView(any(), lpCaptor.capture());
         LayoutParams lp = (LayoutParams) lpCaptor.getValue();
         Point startPosition = new Point(lp.x, lp.y);

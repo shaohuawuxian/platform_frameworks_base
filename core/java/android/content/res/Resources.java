@@ -27,7 +27,9 @@ import android.annotation.BoolRes;
 import android.annotation.ColorInt;
 import android.annotation.ColorRes;
 import android.annotation.DimenRes;
+import android.annotation.Discouraged;
 import android.annotation.DrawableRes;
+import android.annotation.FlaggedApi;
 import android.annotation.FontRes;
 import android.annotation.FractionRes;
 import android.annotation.IntegerRes;
@@ -41,9 +43,12 @@ import android.annotation.StyleRes;
 import android.annotation.StyleableRes;
 import android.annotation.XmlRes;
 import android.app.Application;
+import android.app.ResourcesManager;
 import android.compat.annotation.UnsupportedAppUsage;
+import android.content.Context;
 import android.content.pm.ActivityInfo;
 import android.content.pm.ActivityInfo.Config;
+import android.content.pm.ApplicationInfo;
 import android.content.res.loader.ResourcesLoader;
 import android.graphics.Movie;
 import android.graphics.Typeface;
@@ -52,6 +57,8 @@ import android.graphics.drawable.Drawable.ConstantState;
 import android.graphics.drawable.DrawableInflater;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.SystemClock;
+import android.util.ArrayMap;
 import android.util.ArraySet;
 import android.util.AttributeSet;
 import android.util.DisplayMetrics;
@@ -77,11 +84,14 @@ import org.xmlpull.v1.XmlPullParserException;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.PrintWriter;
 import java.lang.ref.WeakReference;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
-import java.util.function.Consumer;
+import java.util.Set;
+import java.util.WeakHashMap;
 
 /**
  * Class for accessing an application's resources.  This sits on top of the
@@ -126,6 +136,11 @@ public class Resources {
     private static final Object sSync = new Object();
     private final Object mUpdateLock = new Object();
 
+    /**
+     * Controls whether we should preload resources during zygote init.
+     */
+    private static final boolean PRELOAD_RESOURCES = true;
+
     // Used by BridgeResources in layoutlib
     @UnsupportedAppUsage
     static Resources mSystem = null;
@@ -140,9 +155,6 @@ public class Resources {
     /** Used to inflate drawable objects from XML. */
     @UnsupportedAppUsage
     private DrawableInflater mDrawableInflater;
-
-    /** Used to override the returned adjustments of {@link #getDisplayAdjustments}. */
-    private DisplayAdjustments mOverrideDisplayAdjustments;
 
     /** Lock object used to protect access to {@link #mTmpValue}. */
     private final Object mTmpValueLock = new Object();
@@ -170,9 +182,15 @@ public class Resources {
      * mThemeRefNextFlushSize is reached.
      */
     private static final int MIN_THEME_REFS_FLUSH_SIZE = 32;
+    private static final int MAX_THEME_REFS_FLUSH_SIZE = 512;
     private int mThemeRefsNextFlushSize = MIN_THEME_REFS_FLUSH_SIZE;
 
     private int mBaseApkAssetsSize;
+
+    /** @hide */
+    private static final Set<Resources> sResourcesHistory = Collections.synchronizedSet(
+            Collections.newSetFromMap(
+                    new WeakHashMap<>()));
 
     /**
      * Returns the most appropriate default theme for the specified target SDK version.
@@ -320,14 +338,18 @@ public class Resources {
     @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public Resources(@Nullable ClassLoader classLoader) {
         mClassLoader = classLoader == null ? ClassLoader.getSystemClassLoader() : classLoader;
+        sResourcesHistory.add(this);
+        ResourcesManager.getInstance().registerAllResourcesReference(this);
     }
 
     /**
-     * Only for creating the System resources.
+     * Only for creating the System resources. This is the only constructor that doesn't add
+     * Resources itself to the ResourcesManager list of all Resources references.
      */
     @UnsupportedAppUsage
     private Resources() {
-        this(null);
+        mClassLoader = ClassLoader.getSystemClassLoader();
+        sResourcesHistory.add(this);
 
         final DisplayMetrics metrics = new DisplayMetrics();
         metrics.setToDefaults();
@@ -341,7 +363,7 @@ public class Resources {
 
     /**
      * Set the underlying implementation (containing all the resources and caches)
-     * and updates all Theme references to new implementations as well.
+     * and updates all Theme implementations as well.
      * @hide
      */
     @UnsupportedAppUsage
@@ -353,14 +375,14 @@ public class Resources {
         mBaseApkAssetsSize = ArrayUtils.size(impl.getAssets().getApkAssets());
         mResourcesImpl = impl;
 
-        // Create new ThemeImpls that are identical to the ones we have.
+        // Rebase the ThemeImpls using the new ResourcesImpl.
         synchronized (mThemeRefs) {
+            cleanupThemeReferences();
             final int count = mThemeRefs.size();
             for (int i = 0; i < count; i++) {
-                WeakReference<Theme> weakThemeRef = mThemeRefs.get(i);
-                Theme theme = weakThemeRef != null ? weakThemeRef.get() : null;
+                Theme theme = mThemeRefs.get(i).get();
                 if (theme != null) {
-                    theme.setImpl(mResourcesImpl.newThemeImpl(theme.getKey()));
+                    theme.rebase(mResourcesImpl);
                 }
             }
         }
@@ -1466,6 +1488,12 @@ public class Resources {
      * @throws NotFoundException Throws NotFoundException if the given ID does not exist.
      *
      */
+    @Discouraged(message = "Use of this function is discouraged because it makes internal calls to "
+                         + "`getIdentifier()`, which uses resource reflection. Reflection makes it "
+                         + "harder to perform build optimizations and compile-time verification of "
+                         + "code. It is much more efficient to retrieve resource values by "
+                         + "identifier (e.g. `getValue(R.foo.bar, outValue, true)`) than by name "
+                         + "(e.g. `getValue(\"foo\", outvalue, true)`).")
     public void getValue(String name, TypedValue outValue, boolean resolveRefs)
             throws NotFoundException {
         mResourcesImpl.getValue(name, outValue, resolveRefs);
@@ -1500,6 +1528,15 @@ public class Resources {
      * retrieve XML attributes with style and theme information applied.
      */
     public final class Theme {
+        /**
+         * To trace parent themes needs to prevent a cycle situation.
+         * e.x. A's parent is B, B's parent is C, and C's parent is A.
+         */
+        private static final int MAX_NUMBER_OF_TRACING_PARENT_THEME = 100;
+
+        private final Object mLock = new Object();
+
+        @GuardedBy("mLock")
         @UnsupportedAppUsage
         private ResourcesImpl.ThemeImpl mThemeImpl;
 
@@ -1507,7 +1544,9 @@ public class Resources {
         }
 
         void setImpl(ResourcesImpl.ThemeImpl impl) {
-            mThemeImpl = impl;
+            synchronized (mLock) {
+                mThemeImpl = impl;
+            }
         }
 
         /**
@@ -1528,7 +1567,9 @@ public class Resources {
          *              if not already defined in the theme.
          */
         public void applyStyle(int resId, boolean force) {
-            mThemeImpl.applyStyle(resId, force);
+            synchronized (mLock) {
+                mThemeImpl.applyStyle(resId, force);
+            }
         }
 
         /**
@@ -1541,7 +1582,11 @@ public class Resources {
          * @param other The existing Theme to copy from.
          */
         public void setTo(Theme other) {
-            mThemeImpl.setTo(other.mThemeImpl);
+            synchronized (mLock) {
+                synchronized (other.mLock) {
+                    mThemeImpl.setTo(other.mThemeImpl);
+                }
+            }
         }
 
         /**
@@ -1566,7 +1611,9 @@ public class Resources {
          */
         @NonNull
         public TypedArray obtainStyledAttributes(@NonNull @StyleableRes int[] attrs) {
-            return mThemeImpl.obtainStyledAttributes(this, null, attrs, 0, 0);
+            synchronized (mLock) {
+                return mThemeImpl.obtainStyledAttributes(this, null, attrs, 0, 0);
+            }
         }
 
         /**
@@ -1594,7 +1641,9 @@ public class Resources {
         public TypedArray obtainStyledAttributes(@StyleRes int resId,
                 @NonNull @StyleableRes int[] attrs)
                 throws NotFoundException {
-            return mThemeImpl.obtainStyledAttributes(this, null, attrs, 0, resId);
+            synchronized (mLock) {
+                return mThemeImpl.obtainStyledAttributes(this, null, attrs, 0, resId);
+            }
         }
 
         /**
@@ -1650,7 +1699,10 @@ public class Resources {
         public TypedArray obtainStyledAttributes(@Nullable AttributeSet set,
                 @NonNull @StyleableRes int[] attrs, @AttrRes int defStyleAttr,
                 @StyleRes int defStyleRes) {
-            return mThemeImpl.obtainStyledAttributes(this, set, attrs, defStyleAttr, defStyleRes);
+            synchronized (mLock) {
+                return mThemeImpl.obtainStyledAttributes(this, set, attrs, defStyleAttr,
+                        defStyleRes);
+            }
         }
 
         /**
@@ -1671,7 +1723,9 @@ public class Resources {
         @NonNull
         @UnsupportedAppUsage
         public TypedArray resolveAttributes(@NonNull int[] values, @NonNull int[] attrs) {
-            return mThemeImpl.resolveAttributes(this, values, attrs);
+            synchronized (mLock) {
+                return mThemeImpl.resolveAttributes(this, values, attrs);
+            }
         }
 
         /**
@@ -1692,7 +1746,9 @@ public class Resources {
          *         <var>outValue</var> is valid, else false.
          */
         public boolean resolveAttribute(int resid, TypedValue outValue, boolean resolveRefs) {
-            return mThemeImpl.resolveAttribute(resid, outValue, resolveRefs);
+            synchronized (mLock) {
+                return mThemeImpl.resolveAttribute(resid, outValue, resolveRefs);
+            }
         }
 
         /**
@@ -1702,7 +1758,9 @@ public class Resources {
          * @hide
          */
         public int[] getAllAttributes() {
-            return mThemeImpl.getAllAttributes();
+            synchronized (mLock) {
+                return mThemeImpl.getAllAttributes();
+            }
         }
 
         /**
@@ -1738,7 +1796,9 @@ public class Resources {
          * @see ActivityInfo
          */
         public @Config int getChangingConfigurations() {
-            return mThemeImpl.getChangingConfigurations();
+            synchronized (mLock) {
+                return mThemeImpl.getChangingConfigurations();
+            }
         }
 
         /**
@@ -1749,23 +1809,38 @@ public class Resources {
          * @param prefix Text to prefix each line printed.
          */
         public void dump(int priority, String tag, String prefix) {
-            mThemeImpl.dump(priority, tag, prefix);
+            synchronized (mLock) {
+                mThemeImpl.dump(priority, tag, prefix);
+            }
         }
 
         // Needed by layoutlib.
         /*package*/ long getNativeTheme() {
-            return mThemeImpl.getNativeTheme();
+            synchronized (mLock) {
+                return mThemeImpl.getNativeTheme();
+            }
         }
 
         /*package*/ int getAppliedStyleResId() {
-            return mThemeImpl.getAppliedStyleResId();
+            synchronized (mLock) {
+                return mThemeImpl.getAppliedStyleResId();
+            }
+        }
+
+        @StyleRes
+        /*package*/ int getParentThemeIdentifier(@StyleRes int resId) {
+            synchronized (mLock) {
+                return mThemeImpl.getParentThemeIdentifier(resId);
+            }
         }
 
         /**
          * @hide
          */
         public ThemeKey getKey() {
-            return mThemeImpl.getKey();
+            synchronized (mLock) {
+                return mThemeImpl.getKey();
+            }
         }
 
         private String getResourceNameFromHexString(String hexString) {
@@ -1781,7 +1856,9 @@ public class Resources {
          */
         @ViewDebug.ExportedProperty(category = "theme", hasAdjacentMapping = true)
         public String[] getTheme() {
-            return mThemeImpl.getTheme();
+            synchronized (mLock) {
+                return mThemeImpl.getTheme();
+            }
         }
 
         /** @hide */
@@ -1800,7 +1877,15 @@ public class Resources {
          * {@link #applyStyle(int, boolean)}.
          */
         public void rebase() {
-            mThemeImpl.rebase();
+            synchronized (mLock) {
+                mThemeImpl.rebase();
+            }
+        }
+
+        void rebase(ResourcesImpl resImpl) {
+            synchronized (mLock) {
+                mThemeImpl.rebase(resImpl.mAssets);
+            }
         }
 
         /**
@@ -1862,13 +1947,63 @@ public class Resources {
         @NonNull
         public int[] getAttributeResolutionStack(@AttrRes int defStyleAttr,
                 @StyleRes int defStyleRes, @StyleRes int explicitStyleRes) {
-            int[] stack = mThemeImpl.getAttributeResolutionStack(
-                    defStyleAttr, defStyleRes, explicitStyleRes);
-            if (stack == null) {
-                return new int[0];
-            } else {
-                return stack;
+            synchronized (mLock) {
+                int[] stack = mThemeImpl.getAttributeResolutionStack(
+                        defStyleAttr, defStyleRes, explicitStyleRes);
+                if (stack == null) {
+                    return new int[0];
+                } else {
+                    return stack;
+                }
             }
+        }
+
+        @Override
+        public int hashCode() {
+            return getKey().hashCode();
+        }
+
+        @Override
+        public boolean equals(@Nullable Object o) {
+            if (this == o) {
+                return true;
+            }
+
+            if (o == null || getClass() != o.getClass() || hashCode() != o.hashCode()) {
+                return false;
+            }
+
+            final Theme other = (Theme) o;
+            return getKey().equals(other.getKey());
+        }
+
+        @Override
+        public String toString() {
+            final StringBuilder sb = new StringBuilder();
+            sb.append('{');
+            int themeResId = getAppliedStyleResId();
+            int i = 0;
+            sb.append("InheritanceMap=[");
+            while (themeResId > 0) {
+                if (i > MAX_NUMBER_OF_TRACING_PARENT_THEME) {
+                    sb.append(",...");
+                    break;
+                }
+
+                if (i > 0) {
+                    sb.append(", ");
+                }
+                sb.append("id=0x").append(Integer.toHexString(themeResId));
+                sb.append(getResourcePackageName(themeResId))
+                        .append(":").append(getResourceTypeName(themeResId))
+                        .append("/").append(getResourceEntryName(themeResId));
+
+                i++;
+                themeResId = getParentThemeIdentifier(themeResId);
+            }
+            sb.append("], Themes=").append(Arrays.deepToString(getTheme()));
+            sb.append('}');
+            return sb.toString();
         }
     }
 
@@ -1879,6 +2014,27 @@ public class Resources {
 
         private int mHashCode = 0;
 
+        private int findValue(int resId, boolean force) {
+            for (int i = 0; i < mCount; ++i) {
+                if (mResId[i] == resId && mForce[i] == force) {
+                    return i;
+                }
+            }
+            return -1;
+        }
+
+        private void moveToLast(int index) {
+            if (index < 0 || index >= mCount - 1) {
+                return;
+            }
+            final int id = mResId[index];
+            final boolean force = mForce[index];
+            System.arraycopy(mResId, index + 1, mResId, index, mCount - index - 1);
+            mResId[mCount - 1] = id;
+            System.arraycopy(mForce, index + 1, mForce, index, mCount - index - 1);
+            mForce[mCount - 1] = force;
+        }
+
         public void append(int resId, boolean force) {
             if (mResId == null) {
                 mResId = new int[4];
@@ -1888,11 +2044,18 @@ public class Resources {
                 mForce = new boolean[4];
             }
 
-            mResId = GrowingArrayUtils.append(mResId, mCount, resId);
-            mForce = GrowingArrayUtils.append(mForce, mCount, force);
-            mCount++;
-
-            mHashCode = 31 * (31 * mHashCode + resId) + (force ? 1 : 0);
+            // Some apps tend to keep adding same resources over and over, let's protect from it.
+            // Note: the order still matters, as the values that come later override the earlier
+            //  ones.
+            final int index = findValue(resId, force);
+            if (index >= 0) {
+                moveToLast(index);
+            } else {
+                mResId = GrowingArrayUtils.append(mResId, mCount, resId);
+                mForce = GrowingArrayUtils.append(mForce, mCount, force);
+                mCount++;
+                mHashCode = 31 * (31 * mHashCode + resId) + (force ? 1 : 0);
+            }
         }
 
         /**
@@ -1913,7 +2076,7 @@ public class Resources {
         }
 
         @Override
-        public boolean equals(Object o) {
+        public boolean equals(@Nullable Object o) {
             if (this == o) {
                 return true;
             }
@@ -1951,6 +2114,19 @@ public class Resources {
         }
     }
 
+    static int nextPowerOf2(int number) {
+        return number < 2 ? 2 : 1 >> ((int) (Math.log(number - 1) / Math.log(2)) + 1);
+    }
+
+    private void cleanupThemeReferences() {
+        // Clean up references to garbage collected themes
+        if (mThemeRefs.size() > mThemeRefsNextFlushSize) {
+            mThemeRefs.removeIf(ref -> ref.refersTo(null));
+            mThemeRefsNextFlushSize = Math.min(Math.max(MIN_THEME_REFS_FLUSH_SIZE,
+                    nextPowerOf2(mThemeRefs.size())), MAX_THEME_REFS_FLUSH_SIZE);
+        }
+    }
+
     /**
      * Generate a new Theme object for this set of Resources.  It initially
      * starts out empty.
@@ -1961,14 +2137,8 @@ public class Resources {
         Theme theme = new Theme();
         theme.setImpl(mResourcesImpl.newThemeImpl());
         synchronized (mThemeRefs) {
+            cleanupThemeReferences();
             mThemeRefs.add(new WeakReference<>(theme));
-
-            // Clean up references to garbage collected themes
-            if (mThemeRefs.size() > mThemeRefsNextFlushSize) {
-                mThemeRefs.removeIf(ref -> ref.get() == null);
-                mThemeRefsNextFlushSize = Math.max(MIN_THEME_REFS_FLUSH_SIZE,
-                        2 * mThemeRefs.size());
-            }
         }
         return theme;
     }
@@ -2037,17 +2207,18 @@ public class Resources {
     }
 
     /**
-     * Return the current display metrics that are in effect for this resource
+     * Returns the current display metrics that are in effect for this resource
      * object. The returned object should be treated as read-only.
      *
      * <p>Note that the reported value may be different than the window this application is
      * interested in.</p>
      *
-     * <p>Best practices are to obtain metrics from {@link WindowManager#getCurrentWindowMetrics()}
-     * for window bounds, {@link Display#getRealMetrics(DisplayMetrics)} for display bounds and
-     * obtain density from {@link Configuration#densityDpi}. The value obtained from this API may be
-     * wrong if the {@link Resources} is from the context which is different than the window is
-     * attached such as {@link Application#getResources()}.
+     * <p>The best practices is to obtain metrics from
+     * {@link WindowManager#getCurrentWindowMetrics()} for window bounds. The value obtained from
+     * this API may be wrong if {@link Context#getResources()} is not from a {@code UiContext}.
+     * For example, use the {@link DisplayMetrics} obtained from {@link Application#getResources()}
+     * to build {@link android.app.Activity} UI elements especially when the
+     * {@link android.app.Activity} is in the multi-window mode or on the secondary {@link Display}.
      * <p/>
      *
      * @return The resource's current display metrics.
@@ -2059,30 +2230,7 @@ public class Resources {
     /** @hide */
     @UnsupportedAppUsage(trackingBug = 176190631)
     public DisplayAdjustments getDisplayAdjustments() {
-        final DisplayAdjustments overrideDisplayAdjustments = mOverrideDisplayAdjustments;
-        if (overrideDisplayAdjustments != null) {
-            return overrideDisplayAdjustments;
-        }
         return mResourcesImpl.getDisplayAdjustments();
-    }
-
-    /**
-     * Customize the display adjustments based on the current one in {@link #mResourcesImpl}, in
-     * order to isolate the effect with other instances of {@link Resource} that may share the same
-     * instance of {@link ResourcesImpl}.
-     *
-     * @param override The operation to override the existing display adjustments. If it is null,
-     *                 the override adjustments will be cleared.
-     * @hide
-     */
-    public void overrideDisplayAdjustments(@Nullable Consumer<DisplayAdjustments> override) {
-        if (override != null) {
-            mOverrideDisplayAdjustments = new DisplayAdjustments(
-                    mResourcesImpl.getDisplayAdjustments());
-            override.accept(mOverrideDisplayAdjustments);
-        } else {
-            mOverrideDisplayAdjustments = null;
-        }
     }
 
     /**
@@ -2090,7 +2238,7 @@ public class Resources {
      * @hide
      */
     public boolean hasOverrideDisplayAdjustments() {
-        return mOverrideDisplayAdjustments != null;
+        return false;
     }
 
     /**
@@ -2106,6 +2254,11 @@ public class Resources {
     /** @hide */
     public Configuration[] getSizeConfigurations() {
         return mResourcesImpl.getSizeConfigurations();
+    }
+
+    /** @hide */
+    public Configuration[] getSizeAndUiModeConfigurations() {
+        return mResourcesImpl.getSizeAndUiModeConfigurations();
     }
 
     /**
@@ -2152,6 +2305,11 @@ public class Resources {
      * @return int The associated resource identifier.  Returns 0 if no such
      *         resource was found.  (0 is not a valid resource ID.)
      */
+    @Discouraged(message = "Use of this function is discouraged because resource reflection makes "
+                         + "it harder to perform build optimizations and compile-time "
+                         + "verification of code. It is much more efficient to retrieve "
+                         + "resources by identifier (e.g. `R.foo.bar`) than by name (e.g. "
+                         + "`getIdentifier(\"bar\", \"foo\", null)`).")
     public int getIdentifier(String name, String defType, String defPackage) {
         return mResourcesImpl.getIdentifier(name, defType, defPackage);
     }
@@ -2554,6 +2712,146 @@ public class Resources {
             for (ResourcesLoader loader : oldLoaders) {
                 loader.unregisterOnProvidersChangedCallback(this);
             }
+        }
+    }
+
+    /**
+     * Load in commonly used resources, so they can be shared across processes.
+     *
+     * These tend to be a few Kbytes, but are frequently in the 20-40K range, and occasionally even
+     * larger.
+     * @hide
+     */
+    @UnsupportedAppUsage
+    public static void preloadResources() {
+        try {
+            final Resources sysRes = Resources.getSystem();
+            sysRes.startPreloading();
+            if (PRELOAD_RESOURCES) {
+                Log.i(TAG, "Preloading resources...");
+
+                long startTime = SystemClock.uptimeMillis();
+                TypedArray ar = sysRes.obtainTypedArray(
+                        com.android.internal.R.array.preloaded_drawables);
+                int numberOfEntries = preloadDrawables(sysRes, ar);
+                ar.recycle();
+                Log.i(TAG, "...preloaded " + numberOfEntries + " resources in "
+                        + (SystemClock.uptimeMillis() - startTime) + "ms.");
+
+                startTime = SystemClock.uptimeMillis();
+                ar = sysRes.obtainTypedArray(
+                        com.android.internal.R.array.preloaded_color_state_lists);
+                numberOfEntries = preloadColorStateLists(sysRes, ar);
+                ar.recycle();
+                Log.i(TAG, "...preloaded " + numberOfEntries + " resources in "
+                        + (SystemClock.uptimeMillis() - startTime) + "ms.");
+            }
+            sysRes.finishPreloading();
+        } catch (RuntimeException e) {
+            Log.w(TAG, "Failure preloading resources", e);
+        }
+    }
+
+    private static int preloadColorStateLists(Resources resources, TypedArray ar) {
+        final int numberOfEntries = ar.length();
+        for (int i = 0; i < numberOfEntries; i++) {
+            int id = ar.getResourceId(i, 0);
+
+            if (id != 0) {
+                if (resources.getColorStateList(id, null) == null) {
+                    throw new IllegalArgumentException(
+                            "Unable to find preloaded color resource #0x"
+                                    + Integer.toHexString(id)
+                                    + " (" + ar.getString(i) + ")");
+                }
+            }
+        }
+        return numberOfEntries;
+    }
+
+    private static int preloadDrawables(Resources resources, TypedArray ar) {
+        final int numberOfEntries = ar.length();
+        for (int i = 0; i < numberOfEntries; i++) {
+            int id = ar.getResourceId(i, 0);
+
+            if (id != 0) {
+                if (resources.getDrawable(id, null) == null) {
+                    throw new IllegalArgumentException(
+                            "Unable to find preloaded drawable resource #0x"
+                                    + Integer.toHexString(id)
+                                    + " (" + ar.getString(i) + ")");
+                }
+            }
+        }
+        return numberOfEntries;
+    }
+
+    /**
+     * Clear the cache when the framework resources packages is changed.
+     * @hide
+     */
+    @VisibleForTesting
+    public static void resetPreloadDrawableStateCache() {
+        ResourcesImpl.resetDrawableStateCache();
+        preloadResources();
+    }
+
+    /** @hide */
+    public void dump(PrintWriter pw, String prefix) {
+        pw.println(prefix + "class=" + getClass());
+        pw.println(prefix + "resourcesImpl");
+        final var impl = mResourcesImpl;
+        if (impl != null) {
+            impl.dump(pw, prefix + "  ");
+        } else {
+            pw.println(prefix + "  " + "null");
+        }
+    }
+
+    /** @hide */
+    public static void dumpHistory(PrintWriter pw, String prefix) {
+        pw.println(prefix + "history");
+        // Putting into a map keyed on the apk assets to deduplicate resources that are different
+        // objects but ultimately represent the same assets
+        ArrayMap<List<ApkAssets>, Resources> history = new ArrayMap<>();
+        sResourcesHistory.forEach(
+                r -> {
+                    if (r != null) {
+                        final var impl = r.mResourcesImpl;
+                        if (impl != null) {
+                            history.put(Arrays.asList(impl.mAssets.getApkAssets()), r);
+                        } else {
+                            history.put(null, r);
+                        }
+                    }
+                });
+        int i = 0;
+        for (Resources r : history.values()) {
+            pw.println(prefix + i++);
+            r.dump(pw, prefix + "  ");
+        }
+    }
+
+    /**
+     * Register the resources paths of a package (e.g. a shared library). This will collect the
+     * package resources' paths from its ApplicationInfo and add them to all existing and future
+     * contexts while the application is running.
+     * A second call with the same uniqueId is a no-op.
+     * The paths are not persisted during application restarts. The application is responsible for
+     * calling the API again if this happens.
+     *
+     * @param uniqueId The unique id for the ApplicationInfo object, to detect and ignore repeated
+     *                 API calls.
+     * @param appInfo The ApplicationInfo that contains resources paths of the package.
+     */
+    @FlaggedApi(android.content.res.Flags.FLAG_REGISTER_RESOURCE_PATHS)
+    public static void registerResourcePaths(@NonNull String uniqueId,
+            @NonNull ApplicationInfo appInfo) {
+        if (Flags.registerResourcePaths()) {
+            ResourcesManager.getInstance().registerResourcePaths(uniqueId, appInfo);
+        } else {
+            throw new UnsupportedOperationException("Flag " + Flags.FLAG_REGISTER_RESOURCE_PATHS
+                    + " is disabled.");
         }
     }
 }

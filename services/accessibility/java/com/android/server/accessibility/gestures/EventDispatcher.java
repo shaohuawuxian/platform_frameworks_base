@@ -106,11 +106,30 @@ class EventDispatcher {
                 return;
             }
         }
+        final long downTime;
         if (action == MotionEvent.ACTION_DOWN) {
-            event.setDownTime(event.getEventTime());
+            downTime = event.getEventTime();
         } else {
-            event.setDownTime(mState.getLastInjectedDownEventTime());
+            downTime = mState.getLastInjectedDownEventTime();
         }
+
+        // The only way to change device id of the motion event is by re-creating the whole thing
+        final PointerProperties[] properties = new PointerProperties[event.getPointerCount()];
+        final PointerCoords[] coords = new PointerCoords[event.getPointerCount()];
+        for (int i = 0; i < event.getPointerCount(); i++) {
+            final PointerCoords c = new PointerCoords();
+            event.getPointerCoords(i, c);
+            coords[i] = c;
+            final PointerProperties p = new PointerProperties();
+            event.getPointerProperties(i, p);
+            properties[i] = p;
+        }
+        event = MotionEvent.obtain(downTime, event.getEventTime(), event.getAction(),
+                event.getPointerCount(), properties, coords,
+                event.getMetaState(), event.getButtonState(),
+                event.getXPrecision(), event.getYPrecision(), rawEvent.getDeviceId(),
+                event.getEdgeFlags(), rawEvent.getSource(), event.getDisplayId(), event.getFlags(),
+                event.getClassification());
         // If the user is long pressing but the long pressing pointer
         // was not exactly over the accessibility focused item we need
         // to remap the location of that pointer so the user does not
@@ -298,7 +317,7 @@ class EventDispatcher {
         // Inject the injected pointers.
         int pointerIdBits = 0;
         final int pointerCount = prototype.getPointerCount();
-        final MotionEvent event = computeEventWithOriginalDown(prototype);
+        final MotionEvent event = computeInjectionDownEvent(prototype);
         for (int i = 0; i < pointerCount; i++) {
             final int pointerId = prototype.getPointerId(i);
             // Do not send event for already delivered pointers.
@@ -315,7 +334,7 @@ class EventDispatcher {
         }
     }
 
-    private MotionEvent computeEventWithOriginalDown(MotionEvent prototype) {
+    private MotionEvent computeInjectionDownEvent(MotionEvent prototype) {
         final int pointerCount = prototype.getPointerCount();
         if (pointerCount != mState.getReceivedPointerTracker().getReceivedPointerDownCount()) {
             Slog.w(LOG_TAG, "The pointer count doesn't match the received count.");
@@ -382,18 +401,21 @@ class EventDispatcher {
     }
 
     public boolean longPressWithTouchEvents(MotionEvent event, int policyFlags) {
-        final int pointerIndex = event.getActionIndex();
-        final int pointerId = event.getPointerId(pointerIndex);
         Point clickLocation = mTempPoint;
         final int result = computeClickLocation(clickLocation);
         if (result == CLICK_LOCATION_NONE) {
             return false;
         }
-        mLongPressingPointerId = pointerId;
-        mLongPressingPointerDeltaX = (int) event.getX(pointerIndex) - clickLocation.x;
-        mLongPressingPointerDeltaY = (int) event.getY(pointerIndex) - clickLocation.y;
-        sendDownForAllNotInjectedPointers(event, policyFlags);
-        return true;
+        if (event != null) {
+            final int pointerIndex = event.getActionIndex();
+            final int pointerId = event.getPointerId(pointerIndex);
+            mLongPressingPointerId = pointerId;
+            mLongPressingPointerDeltaX = (int) event.getX(pointerIndex) - clickLocation.x;
+            mLongPressingPointerDeltaY = (int) event.getY(pointerIndex) - clickLocation.y;
+            sendDownForAllNotInjectedPointers(event, policyFlags);
+            return true;
+        }
+        return false;
     }
 
     void clear() {

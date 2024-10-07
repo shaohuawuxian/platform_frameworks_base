@@ -17,6 +17,7 @@ package android.util;
 
 import static com.android.internal.util.Preconditions.checkNotNull;
 
+import android.annotation.Nullable;
 import android.compat.annotation.UnsupportedAppUsage;
 import android.os.Build;
 
@@ -29,6 +30,8 @@ import java.io.InvalidObjectException;
  * <p>Contains a pair of {@code int}s representing the numerator and denominator of a
  * Rational number. </p>
  */
+// Exported to Mainline modules; cannot use annotations
+// @android.ravenwood.annotation.RavenwoodKeepWholeClass
 public final class Rational extends Number implements Comparable<Rational> {
     /**
      * Constant for the <em>Not-a-Number (NaN)</em> value of the {@code Rational} type.
@@ -241,7 +244,7 @@ public final class Rational extends Number implements Comparable<Rational> {
      * @return A boolean that determines whether or not the two Rational objects are equal.
      */
     @Override
-    public boolean equals(Object obj) {
+    public boolean equals(@Nullable Object obj) {
         return obj instanceof Rational && equals((Rational) obj);
     }
 

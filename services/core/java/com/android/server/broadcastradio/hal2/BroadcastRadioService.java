@@ -29,35 +29,44 @@ import android.hidl.manager.V1_0.IServiceManager;
 import android.hidl.manager.V1_0.IServiceNotification;
 import android.os.IHwBinder.DeathRecipient;
 import android.os.RemoteException;
-import android.util.Slog;
+import android.util.ArrayMap;
+import android.util.IndentingPrintWriter;
 
 import com.android.internal.annotations.GuardedBy;
+import com.android.internal.annotations.VisibleForTesting;
+import com.android.server.broadcastradio.RadioServiceUserController;
+import com.android.server.utils.Slogf;
 
 import java.util.Collection;
-import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
 import java.util.stream.Collectors;
 
-public class BroadcastRadioService {
+/**
+ * Broadcast radio service using BroadcastRadio HIDL 2.0 HAL
+ */
+public final class BroadcastRadioService {
     private static final String TAG = "BcRadio2Srv";
 
     private final Object mLock = new Object();
 
-    @GuardedBy("mLock")
-    private int mNextModuleId = 0;
+    private final RadioServiceUserController mUserController;
 
     @GuardedBy("mLock")
-    private final Map<String, Integer> mServiceNameToModuleIdMap = new HashMap<>();
+    private int mNextModuleId;
+
+    @GuardedBy("mLock")
+    private final Map<String, Integer> mServiceNameToModuleIdMap = new ArrayMap<>();
 
     // Map from module ID to RadioModule created by mServiceListener.onRegistration().
     @GuardedBy("mLock")
-    private final Map<Integer, RadioModule> mModules = new HashMap<>();
+    private final Map<Integer, RadioModule> mModules = new ArrayMap<>();
 
-    private IServiceNotification.Stub mServiceListener = new IServiceNotification.Stub() {
+    private final IServiceNotification.Stub mServiceListener = new IServiceNotification.Stub() {
         @Override
         public void onRegistration(String fqName, String serviceName, boolean preexisting) {
-            Slog.v(TAG, "onRegistration(" + fqName + ", " + serviceName + ", " + preexisting + ")");
+            Slogf.v(TAG, "onRegistration(" + fqName + ", " + serviceName + ", " + preexisting
+                    + ")");
             Integer moduleId;
             synchronized (mLock) {
                 // If the service has been registered before, reuse its previous module ID.
@@ -68,13 +77,14 @@ public class BroadcastRadioService {
                     moduleId = mNextModuleId;
                 }
 
-                RadioModule module = RadioModule.tryLoadingModule(moduleId, serviceName);
-                if (module == null) {
+                RadioModule radioModule = RadioModule.tryLoadingModule(moduleId, serviceName,
+                        mUserController);
+                if (radioModule == null) {
                     return;
                 }
-                Slog.v(TAG, "loaded broadcast radio module " + moduleId + ": " + serviceName
+                Slogf.v(TAG, "loaded broadcast radio module " + moduleId + ": " + serviceName
                         + " (HAL 2.0)");
-                RadioModule prevModule = mModules.put(moduleId, module);
+                RadioModule prevModule = mModules.put(moduleId, radioModule);
                 if (prevModule != null) {
                     prevModule.closeSessions(RadioTuner.ERROR_HARDWARE_FAILURE);
                 }
@@ -85,7 +95,7 @@ public class BroadcastRadioService {
                 }
 
                 try {
-                    module.getService().linkToDeath(mDeathRecipient, moduleId);
+                    radioModule.getService().linkToDeath(mDeathRecipient, moduleId);
                 } catch (RemoteException ex) {
                     // Service has already died, so remove its entry from mModules.
                     mModules.remove(moduleId);
@@ -94,10 +104,10 @@ public class BroadcastRadioService {
         }
     };
 
-    private DeathRecipient mDeathRecipient = new DeathRecipient() {
+    private final DeathRecipient mDeathRecipient = new DeathRecipient() {
         @Override
         public void serviceDied(long cookie) {
-            Slog.v(TAG, "serviceDied(" + cookie + ")");
+            Slogf.v(TAG, "serviceDied(" + cookie + ")");
             synchronized (mLock) {
                 int moduleId = (int) cookie;
                 RadioModule prevModule = mModules.remove(moduleId);
@@ -107,32 +117,47 @@ public class BroadcastRadioService {
 
                 for (Map.Entry<String, Integer> entry : mServiceNameToModuleIdMap.entrySet()) {
                     if (entry.getValue() == moduleId) {
-                        Slog.i(TAG, "service " + entry.getKey()
+                        Slogf.i(TAG, "service " + entry.getKey()
                                 + " died; removed RadioModule with ID " + moduleId);
-                        return;
+                        break;
                     }
                 }
             }
         }
     };
 
-    public BroadcastRadioService(int nextModuleId) {
+    public BroadcastRadioService(int nextModuleId, RadioServiceUserController userController) {
         mNextModuleId = nextModuleId;
+        mUserController = Objects.requireNonNull(userController, "User controller can not be null");
         try {
             IServiceManager manager = IServiceManager.getService();
             if (manager == null) {
-                Slog.e(TAG, "failed to get HIDL Service Manager");
+                Slogf.e(TAG, "failed to get HIDL Service Manager");
                 return;
             }
             manager.registerForNotifications(IBroadcastRadio.kInterfaceName, "", mServiceListener);
         } catch (RemoteException ex) {
-            Slog.e(TAG, "failed to register for service notifications: ", ex);
+            Slogf.e(TAG, "failed to register for service notifications: ", ex);
+        }
+    }
+
+    @VisibleForTesting
+    BroadcastRadioService(int nextModuleId, IServiceManager manager,
+            RadioServiceUserController userController) {
+        mNextModuleId = nextModuleId;
+        mUserController = Objects.requireNonNull(userController, "User controller can not be null");
+        Objects.requireNonNull(manager, "Service manager cannot be null");
+        try {
+            manager.registerForNotifications(IBroadcastRadio.kInterfaceName, "", mServiceListener);
+        } catch (RemoteException ex) {
+            Slogf.e(TAG, "Failed to register for service notifications: ", ex);
         }
     }
 
     public @NonNull Collection<RadioManager.ModuleProperties> listModules() {
+        Slogf.v(TAG, "List HIDL 2.0 modules");
         synchronized (mLock) {
-            return mModules.values().stream().map(module -> module.mProperties)
+            return mModules.values().stream().map(module -> module.getProperties())
                     .collect(Collectors.toList());
         }
     }
@@ -150,14 +175,19 @@ public class BroadcastRadioService {
     }
 
     public ITuner openSession(int moduleId, @Nullable RadioManager.BandConfig legacyConfig,
-        boolean withAudio, @NonNull ITunerCallback callback) throws RemoteException {
+            boolean withAudio, @NonNull ITunerCallback callback) throws RemoteException {
+        Slogf.v(TAG, "Open HIDL 2.0 session with module id " + moduleId);
+        if (!mUserController.isCurrentOrSystemUser()) {
+            Slogf.e(TAG, "Cannot open tuner on HAL 2.0 client for non-current user");
+            throw new IllegalStateException("Cannot open session for non-current user");
+        }
         Objects.requireNonNull(callback);
 
         if (!withAudio) {
-            throw new IllegalArgumentException("Non-audio sessions not supported with HAL 2.x");
+            throw new IllegalArgumentException("Non-audio sessions not supported with HAL 2.0");
         }
 
-        RadioModule module = null;
+        RadioModule module;
         synchronized (mLock) {
             module = mModules.get(moduleId);
             if (module == null) {
@@ -174,7 +204,8 @@ public class BroadcastRadioService {
 
     public ICloseHandle addAnnouncementListener(@NonNull int[] enabledTypes,
             @NonNull IAnnouncementListener listener) {
-        AnnouncementAggregator aggregator = new AnnouncementAggregator(listener);
+        Slogf.v(TAG, "Add announcementListener");
+        AnnouncementAggregator aggregator = new AnnouncementAggregator(listener, mLock);
         boolean anySupported = false;
         synchronized (mLock) {
             for (RadioModule module : mModules.values()) {
@@ -182,13 +213,39 @@ public class BroadcastRadioService {
                     aggregator.watchModule(module, enabledTypes);
                     anySupported = true;
                 } catch (UnsupportedOperationException ex) {
-                    Slog.v(TAG, "Announcements not supported for this module", ex);
+                    Slogf.v(TAG, "Announcements not supported for this module", ex);
                 }
             }
         }
         if (!anySupported) {
-            Slog.i(TAG, "There are no HAL modules that support announcements");
+            Slogf.i(TAG, "There are no HAL modules that support announcements");
         }
         return aggregator;
+    }
+
+    /**
+     * Dump state of broadcastradio service for HIDL HAL 2.0.
+     *
+     * @param pw The file to which BroadcastRadioService state is dumped.
+     */
+    public void dumpInfo(IndentingPrintWriter pw) {
+        synchronized (mLock) {
+            pw.printf("Next module id available: %d\n", mNextModuleId);
+            pw.printf("ServiceName to module id map:\n");
+            pw.increaseIndent();
+            for (Map.Entry<String, Integer> entry : mServiceNameToModuleIdMap.entrySet()) {
+                pw.printf("Service name: %s, module id: %d\n", entry.getKey(), entry.getValue());
+            }
+            pw.decreaseIndent();
+            pw.printf("Radio modules:\n");
+            pw.increaseIndent();
+            for (Map.Entry<Integer, RadioModule> moduleEntry : mModules.entrySet()) {
+                pw.printf("Module id=%d:\n", moduleEntry.getKey());
+                pw.increaseIndent();
+                moduleEntry.getValue().dumpInfo(pw);
+                pw.decreaseIndent();
+            }
+            pw.decreaseIndent();
+        }
     }
 }

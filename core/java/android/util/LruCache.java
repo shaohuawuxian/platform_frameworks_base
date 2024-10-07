@@ -61,6 +61,7 @@ import java.util.Map;
  * of <a href="http://developer.android.com/sdk/compatibility-library.html">Android's
  * Support Package</a> for earlier releases.
  */
+@android.ravenwood.annotation.RavenwoodKeepWholeClass
 public class LruCache<K, V> {
     @UnsupportedAppUsage
     private final LinkedHashMap<K, V> map;
@@ -208,7 +209,7 @@ public class LruCache<K, V> {
                     break;
                 }
 
-                Map.Entry<K, V> toEvict = map.eldest();
+                Map.Entry<K, V> toEvict = eldest();
                 if (toEvict == null) {
                     break;
                 }
@@ -222,6 +223,10 @@ public class LruCache<K, V> {
 
             entryRemoved(true, key, value, null);
         }
+    }
+
+    private Map.Entry<K, V> eldest() {
+        return map.eldest();
     }
 
     /**

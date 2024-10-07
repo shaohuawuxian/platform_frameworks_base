@@ -14,25 +14,22 @@
 // limitations under the License.
 //
 
+package {
+    default_applicable_licenses: ["Android-Apache-2.0"],
+}
+
 // Build the android.test.base library
 // ===================================
 // This contains the junit.framework and android.test classes that were in
 // Android API level 25 excluding those from android.test.runner.
 // Also contains the com.android.internal.util.Predicate[s] classes.
-package {
-    // See: http://go/android-license-faq
-    // A large-scale-change added 'default_applicable_licenses' to import
-    // all of the 'license_kinds' from "frameworks_base_license"
-    // to get the below license kinds:
-    //   SPDX-license-identifier-Apache-2.0
-    //   SPDX-license-identifier-CPL-1.0
-    default_applicable_licenses: ["frameworks_base_license"],
-}
-
 java_sdk_library {
     name: "android.test.base",
 
-    srcs: [":android-test-base-sources"],
+    srcs: [
+        ":android-test-base-sources",
+        ":frameworks-base-test-junit-framework",
+    ],
 
     errorprone: {
         javacflags: ["-Xep:DepAnn:ERROR"],
@@ -55,18 +52,27 @@ java_sdk_library {
     hiddenapi_additional_annotations: [
         "android.test.base-hiddenapi-annotations",
     ],
+    dist_group: "android",
 }
 
 // Build the android.test.base_static library
 // ==========================================
-// This is only intended for inclusion in the android.test.runner-minus-junit,
-// robolectric_android-all-stub and repackaged.android.test.* libraries.
+// This is only intended for use by the android.test.runner-minus-junit
+// library.
+//
 // Must not be used elsewhere.
+//
 java_library_static {
     name: "android.test.base_static",
+    visibility: [
+        "//frameworks/base/test-runner",
+    ],
     installable: false,
 
-    srcs: [":android-test-base-sources"],
+    srcs: [
+        ":android-test-base-sources",
+        ":frameworks-base-test-junit-framework",
+    ],
 
     errorprone: {
         javacflags: ["-Xep:DepAnn:ERROR"],
@@ -78,34 +84,15 @@ java_library_static {
     sdk_version: "current",
 }
 
-// Build the repackaged.android.test.base library
-// ==============================================
-// This contains repackaged versions of the classes from
-// android.test.base.
-java_library_static {
-    name: "repackaged.android.test.base",
-
-    sdk_version: "current",
-    static_libs: ["android.test.base_static"],
-
-    jarjar_rules: "jarjar-rules.txt",
-    // Pin java_version until jarjar is certified to support later versions. http://b/72703434
-    java_version: "1.8",
-}
-
 // Build the android.test.base-minus-junit library
 // ===============================================
 // This contains the android.test classes from android.test.base plus
-// the com.android.internal.util.Predicate[s] classes. This is only
-// intended for inclusion in android.test.legacy and in
-// android.test.base-hiddenapi-annotations to avoid a dependency cycle and must
-// not be used elsewhere.
+// the com.android.internal.util.Predicate[s] classes.
 java_library_static {
     name: "android.test.base-minus-junit",
 
     srcs: [
-        "src/android/**/*.java",
-        "src/com/**/*.java",
+        "src/**/*.java",
     ],
 
     sdk_version: "current",
@@ -120,12 +107,13 @@ filegroup {
     path: "src",
 }
 
-// Make the current.txt available for use by the cts/tests/signature tests.
+// Make the current.txt available for use by the cts/tests/signature and /vendor tests.
 // ========================================================================
 filegroup {
     name: "android-test-base-current.txt",
     visibility: [
         "//cts/tests/signature/api",
+        "//vendor:__subpackages__",
     ],
     srcs: [
         "api/current.txt",

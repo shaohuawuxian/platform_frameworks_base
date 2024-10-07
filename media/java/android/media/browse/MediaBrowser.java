@@ -25,7 +25,6 @@ import android.content.Intent;
 import android.content.ServiceConnection;
 import android.content.pm.ParceledListSlice;
 import android.media.MediaDescription;
-import android.media.session.MediaController;
 import android.media.session.MediaSession;
 import android.os.Binder;
 import android.os.Bundle;
@@ -698,6 +697,19 @@ public final class MediaBrowser {
         });
     }
 
+    private void onDisconnectRequested(ServiceCallbacks callback) {
+        mHandler.post(
+                () -> {
+                    Log.i(TAG, "onDisconnectRequest for " + mServiceComponent);
+
+                    if (!isCurrent(callback, "onDisconnectRequest")) {
+                        return;
+                    }
+                    forceCloseConnection();
+                    mCallback.onDisconnected();
+                });
+    }
+
     /**
      * Return true if {@code callback} is the current ServiceCallbacks. Also logs if it's not.
      */
@@ -757,8 +769,8 @@ public final class MediaBrowser {
          * Flag: Indicates that the item is playable.
          * <p>
          * The id of this item may be passed to
-         * {@link MediaController.TransportControls#playFromMediaId(String, Bundle)}
-         * to start playing it.
+         * {@link android.media.session.MediaController.TransportControls
+         * #playFromMediaId(String, Bundle)} to start playing it.
          * </p>
          */
         public static final int FLAG_PLAYABLE = 1 << 1;
@@ -880,6 +892,19 @@ public final class MediaBrowser {
          * Invoked when the connection to the media browser failed.
          */
         public void onConnectionFailed() {
+        }
+
+        /**
+         * Invoked after disconnecting by request of the {@link MediaBrowserService}.
+         *
+         * <p>The default implementation of this method calls {@link #onConnectionFailed()}.
+         *
+         * @hide
+         */
+        // TODO: b/185136506 - Consider publishing this API in the next window for API changes, if
+        // the need arises.
+        public void onDisconnected() {
+            onConnectionFailed();
         }
     }
 
@@ -1107,16 +1132,18 @@ public final class MediaBrowser {
         }
 
         @Override
-        public void onLoadChildren(String parentId, ParceledListSlice list) {
-            onLoadChildrenWithOptions(parentId, list, null);
-        }
-
-        @Override
-        public void onLoadChildrenWithOptions(String parentId, ParceledListSlice list,
-                final Bundle options) {
+        public void onLoadChildren(String parentId, ParceledListSlice list, Bundle options) {
             MediaBrowser mediaBrowser = mMediaBrowser.get();
             if (mediaBrowser != null) {
                 mediaBrowser.onLoadChildren(this, parentId, list, options);
+            }
+        }
+
+        @Override
+        public void onDisconnect() {
+            MediaBrowser mediaBrowser = mMediaBrowser.get();
+            if (mediaBrowser != null) {
+                mediaBrowser.onDisconnectRequested(this);
             }
         }
     }

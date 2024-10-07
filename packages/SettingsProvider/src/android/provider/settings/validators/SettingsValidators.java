@@ -16,6 +16,7 @@
 
 package android.provider.settings.validators;
 
+import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.content.ComponentName;
 import android.net.Uri;
@@ -24,7 +25,6 @@ import android.text.TextUtils;
 import org.json.JSONException;
 import org.json.JSONObject;
 
-import java.text.SimpleDateFormat;
 import java.util.Locale;
 
 /**
@@ -45,9 +45,15 @@ public class SettingsValidators {
         }
     };
 
+    public static final Validator FONT_SCALE_VALIDATOR = new InclusiveFloatRangeValidator(0.25f,
+            5.0f);
+
     public static final Validator NON_NEGATIVE_INTEGER_VALIDATOR = new Validator() {
         @Override
         public boolean validate(@Nullable String value) {
+            if (value == null) {
+                return true;
+            }
             try {
                 return Integer.parseInt(value) >= 0;
             } catch (NumberFormatException e) {
@@ -59,6 +65,9 @@ public class SettingsValidators {
     public static final Validator ANY_INTEGER_VALIDATOR = new Validator() {
         @Override
         public boolean validate(@Nullable String value) {
+            if (value == null) {
+                return true;
+            }
             try {
                 Integer.parseInt(value);
                 return true;
@@ -68,9 +77,26 @@ public class SettingsValidators {
         }
     };
 
+    public static final Validator NON_NEGATIVE_FLOAT_VALIDATOR = new Validator() {
+        @Override
+        public boolean validate(@Nullable String value) {
+            if (value == null) {
+                return true;
+            }
+            try {
+                return Float.parseFloat(value) >= 0.0f;
+            } catch (NumberFormatException e) {
+                return false;
+            }
+        }
+    };
+
     public static final Validator URI_VALIDATOR = new Validator() {
         @Override
         public boolean validate(@Nullable String value) {
+            if (value == null) {
+                return true;
+            }
             try {
                 Uri.decode(value);
                 return true;
@@ -87,7 +113,7 @@ public class SettingsValidators {
      */
     public static final Validator COMPONENT_NAME_VALIDATOR = new Validator() {
         @Override
-        public boolean validate(@Nullable String value) {
+        public boolean validate(@NonNull String value) {
             return value != null && ComponentName.unflattenFromString(value) != null;
         }
     };
@@ -104,18 +130,15 @@ public class SettingsValidators {
 
     public static final Validator PACKAGE_NAME_VALIDATOR = new Validator() {
         @Override
-        public boolean validate(@Nullable String value) {
+        public boolean validate(@NonNull String value) {
             return value != null && isStringPackageName(value);
         }
 
-        private boolean isStringPackageName(String value) {
+        private boolean isStringPackageName(@NonNull String value) {
             // The name may contain uppercase or lowercase letters ('A' through 'Z'), numbers,
             // and underscores ('_'). However, individual package name parts may only
             // start with letters.
             // (https://developer.android.com/guide/topics/manifest/manifest-element.html#package)
-            if (value == null) {
-                return false;
-            }
             String[] subparts = value.split("\\.");
             boolean isValidPackageName = true;
             for (String subpart : subparts) {
@@ -143,7 +166,7 @@ public class SettingsValidators {
         @Override
         public boolean validate(@Nullable String value) {
             if (value == null) {
-                return false;
+                return true;
             }
             return value.length() <= MAX_IPV6_LENGTH;
         }
@@ -153,7 +176,7 @@ public class SettingsValidators {
         @Override
         public boolean validate(@Nullable String value) {
             if (value == null) {
-                return false;
+                return true;
             }
             Locale[] validLocales = Locale.getAvailableLocales();
             for (Locale locale : validLocales) {
@@ -167,6 +190,9 @@ public class SettingsValidators {
 
     /** {@link Validator} that checks whether a value is a valid {@link JSONObject}. */
     public static final Validator JSON_OBJECT_VALIDATOR = (value) -> {
+        if (value == null) {
+            return true;
+        }
         if (TextUtils.isEmpty(value)) {
             return false;
         }
@@ -181,15 +207,6 @@ public class SettingsValidators {
     public static final Validator TTS_LIST_VALIDATOR = new TTSListValidator();
 
     public static final Validator TILE_LIST_VALIDATOR = new TileListValidator();
-
-    static final Validator DATE_FORMAT_VALIDATOR = value -> {
-        try {
-            new SimpleDateFormat(value);
-            return true;
-        } catch (IllegalArgumentException | NullPointerException e) {
-            return false;
-        }
-    };
 
     static final Validator COLON_SEPARATED_COMPONENT_LIST_VALIDATOR =
             new ComponentNameListValidator(":");
@@ -211,11 +228,52 @@ public class SettingsValidators {
     static final Validator NONE_NEGATIVE_LONG_VALIDATOR = new Validator() {
         @Override
         public boolean validate(String value) {
+            if (value == null) {
+                return true;
+            }
             try {
                 return Long.parseLong(value) >= 0;
             } catch (NumberFormatException e) {
                 return false;
             }
+        }
+    };
+
+    static final Validator ANY_LONG_VALIDATOR = value -> {
+        if (value == null) {
+            return true;
+        }
+        try {
+            Long.parseLong(value);
+            return true;
+        } catch (NumberFormatException e) {
+            return false;
+        }
+    };
+
+    static final Validator CREDENTIAL_SERVICE_VALIDATOR = new Validator() {
+        @Override
+        public boolean validate(String value) {
+            if (value == null || value.equals("")) {
+                return true;
+            }
+
+            return COLON_SEPARATED_COMPONENT_LIST_VALIDATOR.validate(value);
+        }
+    };
+
+    static final Validator AUTOFILL_SERVICE_VALIDATOR = new Validator() {
+        @Override
+        public boolean validate(String value) {
+            if (value == null || value.equals("")) {
+                return true;
+            }
+
+            if (value.equals("credential-provider")) {
+               return true;
+            }
+
+            return NULLABLE_COMPONENT_NAME_VALIDATOR.validate(value);
         }
     };
 }

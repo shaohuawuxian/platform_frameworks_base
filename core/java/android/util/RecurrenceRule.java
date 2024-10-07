@@ -16,6 +16,7 @@
 
 package android.util;
 
+import android.annotation.Nullable;
 import android.compat.annotation.UnsupportedAppUsage;
 import android.os.Build;
 import android.os.Parcel;
@@ -41,6 +42,7 @@ import java.util.Objects;
  *
  * @hide
  */
+@android.ravenwood.annotation.RavenwoodKeepWholeClass
 public class RecurrenceRule implements Parcelable {
     private static final String TAG = "RecurrenceRule";
     private static final boolean LOGD = Log.isLoggable(TAG, Log.DEBUG);
@@ -131,7 +133,7 @@ public class RecurrenceRule implements Parcelable {
     }
 
     @Override
-    public boolean equals(Object obj) {
+    public boolean equals(@Nullable Object obj) {
         if (obj instanceof RecurrenceRule) {
             final RecurrenceRule other = (RecurrenceRule) obj;
             return Objects.equals(start, other.start)

@@ -24,8 +24,8 @@ import android.content.Context;
 import android.content.pm.PackageInfo;
 import android.os.Build;
 import android.os.Process;
-import android.os.RemoteException;
 import android.util.Log;
+import android.util.Slog;
 
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.server.LocalServices;
@@ -87,8 +87,12 @@ public class WebViewLibraryLoader {
             } finally {
                 // We must do our best to always notify the update service, even if something fails.
                 try {
-                    WebViewFactory.getUpdateServiceUnchecked().notifyRelroCreationCompleted();
-                } catch (RemoteException e) {
+                    if (Flags.updateServiceIpcWrapper()) {
+                        WebViewUpdateManager.getInstance().notifyRelroCreationCompleted();
+                    } else {
+                        WebViewFactory.getUpdateServiceUnchecked().notifyRelroCreationCompleted();
+                    }
+                } catch (Exception e) {
                     Log.e(LOGTAG, "error notifying update service", e);
                 }
 
@@ -114,8 +118,12 @@ public class WebViewLibraryLoader {
             public void run() {
                 try {
                     Log.e(LOGTAG, "relro file creator for " + abi + " crashed. Proceeding without");
-                    WebViewFactory.getUpdateService().notifyRelroCreationCompleted();
-                } catch (RemoteException e) {
+                    if (Flags.updateServiceIpcWrapper()) {
+                        WebViewUpdateManager.getInstance().notifyRelroCreationCompleted();
+                    } else {
+                        WebViewFactory.getUpdateService().notifyRelroCreationCompleted();
+                    }
+                } catch (Exception e) {
                     Log.e(LOGTAG, "Cannot reach WebViewUpdateService. " + e.getMessage());
                 }
             }
@@ -130,7 +138,7 @@ public class WebViewLibraryLoader {
             if (!success) throw new Exception("Failed to start the relro file creator process");
         } catch (Throwable t) {
             // Log and discard errors as we must not crash the system server.
-            Log.e(LOGTAG, "error starting relro file creator for abi " + abi, t);
+            Slog.wtf(LOGTAG, "error starting relro file creator for abi " + abi, t);
             crashHandler.run();
         }
     }
@@ -178,12 +186,23 @@ public class WebViewLibraryLoader {
      */
     static void reserveAddressSpaceInZygote() {
         System.loadLibrary("webviewchromium_loader");
-        boolean is64Bit = VMRuntime.getRuntime().is64Bit();
-        // On 64-bit address space is really cheap and we can reserve 1GB which is plenty.
-        // On 32-bit it's fairly scarce and we should keep it to a realistic number that
-        // permits some future growth but doesn't hog space: we use 130MB which is roughly
-        // what was calculated on older OS versions in practice.
-        long addressSpaceToReserve = is64Bit ? 1 * 1024 * 1024 * 1024 : 130 * 1024 * 1024;
+        long addressSpaceToReserve;
+        if (VMRuntime.getRuntime().is64Bit()) {
+            // On 64-bit address space is really cheap and we can reserve 1GB which is plenty.
+            addressSpaceToReserve = 1 * 1024 * 1024 * 1024;
+        } else if (VMRuntime.getRuntime().vmInstructionSet().equals("arm")) {
+            // On 32-bit the address space is fairly scarce, hence we should keep it to a realistic
+            // number that permits some future growth but doesn't hog space. For ARM we use 130MB
+            // which is roughly what was calculated on older OS versions. The size has been
+            // growing gradually, but a few efforts have offset it back to the size close to the
+            // original.
+            addressSpaceToReserve = 130 * 1024 * 1024;
+        } else {
+            // The number below was obtained for a binary used for x86 emulators, allowing some
+            // natural growth.
+            addressSpaceToReserve = 190 * 1024 * 1024;
+        }
+
         sAddressSpaceReserved = nativeReserveAddressSpace(addressSpaceToReserve);
 
         if (sAddressSpaceReserved) {

@@ -36,6 +36,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.atLeast;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -54,6 +55,8 @@ import androidx.test.InstrumentationRegistry;
 import androidx.test.filters.SmallTest;
 import androidx.test.runner.AndroidJUnit4;
 
+import com.android.internal.util.ArrayUtils;
+import com.android.security.SecureBox;
 import com.android.server.locksettings.recoverablekeystore.storage.RecoverableKeyStoreDb;
 import com.android.server.locksettings.recoverablekeystore.storage.RecoverySnapshotStorage;
 
@@ -86,6 +89,7 @@ public class KeySyncTaskTest {
     private static final String WRAPPING_KEY_ALIAS = "KeySyncTaskTest/WrappingKey";
     private static final String DATABASE_FILE_NAME = "recoverablekeystore.db";
     private static final int TEST_USER_ID = 1000;
+    private static final int TEST_USER_ID_2 = 1002;
     private static final int TEST_RECOVERY_AGENT_UID = 10009;
     private static final int TEST_RECOVERY_AGENT_UID2 = 10010;
     private static final byte[] TEST_VAULT_HANDLE =
@@ -295,13 +299,15 @@ public class KeySyncTaskTest {
                 TestData.getInsecureCertPathForEndpoint1());
         addApplicationKey(TEST_USER_ID, TEST_RECOVERY_AGENT_UID, appKeyAlias);
 
+        setExpectedScryptArgument(password.getBytes());
+
         mKeySyncTask.run();
 
         KeyChainSnapshot keyChainSnapshot = mRecoverySnapshotStorage.get(TEST_RECOVERY_AGENT_UID);
         assertThat(keyChainSnapshot.getKeyChainProtectionParams()).hasSize(1);
         assertThat(keyChainSnapshot.getKeyChainProtectionParams().get(0).getLockScreenUiFormat()).
                 isEqualTo(UI_FORMAT_PASSWORD);
-        verify(mMockScrypt).scrypt(eq(password.getBytes()), any(),
+        verify(mMockScrypt).scrypt(any(), any(),
                 eq(KeySyncTask.SCRYPT_PARAM_N), eq(KeySyncTask.SCRYPT_PARAM_R),
                 eq(KeySyncTask.SCRYPT_PARAM_P), eq(KeySyncTask.SCRYPT_PARAM_OUTLEN_BYTES));
         KeyDerivationParams keyDerivationParams =
@@ -309,6 +315,44 @@ public class KeySyncTaskTest {
         assertThat(keyDerivationParams.getAlgorithm()).isEqualTo(
                 KeyDerivationParams.ALGORITHM_SCRYPT);
         assertThat(keyDerivationParams.getMemoryDifficulty()).isEqualTo(KeySyncTask.SCRYPT_PARAM_N);
+    }
+
+    @Test
+    public void run_zeroizedCredential() throws Exception {
+        String password = TrustedRootCertificates.INSECURE_PASSWORD_PREFIX + "123";
+        String appKeyAlias = TrustedRootCertificates.INSECURE_KEY_ALIAS_PREFIX + "alias";
+        byte[] zeroizedCredential = password.getBytes();
+        mKeySyncTask = new KeySyncTask(
+                mRecoverableKeyStoreDb,
+                mRecoverySnapshotStorage,
+                mSnapshotListenersStorage,
+                TEST_USER_ID,
+                CREDENTIAL_TYPE_PASSWORD,
+                /*credential=*/ zeroizedCredential,
+                /*credentialUpdated=*/ false,
+                mPlatformKeyManager,
+                mTestOnlyInsecureCertificateHelper,
+                mMockScrypt);
+        mRecoverableKeyStoreDb.setServerParams(
+                TEST_USER_ID, TEST_RECOVERY_AGENT_UID, TEST_VAULT_HANDLE);
+        mRecoverableKeyStoreDb.setPlatformKeyGenerationId(TEST_USER_ID, TEST_GENERATION_ID);
+        mRecoverableKeyStoreDb.setActiveRootOfTrust(TEST_USER_ID, TEST_RECOVERY_AGENT_UID,
+                TrustedRootCertificates.TEST_ONLY_INSECURE_CERTIFICATE_ALIAS);
+        mRecoverableKeyStoreDb.setRecoveryServiceCertPath(
+                TEST_USER_ID, TEST_RECOVERY_AGENT_UID,
+                TrustedRootCertificates.TEST_ONLY_INSECURE_CERTIFICATE_ALIAS,
+                TestData.getInsecureCertPathForEndpoint1());
+        addApplicationKey(TEST_USER_ID, TEST_RECOVERY_AGENT_UID, appKeyAlias);
+
+        // Need to check array value during method call since it is modified later.
+        setExpectedScryptArgument(password.getBytes());
+
+        Arrays.fill(zeroizedCredential, (byte) 0);
+        mKeySyncTask.run();
+
+        verify(mMockScrypt).scrypt(any(), any(),
+                eq(KeySyncTask.SCRYPT_PARAM_N), eq(KeySyncTask.SCRYPT_PARAM_R),
+                eq(KeySyncTask.SCRYPT_PARAM_P), eq(KeySyncTask.SCRYPT_PARAM_OUTLEN_BYTES));
     }
 
     @Test
@@ -366,13 +410,15 @@ public class KeySyncTaskTest {
         mRecoverableKeyStoreDb.setRecoveryServiceCertPath(
                 TEST_USER_ID, TEST_RECOVERY_AGENT_UID, TEST_ROOT_CERT_ALIAS, TestData.CERT_PATH_1);
 
+        setExpectedScryptArgument(shortPassword.getBytes());
+
         mKeySyncTask.run();
 
         KeyChainSnapshot keyChainSnapshot = mRecoverySnapshotStorage.get(TEST_RECOVERY_AGENT_UID);
         assertThat(keyChainSnapshot.getKeyChainProtectionParams()).hasSize(1);
         assertThat(keyChainSnapshot.getKeyChainProtectionParams().get(0).getLockScreenUiFormat()).
                 isEqualTo(UI_FORMAT_PASSWORD);
-        verify(mMockScrypt).scrypt(eq(shortPassword.getBytes()), any(),
+        verify(mMockScrypt).scrypt(any(), any(),
                 eq(KeySyncTask.SCRYPT_PARAM_N), eq(KeySyncTask.SCRYPT_PARAM_R),
                 eq(KeySyncTask.SCRYPT_PARAM_P), eq(KeySyncTask.SCRYPT_PARAM_OUTLEN_BYTES));
         KeyDerivationParams keyDerivationParams =
@@ -467,7 +513,7 @@ public class KeySyncTaskTest {
         verify(mTestOnlyInsecureCertificateHelper, atLeast(1))
                 .isTestOnlyCertificateAlias(eq(TEST_ROOT_CERT_ALIAS));
 
-        // no whitelists check
+        // no allowlists check
         verify(mTestOnlyInsecureCertificateHelper, never())
                 .doesCredentialSupportInsecureMode(anyInt(), any());
         verify(mTestOnlyInsecureCertificateHelper, never())
@@ -648,13 +694,15 @@ public class KeySyncTaskTest {
         when(mSnapshotListenersStorage.hasListener(TEST_RECOVERY_AGENT_UID)).thenReturn(true);
         addApplicationKey(TEST_USER_ID, TEST_RECOVERY_AGENT_UID, TEST_APP_KEY_ALIAS);
 
+        setExpectedScryptArgument(password.getBytes());
+
         mKeySyncTask.run();
 
         KeyChainSnapshot keyChainSnapshot = mRecoverySnapshotStorage.get(TEST_RECOVERY_AGENT_UID);
         assertThat(keyChainSnapshot.getKeyChainProtectionParams()).hasSize(1);
         assertThat(keyChainSnapshot.getKeyChainProtectionParams().get(0).getLockScreenUiFormat()).
                 isEqualTo(UI_FORMAT_PASSWORD);
-        verify(mMockScrypt).scrypt(eq(password.getBytes()), any(),
+        verify(mMockScrypt).scrypt(any(), any(),
                 eq(KeySyncTask.SCRYPT_PARAM_N), eq(KeySyncTask.SCRYPT_PARAM_R),
                 eq(KeySyncTask.SCRYPT_PARAM_P), eq(KeySyncTask.SCRYPT_PARAM_OUTLEN_BYTES));
     }
@@ -677,8 +725,9 @@ public class KeySyncTaskTest {
         mRecoverableKeyStoreDb.setRecoveryServiceCertPath(
                 TEST_USER_ID, TEST_RECOVERY_AGENT_UID, TEST_ROOT_CERT_ALIAS, TestData.CERT_PATH_1);
         when(mSnapshotListenersStorage.hasListener(TEST_RECOVERY_AGENT_UID)).thenReturn(true);
-        SecretKey applicationKey =
-                addApplicationKey(TEST_USER_ID, TEST_RECOVERY_AGENT_UID, TEST_APP_KEY_ALIAS);
+        addApplicationKey(TEST_USER_ID, TEST_RECOVERY_AGENT_UID, TEST_APP_KEY_ALIAS);
+
+        setExpectedScryptArgument(pin.getBytes());
 
         mKeySyncTask.run();
 
@@ -687,7 +736,7 @@ public class KeySyncTaskTest {
         // Password with only digits is changed to pin.
         assertThat(keyChainSnapshot.getKeyChainProtectionParams().get(0).getLockScreenUiFormat()).
                 isEqualTo(UI_FORMAT_PIN);
-        verify(mMockScrypt).scrypt(eq(pin.getBytes()), any(),
+        verify(mMockScrypt).scrypt(any(), any(),
                 eq(KeySyncTask.SCRYPT_PARAM_N), eq(KeySyncTask.SCRYPT_PARAM_R),
                 eq(KeySyncTask.SCRYPT_PARAM_P), eq(KeySyncTask.SCRYPT_PARAM_OUTLEN_BYTES));
     }
@@ -709,8 +758,7 @@ public class KeySyncTaskTest {
         mRecoverableKeyStoreDb.setRecoveryServiceCertPath(
                 TEST_USER_ID, TEST_RECOVERY_AGENT_UID, TEST_ROOT_CERT_ALIAS, TestData.CERT_PATH_1);
         when(mSnapshotListenersStorage.hasListener(TEST_RECOVERY_AGENT_UID)).thenReturn(true);
-        SecretKey applicationKey =
-                addApplicationKey(TEST_USER_ID, TEST_RECOVERY_AGENT_UID, TEST_APP_KEY_ALIAS);
+        addApplicationKey(TEST_USER_ID, TEST_RECOVERY_AGENT_UID, TEST_APP_KEY_ALIAS);
 
         mKeySyncTask.run();
 
@@ -777,6 +825,48 @@ public class KeySyncTaskTest {
     }
 
     @Test
+    public void run_unlock_keepsRemoteLskfVerificationCounter() throws Exception {
+        mRecoverableKeyStoreDb.setBadRemoteGuessCounter(TEST_USER_ID, 5);
+        mRecoverableKeyStoreDb.setBadRemoteGuessCounter(TEST_USER_ID_2, 4);
+        mKeySyncTask = new KeySyncTask(
+          mRecoverableKeyStoreDb,
+          mRecoverySnapshotStorage,
+          mSnapshotListenersStorage,
+          TEST_USER_ID,
+          CREDENTIAL_TYPE_PIN,
+          "12345".getBytes(),
+          /*credentialUpdated=*/ false,
+          mPlatformKeyManager,
+          mTestOnlyInsecureCertificateHelper,
+          mMockScrypt);
+        mKeySyncTask.run();
+
+        assertThat(mRecoverableKeyStoreDb.getBadRemoteGuessCounter(TEST_USER_ID)).isEqualTo(5);
+        assertThat(mRecoverableKeyStoreDb.getBadRemoteGuessCounter(TEST_USER_ID_2)).isEqualTo(4);
+    }
+
+    @Test
+    public void run_secretChange_resetsRemoteLskfVerificationCounter() throws Exception {
+        mRecoverableKeyStoreDb.setBadRemoteGuessCounter(TEST_USER_ID, 5);
+        mRecoverableKeyStoreDb.setBadRemoteGuessCounter(TEST_USER_ID_2, 4);
+        mKeySyncTask = new KeySyncTask(
+          mRecoverableKeyStoreDb,
+          mRecoverySnapshotStorage,
+          mSnapshotListenersStorage,
+          TEST_USER_ID,
+          CREDENTIAL_TYPE_PIN,
+          "12345".getBytes(),
+          /*credentialUpdated=*/ true,
+          mPlatformKeyManager,
+          mTestOnlyInsecureCertificateHelper,
+          mMockScrypt);
+        mKeySyncTask.run();
+
+        assertThat(mRecoverableKeyStoreDb.getBadRemoteGuessCounter(TEST_USER_ID)).isEqualTo(0);
+        assertThat(mRecoverableKeyStoreDb.getBadRemoteGuessCounter(TEST_USER_ID_2)).isEqualTo(4);
+    }
+
+    @Test
     public void run_customLockScreen_RecoveryStatusFailure() throws Exception {
       mKeySyncTask = new KeySyncTask(
           mRecoverableKeyStoreDb,
@@ -835,7 +925,7 @@ public class KeySyncTaskTest {
         byte[] locallyEncryptedKey = SecureBox.decrypt(
                 TestData.getInsecurePrivateKeyForEndpoint1(),
                 /*sharedSecret=*/ KeySyncUtils.calculateThmKfHash(lockScreenHash),
-                /*header=*/ KeySyncUtils.concat(THM_ENCRYPTED_RECOVERY_KEY_HEADER, vaultParams),
+                /*header=*/ ArrayUtils.concat(THM_ENCRYPTED_RECOVERY_KEY_HEADER, vaultParams),
                 encryptedKey
         );
         return KeySyncUtils.decryptRecoveryKey(lockScreenHash, locallyEncryptedKey);
@@ -867,5 +957,15 @@ public class KeySyncTaskTest {
         byte[] bytes = new byte[n];
         new Random().nextBytes(bytes);
         return bytes;
+    }
+
+    private void setExpectedScryptArgument(byte[] credentials) {
+        doAnswer(invocation -> {
+            assertThat((byte[]) invocation.getArguments()[0]).isEqualTo(credentials);
+            return invocation.callRealMethod();
+        }).when(mMockScrypt).scrypt(any(), any(),
+                eq(KeySyncTask.SCRYPT_PARAM_N), eq(KeySyncTask.SCRYPT_PARAM_R),
+                eq(KeySyncTask.SCRYPT_PARAM_P), eq(KeySyncTask.SCRYPT_PARAM_OUTLEN_BYTES));
+
     }
 }

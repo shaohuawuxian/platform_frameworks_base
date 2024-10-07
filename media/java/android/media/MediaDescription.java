@@ -142,10 +142,10 @@ public class MediaDescription implements Parcelable {
         mTitle = TextUtils.CHAR_SEQUENCE_CREATOR.createFromParcel(in);
         mSubtitle = TextUtils.CHAR_SEQUENCE_CREATOR.createFromParcel(in);
         mDescription = TextUtils.CHAR_SEQUENCE_CREATOR.createFromParcel(in);
-        mIcon = in.readParcelable(null);
-        mIconUri = in.readParcelable(null);
+        mIcon = in.readParcelable(null, android.graphics.Bitmap.class);
+        mIconUri = in.readParcelable(null, android.net.Uri.class);
         mExtras = in.readBundle();
-        mMediaUri = in.readParcelable(null);
+        mMediaUri = in.readParcelable(null, android.net.Uri.class);
     }
 
     /**
@@ -397,8 +397,14 @@ public class MediaDescription implements Parcelable {
          * @return a new media description.
          */
         public MediaDescription build() {
-            return new MediaDescription(mMediaId, mTitle, mSubtitle, mDescription, mIcon, mIconUri,
-                    mExtras, mMediaUri);
+            if (com.android.media.performance.flags.Flags.mediaDescriptionAshmemBitmap()) {
+                Bitmap icon = mIcon != null ? mIcon.asShared() : null;
+                return new MediaDescription(mMediaId, mTitle, mSubtitle, mDescription, icon,
+                        mIconUri, mExtras, mMediaUri);
+            } else {
+                return new MediaDescription(mMediaId, mTitle, mSubtitle, mDescription, mIcon,
+                        mIconUri, mExtras, mMediaUri);
+            }
         }
     }
 }

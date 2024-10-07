@@ -41,13 +41,25 @@ public final class GnssRequest implements Parcelable {
      *
      * <p>If true, GNSS chipset switches off duty cycling. In such a mode, no clock
      * discontinuities are expected, and when supported, carrier phase should be continuous in
-     * good signal conditions. All non-blacklisted, healthy constellations, satellites and
+     * good signal conditions. All non-denylisted, healthy constellations, satellites and
      * frequency bands that the chipset supports must be reported in this mode. The GNSS chipset
      * is allowed to consume more power in this mode. If false, GNSS chipset optimizes power via
      * duty cycling, constellations and frequency limits, etc.
+     *
+     * <p>Full GNSS tracking mode affects GnssMeasurement and other GNSS functionalities
+     * including GNSS location.
      */
     public boolean isFullTracking() {
         return mFullTracking;
+    }
+
+    /**
+     * Converts the {@link GnssRequest} into a {@link GnssMeasurementRequest}.
+     * @hide
+     */
+    @NonNull
+    public GnssMeasurementRequest toGnssMeasurementRequest() {
+        return new GnssMeasurementRequest.Builder().setFullTracking(isFullTracking()).build();
     }
 
     @NonNull
@@ -70,7 +82,9 @@ public final class GnssRequest implements Parcelable {
     public String toString() {
         StringBuilder s = new StringBuilder();
         s.append("GnssRequest[");
-        s.append("FullTracking=").append(mFullTracking);
+        if (mFullTracking) {
+            s.append("FullTracking");
+        }
         s.append(']');
         return s.toString();
     }
@@ -124,10 +138,13 @@ public final class GnssRequest implements Parcelable {
          *
          * <p>If true, GNSS chipset switches off duty cycling. In such a mode, no clock
          * discontinuities are expected, and when supported, carrier phase should be continuous in
-         * good signal conditions. All non-blacklisted, healthy constellations, satellites and
+         * good signal conditions. All non-denylisted, healthy constellations, satellites and
          * frequency bands that the chipset supports must be reported in this mode. The GNSS chipset
          * is allowed to consume more power in this mode. If false, GNSS chipset optimizes power via
          * duty cycling, constellations and frequency limits, etc.
+         *
+         * <p>Full GNSS tracking mode affects GnssMeasurement and other GNSS functionalities
+         * including GNSS location.
          *
          * <p>Full tracking requests always override non-full tracking requests. If any full
          * tracking request occurs, all listeners on the device will receive full tracking GNSS

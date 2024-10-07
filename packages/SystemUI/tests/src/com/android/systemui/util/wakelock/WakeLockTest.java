@@ -19,21 +19,44 @@ package com.android.systemui.util.wakelock;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
+import android.os.Build;
 import android.os.PowerManager;
+import android.platform.test.flag.junit.FlagsParameterization;
+import android.platform.test.flag.junit.SetFlagsRule;
 
 import androidx.test.filters.SmallTest;
-import androidx.test.runner.AndroidJUnit4;
 
+import com.android.systemui.Flags;
 import com.android.systemui.SysuiTestCase;
 
 import org.junit.After;
+import org.junit.Assume;
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
+import java.util.List;
+
+import platform.test.runner.parameterized.ParameterizedAndroidJunit4;
+import platform.test.runner.parameterized.Parameters;
+
+
 @SmallTest
-@RunWith(AndroidJUnit4.class)
+@RunWith(ParameterizedAndroidJunit4.class)
 public class WakeLockTest extends SysuiTestCase {
+
+    @Parameters(name = "{0}")
+    public static List<FlagsParameterization> getFlags() {
+        return FlagsParameterization.allCombinationsOf(
+                Flags.FLAG_DELAYED_WAKELOCK_RELEASE_ON_BACKGROUND_THREAD);
+    }
+
+    @Rule public final SetFlagsRule mSetFlagsRule;
+
+    public WakeLockTest(FlagsParameterization flags) {
+        mSetFlagsRule = new SetFlagsRule(SetFlagsRule.DefaultInitValueType.NULL_DEFAULT, flags);
+    }
 
     private static final String WHY = "test";
     WakeLock mWakeLock;
@@ -41,8 +64,10 @@ public class WakeLockTest extends SysuiTestCase {
 
     @Before
     public void setUp() {
-        mInner = WakeLock.createPartialInner(mContext, WakeLockTest.class.getName());
-        mWakeLock = WakeLock.wrap(mInner, 20000);
+        mInner = WakeLock.createWakeLockInner(mContext,
+                WakeLockTest.class.getName(),
+                PowerManager.PARTIAL_WAKE_LOCK);
+        mWakeLock = WakeLock.wrap(mInner, null, 20000);
     }
 
     @After
@@ -84,5 +109,12 @@ public class WakeLockTest extends SysuiTestCase {
 
         assertTrue(ran[0]);
         assertFalse(mInner.isHeld());
+    }
+
+    @Test
+    public void prodBuild_wakeLock_releaseWithoutAcquire_noThrow() {
+        Assume.assumeFalse(Build.IS_ENG);
+        // shouldn't throw an exception on production builds
+        mWakeLock.release(WHY);
     }
 }

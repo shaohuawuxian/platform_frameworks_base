@@ -18,16 +18,29 @@ package com.android.server.net;
 
 import static android.Manifest.permission.CONNECTIVITY_USE_RESTRICTED_NETWORKS;
 import static android.Manifest.permission.NETWORK_STACK;
+import static android.app.ActivityManager.MAX_PROCESS_STATE;
+import static android.app.ActivityManager.PROCESS_CAPABILITY_ALL;
+import static android.app.ActivityManager.PROCESS_CAPABILITY_NONE;
+import static android.app.ActivityManager.PROCESS_CAPABILITY_POWER_RESTRICTED_NETWORK;
+import static android.app.ActivityManager.PROCESS_CAPABILITY_USER_RESTRICTED_NETWORK;
+import static android.app.ActivityManager.PROCESS_STATE_IMPORTANT_FOREGROUND;
+import static android.app.ActivityManager.PROCESS_STATE_LAST_ACTIVITY;
+import static android.app.ActivityManager.PROCESS_STATE_SERVICE;
+import static android.app.ActivityManager.PROCESS_STATE_TOP;
 import static android.net.ConnectivityManager.BLOCKED_METERED_REASON_DATA_SAVER;
 import static android.net.ConnectivityManager.BLOCKED_METERED_REASON_USER_RESTRICTED;
+import static android.net.ConnectivityManager.BLOCKED_REASON_APP_BACKGROUND;
 import static android.net.ConnectivityManager.BLOCKED_REASON_APP_STANDBY;
 import static android.net.ConnectivityManager.BLOCKED_REASON_BATTERY_SAVER;
 import static android.net.ConnectivityManager.BLOCKED_REASON_DOZE;
+import static android.net.ConnectivityManager.BLOCKED_REASON_LOW_POWER_STANDBY;
 import static android.net.ConnectivityManager.BLOCKED_REASON_NONE;
 import static android.net.ConnectivityManager.CONNECTIVITY_ACTION;
+import static android.net.ConnectivityManager.FIREWALL_CHAIN_BACKGROUND;
+import static android.net.ConnectivityManager.FIREWALL_CHAIN_LOW_POWER_STANDBY;
+import static android.net.ConnectivityManager.FIREWALL_CHAIN_RESTRICTED;
 import static android.net.ConnectivityManager.TYPE_MOBILE;
 import static android.net.ConnectivityManager.TYPE_WIFI;
-import static android.net.INetd.FIREWALL_CHAIN_RESTRICTED;
 import static android.net.INetd.FIREWALL_RULE_ALLOW;
 import static android.net.NetworkCapabilities.NET_CAPABILITY_NOT_ROAMING;
 import static android.net.NetworkCapabilities.TRANSPORT_CELLULAR;
@@ -38,26 +51,32 @@ import static android.net.NetworkPolicy.WARNING_DISABLED;
 import static android.net.NetworkPolicyManager.ALLOWED_METERED_REASON_FOREGROUND;
 import static android.net.NetworkPolicyManager.ALLOWED_METERED_REASON_SYSTEM;
 import static android.net.NetworkPolicyManager.ALLOWED_REASON_FOREGROUND;
+import static android.net.NetworkPolicyManager.ALLOWED_REASON_LOW_POWER_STANDBY_ALLOWLIST;
 import static android.net.NetworkPolicyManager.ALLOWED_REASON_NONE;
+import static android.net.NetworkPolicyManager.ALLOWED_REASON_NOT_IN_BACKGROUND;
+import static android.net.NetworkPolicyManager.ALLOWED_REASON_POWER_SAVE_ALLOWLIST;
+import static android.net.NetworkPolicyManager.ALLOWED_REASON_POWER_SAVE_EXCEPT_IDLE_ALLOWLIST;
+import static android.net.NetworkPolicyManager.ALLOWED_REASON_RESTRICTED_MODE_PERMISSIONS;
 import static android.net.NetworkPolicyManager.ALLOWED_REASON_SYSTEM;
+import static android.net.NetworkPolicyManager.ALLOWED_REASON_TOP;
+import static android.net.NetworkPolicyManager.BACKGROUND_THRESHOLD_STATE;
 import static android.net.NetworkPolicyManager.FIREWALL_RULE_DEFAULT;
+import static android.net.NetworkPolicyManager.FOREGROUND_THRESHOLD_STATE;
 import static android.net.NetworkPolicyManager.POLICY_ALLOW_METERED_BACKGROUND;
 import static android.net.NetworkPolicyManager.POLICY_NONE;
 import static android.net.NetworkPolicyManager.POLICY_REJECT_METERED_BACKGROUND;
+import static android.net.NetworkPolicyManager.TOP_THRESHOLD_STATE;
 import static android.net.NetworkPolicyManager.allowedReasonsToString;
 import static android.net.NetworkPolicyManager.blockedReasonsToString;
 import static android.net.NetworkPolicyManager.uidPoliciesToString;
 import static android.net.NetworkPolicyManager.uidRulesToString;
 import static android.net.NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK;
-import static android.net.NetworkStats.IFACE_ALL;
 import static android.net.NetworkStats.METERED_NO;
 import static android.net.NetworkStats.METERED_YES;
-import static android.net.NetworkStats.SET_ALL;
-import static android.net.NetworkStats.TAG_ALL;
-import static android.net.NetworkStats.TAG_NONE;
-import static android.net.NetworkTemplate.buildTemplateCarrierMetered;
-import static android.net.NetworkTemplate.buildTemplateWifi;
-import static android.net.TrafficStats.MB_IN_BYTES;
+import static android.net.NetworkTemplate.MATCH_CARRIER;
+import static android.net.NetworkTemplate.MATCH_MOBILE;
+import static android.net.NetworkTemplate.MATCH_WIFI;
+import static android.os.PowerExemptionManager.REASON_OTHER;
 import static android.telephony.CarrierConfigManager.ACTION_CARRIER_CONFIG_CHANGED;
 import static android.telephony.CarrierConfigManager.DATA_CYCLE_THRESHOLD_DISABLED;
 import static android.telephony.CarrierConfigManager.DATA_CYCLE_USE_PLATFORM_DEFAULT;
@@ -74,7 +93,9 @@ import static com.android.server.net.NetworkPolicyManagerService.TYPE_LIMIT;
 import static com.android.server.net.NetworkPolicyManagerService.TYPE_LIMIT_SNOOZED;
 import static com.android.server.net.NetworkPolicyManagerService.TYPE_RAPID;
 import static com.android.server.net.NetworkPolicyManagerService.TYPE_WARNING;
+import static com.android.server.net.NetworkPolicyManagerService.UID_MSG_STATE_CHANGED;
 import static com.android.server.net.NetworkPolicyManagerService.UidBlockedState.getEffectiveBlockedReasons;
+import static com.android.server.net.NetworkPolicyManagerService.normalizeTemplate;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -87,8 +108,10 @@ import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isA;
+import static org.mockito.Mockito.CALLS_REAL_METHODS;
 import static org.mockito.Mockito.atLeast;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.clearInvocations;
@@ -97,6 +120,7 @@ import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.reset;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -107,13 +131,18 @@ import android.app.IActivityManager;
 import android.app.IUidObserver;
 import android.app.Notification;
 import android.app.NotificationManager;
+import android.app.usage.NetworkStats;
+import android.app.usage.NetworkStatsManager;
 import android.app.usage.UsageStatsManagerInternal;
+import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.IPackageManager;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
+import android.content.pm.PackageManagerInternal;
 import android.content.pm.Signature;
 import android.content.pm.UserInfo;
 import android.net.ConnectivityManager;
@@ -123,54 +152,66 @@ import android.net.LinkProperties;
 import android.net.Network;
 import android.net.NetworkCapabilities;
 import android.net.NetworkPolicy;
+import android.net.NetworkPolicyManager;
 import android.net.NetworkStateSnapshot;
-import android.net.NetworkStats;
-import android.net.NetworkStatsHistory;
 import android.net.NetworkTemplate;
 import android.net.TelephonyNetworkSpecifier;
+import android.net.wifi.WifiInfo;
 import android.os.Binder;
+import android.os.Build;
 import android.os.Handler;
 import android.os.INetworkManagementService;
 import android.os.PersistableBundle;
+import android.os.PowerExemptionManager;
+import android.os.PowerManager;
 import android.os.PowerManagerInternal;
 import android.os.PowerSaveState;
+import android.os.Process;
 import android.os.RemoteException;
 import android.os.SimpleClock;
 import android.os.SystemClock;
 import android.os.UserHandle;
 import android.os.UserManager;
 import android.platform.test.annotations.Presubmit;
+import android.platform.test.annotations.RequiresFlagsDisabled;
+import android.platform.test.annotations.RequiresFlagsEnabled;
+import android.platform.test.flag.junit.CheckFlagsRule;
+import android.platform.test.flag.junit.DeviceFlagsValueProvider;
 import android.telephony.CarrierConfigManager;
 import android.telephony.SubscriptionInfo;
 import android.telephony.SubscriptionManager;
 import android.telephony.SubscriptionPlan;
+import android.telephony.TelephonyCallback;
 import android.telephony.TelephonyManager;
-import android.test.suitebuilder.annotation.MediumTest;
 import android.text.TextUtils;
 import android.util.ArrayMap;
+import android.util.ArraySet;
 import android.util.DataUnit;
 import android.util.Log;
 import android.util.Pair;
 import android.util.Range;
 import android.util.RecurrenceRule;
 import android.util.SparseArray;
+import android.util.SparseIntArray;
 
 import androidx.test.InstrumentationRegistry;
 import androidx.test.filters.FlakyTest;
+import androidx.test.filters.MediumTest;
 import androidx.test.runner.AndroidJUnit4;
 
+import com.android.internal.util.ArrayUtils;
 import com.android.internal.util.test.BroadcastInterceptingContext;
 import com.android.internal.util.test.BroadcastInterceptingContext.FutureIntent;
 import com.android.internal.util.test.FsUtil;
 import com.android.server.DeviceIdleInternal;
 import com.android.server.LocalServices;
+import com.android.server.pm.pkg.AndroidPackage;
 import com.android.server.usage.AppStandbyInternal;
-
-import com.google.common.util.concurrent.AbstractFuture;
 
 import libcore.io.Streams;
 
 import org.junit.After;
+import org.junit.Assume;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -202,16 +243,17 @@ import java.time.ZonedDateTime;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Calendar;
+import java.util.HashMap;
 import java.util.Iterator;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.TimeZone;
 import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
+import java.util.function.Consumer;
 import java.util.stream.Collectors;
 
 /**
@@ -223,16 +265,23 @@ import java.util.stream.Collectors;
 public class NetworkPolicyManagerServiceTest {
     private static final String TAG = "NetworkPolicyManagerServiceTest";
 
+    @Rule
+    public final CheckFlagsRule mCheckFlagsRule = DeviceFlagsValueProvider.createCheckFlagsRule();
+
     private static final long TEST_START = 1194220800000L;
     private static final String TEST_IFACE = "test0";
-    private static final String TEST_SSID = "AndroidAP";
+    private static final String TEST_WIFI_NETWORK_KEY = "TestWifiNetworkKey";
     private static final String TEST_IMSI = "310210";
     private static final int TEST_SUB_ID = 42;
-    private static final int TEST_NET_ID = 24;
+    private static final int TEST_SUB_ID2 = 24;
+    private static final Network TEST_NETWORK = mock(Network.class, CALLS_REAL_METHODS);
 
-    private static NetworkTemplate sTemplateWifi = buildTemplateWifi(TEST_SSID);
+    private static NetworkTemplate sTemplateWifi = new NetworkTemplate.Builder(MATCH_WIFI)
+            .setWifiNetworkKeys(Set.of(TEST_WIFI_NETWORK_KEY)).build();
     private static NetworkTemplate sTemplateCarrierMetered =
-            buildTemplateCarrierMetered(TEST_IMSI);
+            new NetworkTemplate.Builder(MATCH_CARRIER)
+                    .setSubscriberIds(Set.of(TEST_IMSI))
+                    .setMeteredness(METERED_YES).build();
 
     /**
      * Path on assets where files used by {@link NetPolicyXml} are located.
@@ -260,18 +309,26 @@ public class NetworkPolicyManagerServiceTest {
     private @Mock CarrierConfigManager mCarrierConfigManager;
     private @Mock TelephonyManager mTelephonyManager;
     private @Mock UserManager mUserManager;
+    private @Mock NetworkStatsManager mStatsManager;
+    private @Mock PowerExemptionManager mPowerExemptionManager;
+    private TestDependencies mDeps;
 
     private ArgumentCaptor<ConnectivityManager.NetworkCallback> mNetworkCallbackCaptor =
             ArgumentCaptor.forClass(ConnectivityManager.NetworkCallback.class);
 
+    private TelephonyCallback.ActiveDataSubscriptionIdListener mActiveDataSubIdListener;
+
     private ActivityManagerInternal mActivityManagerInternal;
-    private NetworkStatsManagerInternal mStatsService;
+    private PackageManagerInternal mPackageManagerInternal;
 
     private IUidObserver mUidObserver;
     private INetworkManagementEventObserver mNetworkObserver;
 
     private NetworkPolicyListenerAnswer mPolicyListener;
     private NetworkPolicyManagerService mService;
+
+    private final ArraySet<BroadcastReceiver> mRegisteredReceivers = new ArraySet<>();
+    private BroadcastReceiver mPowerAllowlistReceiver;
 
     /**
      * In some of the tests while initializing NetworkPolicyManagerService,
@@ -327,18 +384,96 @@ public class NetworkPolicyManagerServiceTest {
         when(usageStats.getIdleUidsForUser(anyInt())).thenReturn(new int[]{});
 
         mActivityManagerInternal = addLocalServiceMock(ActivityManagerInternal.class);
+        mPackageManagerInternal = addLocalServiceMock(PackageManagerInternal.class);
 
         final PowerSaveState state = new PowerSaveState.Builder()
                 .setBatterySaverEnabled(false).build();
         final PowerManagerInternal pmInternal = addLocalServiceMock(PowerManagerInternal.class);
         when(pmInternal.getLowPowerState(anyInt())).thenReturn(state);
+    }
 
-        mStatsService = addLocalServiceMock(NetworkStatsManagerInternal.class);
+    private class TestDependencies extends NetworkPolicyManagerService.Dependencies {
+        private final SparseArray<NetworkStats.Bucket> mMockedStats = new SparseArray<>();
+        private int mMockDefaultDataSubId;
+        private int mMockedActiveDataSubId;
+
+        TestDependencies(Context context) {
+            super(context);
+        }
+
+        @Override
+        long getNetworkTotalBytes(NetworkTemplate template, long start, long end) {
+            int total = 0;
+            for (int i = 0; i < mMockedStats.size(); i++) {
+                NetworkStats.Bucket bucket = mMockedStats.valueAt(i);
+                total += bucket.getRxBytes() + bucket.getTxBytes();
+            }
+            return total;
+        }
+
+        @Override
+        List<NetworkStats.Bucket> getNetworkUidBytes(NetworkTemplate template, long start,
+                long end) {
+            final List<NetworkStats.Bucket> ret = new ArrayList<>();
+            for (int i = 0; i < mMockedStats.size(); i++) {
+                ret.add(mMockedStats.valueAt(i));
+            }
+            return ret;
+        }
+
+        private void setMockedTotalBytes(int uid, long rxBytes, long txBytes) {
+            final NetworkStats.Bucket bucket = mock(NetworkStats.Bucket.class);
+            when(bucket.getUid()).thenReturn(uid);
+            when(bucket.getRxBytes()).thenReturn(rxBytes);
+            when(bucket.getTxBytes()).thenReturn(txBytes);
+            mMockedStats.set(uid, bucket);
+        }
+
+        private void increaseMockedTotalBytes(int uid, long rxBytes, long txBytes) {
+            final NetworkStats.Bucket bucket = mMockedStats.get(uid);
+            setMockedTotalBytes(uid, bucket.getRxBytes() + rxBytes, bucket.getTxBytes() + txBytes);
+        }
+
+        void setDefaultAndActiveDataSubId(int defaultDataSubId, int activeDataSubId) {
+            mMockDefaultDataSubId = defaultDataSubId;
+            mMockedActiveDataSubId = activeDataSubId;
+        }
+
+        @Override
+        int getDefaultDataSubId() {
+            return mMockDefaultDataSubId;
+        }
+
+        @Override
+        int getActivateDataSubId() {
+            return mMockedActiveDataSubId;
+        }
+    }
+
+    // TODO: Use TestLooperManager instead.
+    /**
+     * Helper that leverages try-with-resources to pause dispatch of
+     * {@link #mHandlerThread} until released.
+     */
+    static class SyncBarrier implements AutoCloseable {
+        private final int mToken;
+        private Handler mHandler;
+
+        SyncBarrier(Handler handler) {
+            mHandler = handler;
+            mToken = mHandler.getLooper().getQueue().postSyncBarrier();
+        }
+
+        @Override
+        public void close() throws Exception {
+            mHandler.getLooper().getQueue().removeSyncBarrier(mToken);
+        }
     }
 
     @Before
     public void callSystemReady() throws Exception {
         MockitoAnnotations.initMocks(this);
+        when(mPowerExemptionManager.getAllowListedAppIds(anyBoolean())).thenReturn(new int[0]);
 
         final Context context = InstrumentationRegistry.getContext();
 
@@ -373,6 +508,10 @@ public class NetworkPolicyManagerServiceTest {
                         return mConnManager;
                     case Context.USER_SERVICE:
                         return mUserManager;
+                    case Context.NETWORK_STATS_SERVICE:
+                        return mStatsManager;
+                    case Context.POWER_EXEMPTION_SERVICE:
+                        return mPowerExemptionManager;
                     default:
                         return super.getSystemService(name);
                 }
@@ -382,23 +521,42 @@ public class NetworkPolicyManagerServiceTest {
             public void enforceCallingOrSelfPermission(String permission, String message) {
                 // Assume that we're AID_SYSTEM
             }
+
+            @Override
+            public Intent registerReceiver(BroadcastReceiver receiver,
+                    IntentFilter filter, String broadcastPermission, Handler scheduler) {
+                if (filter.hasAction(PowerManager.ACTION_POWER_SAVE_WHITELIST_CHANGED)) {
+                    mPowerAllowlistReceiver = receiver;
+                }
+                mRegisteredReceivers.add(receiver);
+                return super.registerReceiver(receiver, filter, broadcastPermission, scheduler);
+            }
+
+            @Override
+            public Intent registerReceiverForAllUsers(BroadcastReceiver receiver,
+                    IntentFilter filter, String broadcastPermission, Handler scheduler) {
+                mRegisteredReceivers.add(receiver);
+                return super.registerReceiverForAllUsers(receiver, filter, broadcastPermission,
+                        scheduler);
+            }
         };
 
         setNetpolicyXml(context);
 
         doAnswer(new Answer<Void>() {
-
             @Override
             public Void answer(InvocationOnMock invocation) throws Throwable {
                 mUidObserver = (IUidObserver) invocation.getArguments()[0];
                 Log.d(TAG, "set mUidObserver to " + mUidObserver);
                 return null;
             }
-        }).when(mActivityManager).registerUidObserver(any(), anyInt(), anyInt(), any(String.class));
+        }).when(mActivityManagerInternal).registerNetworkPolicyUidObserver(any(),
+                anyInt(), anyInt(), any(String.class));
 
         mFutureIntent = newRestrictBackgroundChangedFuture();
+        mDeps = new TestDependencies(mServiceContext);
         mService = new NetworkPolicyManagerService(mServiceContext, mActivityManager,
-                mNetworkManager, mIpm, mClock, mPolicyDir, true);
+                mNetworkManager, mIpm, mClock, mPolicyDir, true, mDeps);
         mService.bindConnectivityManager();
         mPolicyListener = new NetworkPolicyListenerAnswer(mService);
 
@@ -433,8 +591,15 @@ public class NetworkPolicyManagerServiceTest {
                 .thenReturn(buildApplicationInfo(PKG_NAME_B, UID_B));
         when(mPackageManager.getApplicationInfo(eq(PKG_NAME_C), anyInt()))
                 .thenReturn(buildApplicationInfo(PKG_NAME_C, UID_C));
-        when(mPackageManager.getInstalledApplications(anyInt())).thenReturn(
-                buildInstalledApplicationInfoList());
+        doAnswer(arg -> {
+            final Consumer<AndroidPackage> consumer =
+                    (Consumer<AndroidPackage>) arg.getArguments()[0];
+            for (AndroidPackage androidPackage : buildInstalledPackageList()) {
+                consumer.accept(androidPackage);
+            }
+            return null;
+        }).when(mPackageManagerInternal).forEachInstalledPackage(
+                any(Consumer.class), anyInt());
         when(mUserManager.getUsers()).thenReturn(buildUserInfoList());
         when(mNetworkManager.isBandwidthControlEnabled()).thenReturn(true);
         when(mNetworkManager.setDataSaverModeEnabled(anyBoolean())).thenReturn(true);
@@ -453,9 +618,27 @@ public class NetworkPolicyManagerServiceTest {
         verify(mNetworkManager).registerObserver(networkObserver.capture());
         mNetworkObserver = networkObserver.getValue();
 
+        // Catch UsageCallback during systemReady(). Simulate NetworkStatsService triggered
+        // stats updated callback to signal its readiness.
+        final ArgumentCaptor<NetworkStatsManager.UsageCallback> usageObserver =
+                ArgumentCaptor.forClass(NetworkStatsManager.UsageCallback.class);
+        verify(mStatsManager, times(2))
+                .registerUsageCallback(any(), anyLong(), any(), usageObserver.capture());
+        // It doesn't matter which of the observers is returned here.
+        usageObserver.getValue().onThresholdReached(
+                new NetworkTemplate.Builder(MATCH_MOBILE).build());
+
         NetworkPolicy defaultPolicy = mService.buildDefaultCarrierPolicy(0, "");
         mDefaultWarningBytes = defaultPolicy.warningBytes;
         mDefaultLimitBytes = defaultPolicy.limitBytes;
+
+        // Catch TelephonyCallback during systemReady().
+        ArgumentCaptor<TelephonyCallback> telephonyCallbackArgumentCaptor =
+                ArgumentCaptor.forClass(TelephonyCallback.class);
+        verify(mTelephonyManager).registerTelephonyCallback(any(),
+                telephonyCallbackArgumentCaptor.capture());
+        mActiveDataSubIdListener = (TelephonyCallback.ActiveDataSubscriptionIdListener)
+                telephonyCallbackArgumentCaptor.getValue();
     }
 
     @After
@@ -476,12 +659,19 @@ public class NetworkPolicyManagerServiceTest {
         LocalServices.removeServiceForTest(DeviceIdleInternal.class);
         LocalServices.removeServiceForTest(AppStandbyInternal.class);
         LocalServices.removeServiceForTest(UsageStatsManagerInternal.class);
-        LocalServices.removeServiceForTest(NetworkStatsManagerInternal.class);
+        LocalServices.removeServiceForTest(PackageManagerInternal.class);
     }
 
     @After
     public void resetClock() throws Exception {
         RecurrenceRule.sClock = Clock.systemDefaultZone();
+    }
+
+    @After
+    public void unregisterReceivers() throws Exception {
+        for (BroadcastReceiver receiver : mRegisteredReceivers) {
+            mServiceContext.unregisterReceiver(receiver);
+        }
     }
 
     @Test
@@ -916,24 +1106,113 @@ public class NetworkPolicyManagerServiceTest {
     // don't check for side-effects (like calls to NetworkManagementService) neither cover all
     // different modes (Data Saver, Battery Saver, Doze, App idle, etc...).
     // These scenarios are extensively tested on CTS' HostsideRestrictBackgroundNetworkTests.
+    @SuppressWarnings("GuardedBy")
     @Test
     public void testUidForeground() throws Exception {
         // push all uids into background
-        callOnUidStateChanged(UID_A, ActivityManager.PROCESS_STATE_SERVICE, 0);
-        callOnUidStateChanged(UID_B, ActivityManager.PROCESS_STATE_SERVICE, 0);
-        assertFalse(mService.isUidForeground(UID_A));
-        assertFalse(mService.isUidForeground(UID_B));
+        long procStateSeq = 0;
+        callAndWaitOnUidStateChanged(UID_A, PROCESS_STATE_SERVICE, procStateSeq++);
+        callAndWaitOnUidStateChanged(UID_B, PROCESS_STATE_SERVICE, procStateSeq++);
+        assertFalse(mService.isUidForegroundOnRestrictPowerUL(UID_A));
+        assertFalse(mService.isUidForegroundOnRestrictBackgroundUL(UID_A));
+        assertFalse(mService.isUidForegroundOnRestrictPowerUL(UID_B));
+        assertFalse(mService.isUidForegroundOnRestrictBackgroundUL(UID_B));
 
         // push one of the uids into foreground
-        callOnUidStateChanged(UID_A, ActivityManager.PROCESS_STATE_TOP, 0);
-        assertTrue(mService.isUidForeground(UID_A));
-        assertFalse(mService.isUidForeground(UID_B));
+        callAndWaitOnUidStateChanged(UID_A, PROCESS_STATE_TOP, procStateSeq++);
+        assertTrue(mService.isUidForegroundOnRestrictPowerUL(UID_A));
+        assertTrue(mService.isUidForegroundOnRestrictBackgroundUL(UID_A));
+        assertFalse(mService.isUidForegroundOnRestrictPowerUL(UID_B));
+        assertFalse(mService.isUidForegroundOnRestrictBackgroundUL(UID_B));
 
         // and swap another uid into foreground
-        callOnUidStateChanged(UID_A, ActivityManager.PROCESS_STATE_SERVICE, 0);
-        callOnUidStateChanged(UID_B, ActivityManager.PROCESS_STATE_TOP, 0);
-        assertFalse(mService.isUidForeground(UID_A));
-        assertTrue(mService.isUidForeground(UID_B));
+        callAndWaitOnUidStateChanged(UID_A, PROCESS_STATE_SERVICE, procStateSeq++);
+        callAndWaitOnUidStateChanged(UID_B, PROCESS_STATE_TOP, procStateSeq++);
+        assertFalse(mService.isUidForegroundOnRestrictPowerUL(UID_A));
+        assertFalse(mService.isUidForegroundOnRestrictBackgroundUL(UID_A));
+        assertTrue(mService.isUidForegroundOnRestrictPowerUL(UID_B));
+        assertTrue(mService.isUidForegroundOnRestrictBackgroundUL(UID_B));
+
+        // change capability of an uid to allow access to power restricted network
+        callAndWaitOnUidStateChanged(UID_A, PROCESS_STATE_SERVICE, procStateSeq++,
+                PROCESS_CAPABILITY_POWER_RESTRICTED_NETWORK);
+        callAndWaitOnUidStateChanged(UID_B, PROCESS_STATE_SERVICE, procStateSeq++,
+                PROCESS_CAPABILITY_NONE);
+        assertTrue(mService.isUidForegroundOnRestrictPowerUL(UID_A));
+        assertFalse(mService.isUidForegroundOnRestrictBackgroundUL(UID_A));
+        assertFalse(mService.isUidForegroundOnRestrictPowerUL(UID_B));
+        assertFalse(mService.isUidForegroundOnRestrictBackgroundUL(UID_B));
+
+        // change capability of an uid to allow access to user restricted network
+        callAndWaitOnUidStateChanged(UID_A, PROCESS_STATE_IMPORTANT_FOREGROUND, procStateSeq++,
+                PROCESS_CAPABILITY_USER_RESTRICTED_NETWORK);
+        callAndWaitOnUidStateChanged(UID_B, PROCESS_STATE_SERVICE, procStateSeq++,
+                PROCESS_CAPABILITY_NONE);
+        assertFalse(mService.isUidForegroundOnRestrictPowerUL(UID_A));
+        assertTrue(mService.isUidForegroundOnRestrictBackgroundUL(UID_A));
+        assertFalse(mService.isUidForegroundOnRestrictPowerUL(UID_B));
+        assertFalse(mService.isUidForegroundOnRestrictBackgroundUL(UID_B));
+    }
+
+    @SuppressWarnings("GuardedBy")
+    @Test
+    public void testUidForeground_withPendingState() throws Exception {
+        long procStateSeq = 0;
+        callAndWaitOnUidStateChanged(UID_A, PROCESS_STATE_SERVICE,
+                procStateSeq++, PROCESS_CAPABILITY_NONE);
+        callAndWaitOnUidStateChanged(UID_B, PROCESS_STATE_SERVICE,
+                procStateSeq++, PROCESS_CAPABILITY_NONE);
+        assertFalse(mService.isUidForegroundOnRestrictPowerUL(UID_A));
+        assertFalse(mService.isUidForegroundOnRestrictBackgroundUL(UID_A));
+        assertFalse(mService.isUidForegroundOnRestrictPowerUL(UID_B));
+        assertFalse(mService.isUidForegroundOnRestrictBackgroundUL(UID_B));
+
+        try (SyncBarrier b = new SyncBarrier(mService.mUidEventHandler)) {
+            // Verify that a callback with an old procStateSeq is ignored.
+            callOnUidStatechanged(UID_A, PROCESS_STATE_TOP, 0,
+                    PROCESS_CAPABILITY_POWER_RESTRICTED_NETWORK);
+            assertFalse(mService.isUidForegroundOnRestrictPowerUL(UID_A));
+            assertFalse(mService.isUidForegroundOnRestrictBackgroundUL(UID_A));
+            assertFalse(mService.isUidForegroundOnRestrictPowerUL(UID_B));
+            assertFalse(mService.isUidForegroundOnRestrictBackgroundUL(UID_B));
+
+            callOnUidStatechanged(UID_A, PROCESS_STATE_SERVICE, procStateSeq++,
+                    PROCESS_CAPABILITY_POWER_RESTRICTED_NETWORK);
+            assertTrue(mService.isUidForegroundOnRestrictPowerUL(UID_A));
+            assertFalse(mService.isUidForegroundOnRestrictBackgroundUL(UID_A));
+            assertFalse(mService.isUidForegroundOnRestrictPowerUL(UID_B));
+            assertFalse(mService.isUidForegroundOnRestrictBackgroundUL(UID_B));
+
+            callOnUidStatechanged(UID_A, PROCESS_STATE_IMPORTANT_FOREGROUND, procStateSeq++,
+                    PROCESS_CAPABILITY_USER_RESTRICTED_NETWORK);
+            assertFalse(mService.isUidForegroundOnRestrictPowerUL(UID_A));
+            assertTrue(mService.isUidForegroundOnRestrictBackgroundUL(UID_A));
+            assertFalse(mService.isUidForegroundOnRestrictPowerUL(UID_B));
+            assertFalse(mService.isUidForegroundOnRestrictBackgroundUL(UID_B));
+
+            callOnUidStatechanged(UID_A, PROCESS_STATE_TOP, procStateSeq++,
+                    PROCESS_CAPABILITY_NONE);
+            assertTrue(mService.isUidForegroundOnRestrictPowerUL(UID_A));
+            assertTrue(mService.isUidForegroundOnRestrictBackgroundUL(UID_A));
+            assertFalse(mService.isUidForegroundOnRestrictPowerUL(UID_B));
+            assertFalse(mService.isUidForegroundOnRestrictBackgroundUL(UID_B));
+        }
+        waitForUidEventHandlerIdle();
+
+        assertTrue(mService.isUidForegroundOnRestrictPowerUL(UID_A));
+        assertTrue(mService.isUidForegroundOnRestrictBackgroundUL(UID_A));
+        assertFalse(mService.isUidForegroundOnRestrictPowerUL(UID_B));
+        assertFalse(mService.isUidForegroundOnRestrictBackgroundUL(UID_B));
+
+        try (SyncBarrier b = new SyncBarrier(mService.mUidEventHandler)) {
+            callOnUidStatechanged(UID_A, PROCESS_STATE_SERVICE, procStateSeq++,
+                    PROCESS_CAPABILITY_NONE);
+            assertTrue(mService.isUidForegroundOnRestrictPowerUL(UID_A));
+            assertTrue(mService.isUidForegroundOnRestrictBackgroundUL(UID_A));
+            assertFalse(mService.isUidForegroundOnRestrictPowerUL(UID_B));
+            assertFalse(mService.isUidForegroundOnRestrictBackgroundUL(UID_B));
+        }
+        waitForUidEventHandlerIdle();
     }
 
     @Test
@@ -1105,42 +1384,20 @@ public class NetworkPolicyManagerServiceTest {
         when(mConnManager.getAllNetworkStateSnapshots()).thenReturn(snapshots);
 
         // pretend that 512 bytes total have happened
-        stats = new NetworkStats(getElapsedRealtime(), 1)
-                .insertEntry(TEST_IFACE, 256L, 2L, 256L, 2L);
-        when(mStatsService.getNetworkTotalBytes(sTemplateWifi, CYCLE_START, CYCLE_END))
-                .thenReturn(stats.getTotalBytes());
+        mDeps.setMockedTotalBytes(UID_A, 256L, 256L);
 
         mPolicyListener.expect().onMeteredIfacesChanged(any());
         setNetworkPolicies(new NetworkPolicy(
-                sTemplateWifi, CYCLE_DAY, TIMEZONE_UTC, 1 * MB_IN_BYTES, 2 * MB_IN_BYTES, false));
+                sTemplateWifi, CYCLE_DAY, TIMEZONE_UTC, DataUnit.MEBIBYTES.toBytes(1),
+                DataUnit.MEBIBYTES.toBytes(2), false));
         mPolicyListener.waitAndVerify().onMeteredIfacesChanged(eq(new String[]{TEST_IFACE}));
 
         verify(mNetworkManager, atLeastOnce()).setInterfaceQuota(TEST_IFACE,
-                (2 * MB_IN_BYTES) - 512);
+                DataUnit.MEBIBYTES.toBytes(2) - 512);
     }
 
     @Test
     public void testNotificationWarningLimitSnooze() throws Exception {
-        // Create a place to store fake usage
-        final NetworkStatsHistory history = new NetworkStatsHistory(TimeUnit.HOURS.toMillis(1));
-        final NetworkStats stats = new NetworkStats(SystemClock.elapsedRealtime(), 0);
-        when(mStatsService.getNetworkTotalBytes(any(), anyLong(), anyLong()))
-                .thenAnswer(new Answer<Long>() {
-                    @Override
-                    public Long answer(InvocationOnMock invocation) throws Throwable {
-                        final NetworkStatsHistory.Entry entry = history.getValues(
-                                invocation.getArgument(1), invocation.getArgument(2), null);
-                        return entry.rxBytes + entry.txBytes;
-                    }
-                });
-        when(mStatsService.getNetworkUidBytes(any(), anyLong(), anyLong()))
-                .thenAnswer(new Answer<NetworkStats>() {
-                    @Override
-                    public NetworkStats answer(InvocationOnMock invocation) throws Throwable {
-                        return stats;
-                    }
-                });
-
         // Get active mobile network in place
         expectMobileDefaults();
         mService.updateNetworks();
@@ -1158,12 +1415,11 @@ public class NetworkPolicyManagerServiceTest {
 
         // Normal usage means no notification
         {
-            history.clear();
-            history.recordData(start, end,
-                    new NetworkStats.Entry(DataUnit.MEGABYTES.toBytes(360), 0L, 0L, 0L, 0));
+            mDeps.setMockedTotalBytes(UID_A, DataUnit.MEGABYTES.toBytes(360), 0);
 
             reset(mTelephonyManager, mNetworkManager, mNotifManager);
             TelephonyManager tmSub = expectMobileDefaults();
+            clearInvocations(mNotifManager);
 
             mService.updateNetworks();
 
@@ -1175,12 +1431,11 @@ public class NetworkPolicyManagerServiceTest {
 
         // Push over warning
         {
-            history.clear();
-            history.recordData(start, end,
-                    new NetworkStats.Entry(DataUnit.MEGABYTES.toBytes(1799), 0L, 0L, 0L, 0));
+            mDeps.setMockedTotalBytes(UID_A, DataUnit.MEGABYTES.toBytes(1799), 0);
 
             reset(mTelephonyManager, mNetworkManager, mNotifManager);
             TelephonyManager tmSub = expectMobileDefaults();
+            clearInvocations(mNotifManager);
 
             mService.updateNetworks();
 
@@ -1193,13 +1448,12 @@ public class NetworkPolicyManagerServiceTest {
 
         // Push over warning, but with a config that isn't from an identified carrier
         {
-            history.clear();
-            history.recordData(start, end,
-                    new NetworkStats.Entry(DataUnit.MEGABYTES.toBytes(1799), 0L, 0L, 0L, 0));
+            mDeps.setMockedTotalBytes(UID_A, DataUnit.MEGABYTES.toBytes(1799), 0);
 
             reset(mTelephonyManager, mNetworkManager, mNotifManager);
             TelephonyManager tmSub = expectMobileDefaults();
             expectDefaultCarrierConfig();
+            clearInvocations(mNotifManager);
 
             mService.updateNetworks();
 
@@ -1212,12 +1466,11 @@ public class NetworkPolicyManagerServiceTest {
 
         // Push over limit
         {
-            history.clear();
-            history.recordData(start, end,
-                    new NetworkStats.Entry(DataUnit.MEGABYTES.toBytes(1810), 0L, 0L, 0L, 0));
+            mDeps.setMockedTotalBytes(UID_A, DataUnit.MEGABYTES.toBytes(1810), 0);
 
             reset(mTelephonyManager, mNetworkManager, mNotifManager);
             TelephonyManager tmSub = expectMobileDefaults();
+            clearInvocations(mNotifManager);
 
             mService.updateNetworks();
 
@@ -1231,8 +1484,9 @@ public class NetworkPolicyManagerServiceTest {
         {
             reset(mTelephonyManager, mNetworkManager, mNotifManager);
             TelephonyManager tmSub = expectMobileDefaults();
+            clearInvocations(mNotifManager);
 
-            mService.snoozeLimit(NetworkTemplate.buildTemplateCarrierMetered(TEST_IMSI));
+            mService.snoozeLimit(sTemplateCarrierMetered);
             mService.updateNetworks();
 
             verify(tmSub, atLeastOnce()).setPolicyDataEnabled(true);
@@ -1241,30 +1495,35 @@ public class NetworkPolicyManagerServiceTest {
             verify(mNotifManager, atLeastOnce()).notifyAsUser(any(), eq(TYPE_LIMIT_SNOOZED),
                     isA(Notification.class), eq(UserHandle.ALL));
         }
+        // The sub is no longer used for data(e.g. user uses another sub), hide the notifications.
+        {
+            reset(mTelephonyManager, mNetworkManager, mNotifManager);
+
+            notifyDefaultAndActiveDataSubIdChange(TEST_SUB_ID2, TEST_SUB_ID2);
+            verify(mNotifManager, atLeastOnce()).cancel(any(), eq(TYPE_LIMIT_SNOOZED));
+        }
+        // The sub is not active for data(e.g. due to auto data switch), but still default for data,
+        // show notification.
+        {
+            reset(mTelephonyManager, mNetworkManager, mNotifManager);
+
+            notifyDefaultAndActiveDataSubIdChange(TEST_SUB_ID, TEST_SUB_ID2);
+            verify(mNotifManager, atLeastOnce()).notifyAsUser(any(), eq(TYPE_LIMIT_SNOOZED),
+                    isA(Notification.class), eq(UserHandle.ALL));
+        }
+        // The sub is active for data, but not the default(e.g. due to auto data switch),
+        // show notification.
+        {
+            reset(mTelephonyManager, mNetworkManager, mNotifManager);
+
+            notifyDefaultAndActiveDataSubIdChange(TEST_SUB_ID2, TEST_SUB_ID);
+            verify(mNotifManager, atLeastOnce()).notifyAsUser(any(), eq(TYPE_LIMIT_SNOOZED),
+                    isA(Notification.class), eq(UserHandle.ALL));
+        }
     }
 
     @Test
     public void testNotificationRapid() throws Exception {
-        // Create a place to store fake usage
-        final NetworkStatsHistory history = new NetworkStatsHistory(TimeUnit.HOURS.toMillis(1));
-        final NetworkStats stats = new NetworkStats(SystemClock.elapsedRealtime(), 0);
-        when(mStatsService.getNetworkTotalBytes(any(), anyLong(), anyLong()))
-                .thenAnswer(new Answer<Long>() {
-                    @Override
-                    public Long answer(InvocationOnMock invocation) throws Throwable {
-                        final NetworkStatsHistory.Entry entry = history.getValues(
-                                invocation.getArgument(1), invocation.getArgument(2), null);
-                        return entry.rxBytes + entry.txBytes;
-                    }
-                });
-        when(mStatsService.getNetworkUidBytes(any(), anyLong(), anyLong()))
-                .thenAnswer(new Answer<NetworkStats>() {
-                    @Override
-                    public NetworkStats answer(InvocationOnMock invocation) throws Throwable {
-                        return stats;
-                    }
-                });
-
         // Get active mobile network in place
         expectMobileDefaults();
         mService.updateNetworks();
@@ -1282,9 +1541,7 @@ public class NetworkPolicyManagerServiceTest {
 
         // Using 20% data in 20% time is normal
         {
-            history.clear();
-            history.recordData(start, end,
-                    new NetworkStats.Entry(DataUnit.MEGABYTES.toBytes(360), 0L, 0L, 0L, 0));
+            mDeps.setMockedTotalBytes(UID_A, DataUnit.MEGABYTES.toBytes(360), 0);
 
             reset(mNotifManager);
             mService.updateNetworks();
@@ -1294,16 +1551,9 @@ public class NetworkPolicyManagerServiceTest {
         // Using 80% data in 20% time is alarming; but spread equally among
         // three UIDs means we get generic alert
         {
-            history.clear();
-            history.recordData(start, end,
-                    new NetworkStats.Entry(DataUnit.MEGABYTES.toBytes(1440), 0L, 0L, 0L, 0));
-            stats.clear();
-            stats.insertEntry(IFACE_ALL, UID_A, SET_ALL, TAG_ALL,
-                    DataUnit.MEGABYTES.toBytes(480), 0, 0, 0, 0);
-            stats.insertEntry(IFACE_ALL, UID_B, SET_ALL, TAG_ALL,
-                    DataUnit.MEGABYTES.toBytes(480), 0, 0, 0, 0);
-            stats.insertEntry(IFACE_ALL, UID_C, SET_ALL, TAG_ALL,
-                    DataUnit.MEGABYTES.toBytes(480), 0, 0, 0, 0);
+            mDeps.setMockedTotalBytes(UID_A, DataUnit.MEGABYTES.toBytes(480), 0);
+            mDeps.setMockedTotalBytes(UID_B, DataUnit.MEGABYTES.toBytes(480), 0);
+            mDeps.setMockedTotalBytes(UID_C, DataUnit.MEGABYTES.toBytes(480), 0);
 
             reset(mNotifManager);
             mService.updateNetworks();
@@ -1322,14 +1572,9 @@ public class NetworkPolicyManagerServiceTest {
         // Using 80% data in 20% time is alarming; but mostly done by one UID
         // means we get specific alert
         {
-            history.clear();
-            history.recordData(start, end,
-                    new NetworkStats.Entry(DataUnit.MEGABYTES.toBytes(1440), 0L, 0L, 0L, 0));
-            stats.clear();
-            stats.insertEntry(IFACE_ALL, UID_A, SET_ALL, TAG_ALL,
-                    DataUnit.MEGABYTES.toBytes(960), 0, 0, 0, 0);
-            stats.insertEntry(IFACE_ALL, UID_B, SET_ALL, TAG_ALL,
-                    DataUnit.MEGABYTES.toBytes(480), 0, 0, 0, 0);
+            mDeps.setMockedTotalBytes(UID_A, DataUnit.MEGABYTES.toBytes(960), 0);
+            mDeps.setMockedTotalBytes(UID_B, DataUnit.MEGABYTES.toBytes(480), 0);
+            mDeps.setMockedTotalBytes(UID_C, 0, 0);
 
             reset(mNotifManager);
             mService.updateNetworks();
@@ -1359,13 +1604,10 @@ public class NetworkPolicyManagerServiceTest {
 
         // bring up wifi network with metered policy
         snapshots = List.of(buildWifi());
-        stats = new NetworkStats(getElapsedRealtime(), 1)
-                .insertEntry(TEST_IFACE, 0L, 0L, 0L, 0L);
+        mDeps.setMockedTotalBytes(UID_A, 0L, 0L);
 
         {
             when(mConnManager.getAllNetworkStateSnapshots()).thenReturn(snapshots);
-            when(mStatsService.getNetworkTotalBytes(sTemplateWifi, TIME_FEB_15,
-                    currentTimeMillis())).thenReturn(stats.getTotalBytes());
 
             mPolicyListener.expect().onMeteredIfacesChanged(any());
             setNetworkPolicies(new NetworkPolicy(
@@ -1381,14 +1623,34 @@ public class NetworkPolicyManagerServiceTest {
     @Test
     public void testOnUidStateChanged_notifyAMS() throws Exception {
         final long procStateSeq = 222;
-        callOnUidStateChanged(UID_A, ActivityManager.PROCESS_STATE_SERVICE, procStateSeq);
+        callAndWaitOnUidStateChanged(UID_A, PROCESS_STATE_SERVICE, procStateSeq);
         verify(mActivityManagerInternal).notifyNetworkPolicyRulesUpdated(UID_A, procStateSeq);
     }
 
-    private void callOnUidStateChanged(int uid, int procState, long procStateSeq)
+    private void callAndWaitOnUidGone(int uid) throws Exception {
+        // The disabled argument is used only for ephemeral apps and does not matter here.
+        mUidObserver.onUidGone(uid, false /* disabled */);
+        waitForUidEventHandlerIdle();
+    }
+
+    private void callAndWaitOnUidStateChanged(int uid, int procState, long procStateSeq)
             throws Exception {
-        mUidObserver.onUidStateChanged(uid, procState, procStateSeq,
-                ActivityManager.PROCESS_CAPABILITY_NONE);
+        callAndWaitOnUidStateChanged(uid, procState, procStateSeq,
+                PROCESS_CAPABILITY_NONE);
+    }
+
+    private void callAndWaitOnUidStateChanged(int uid, int procState, long procStateSeq,
+            int capability) throws Exception {
+        callOnUidStatechanged(uid, procState, procStateSeq, capability);
+        waitForUidEventHandlerIdle();
+    }
+
+    private void callOnUidStatechanged(int uid, int procState, long procStateSeq, int capability)
+            throws Exception {
+        mUidObserver.onUidStateChanged(uid, procState, procStateSeq, capability);
+    }
+
+    private void waitForUidEventHandlerIdle() throws Exception {
         final CountDownLatch latch = new CountDownLatch(1);
         mService.mUidEventHandler.post(() -> {
             latch.countDown();
@@ -1640,21 +1902,9 @@ public class NetworkPolicyManagerServiceTest {
 
     @Test
     public void testOpportunisticQuota() throws Exception {
-        final Network net = new Network(TEST_NET_ID);
+        final Network net = TEST_NETWORK;
         final NetworkPolicyManagerInternal internal = LocalServices
                 .getService(NetworkPolicyManagerInternal.class);
-
-        // Create a place to store fake usage
-        final NetworkStatsHistory history = new NetworkStatsHistory(TimeUnit.HOURS.toMillis(1));
-        final NetworkStats stats = new NetworkStats(SystemClock.elapsedRealtime(), 0);
-        when(mStatsService.getNetworkTotalBytes(any(), anyLong(), anyLong()))
-                .thenAnswer(invocation -> {
-                    final NetworkStatsHistory.Entry entry = history.getValues(
-                            invocation.getArgument(1), invocation.getArgument(2), null);
-                    return entry.rxBytes + entry.txBytes;
-                });
-        when(mStatsService.getNetworkUidBytes(any(), anyLong(), anyLong()))
-                .thenReturn(stats);
 
         // Get active mobile network in place
         expectMobileDefaults();
@@ -1666,9 +1916,7 @@ public class NetworkPolicyManagerServiceTest {
         setCurrentTimeMillis(end);
 
         // Get some data usage in place
-        history.clear();
-        history.recordData(start, end,
-                new NetworkStats.Entry(DataUnit.MEGABYTES.toBytes(360), 0L, 0L, 0L, 0));
+        mDeps.setMockedTotalBytes(UID_A, DataUnit.MEGABYTES.toBytes(360), 0);
 
         // No data plan
         {
@@ -1762,11 +2010,10 @@ public class NetworkPolicyManagerServiceTest {
             assertNotNull(callback);
             expectNetworkStateSnapshot(true /* roaming */);
             callback.onCapabilitiesChanged(
-                    new Network(TEST_NET_ID),
-                    buildNetworkCapabilities(TEST_SUB_ID, true /* roaming */));
+                    TEST_NETWORK, buildNetworkCapabilities(TEST_SUB_ID, true /* roaming */));
 
             assertEquals(0, internal.getSubscriptionOpportunisticQuota(
-                    new Network(TEST_NET_ID), NetworkPolicyManagerInternal.QUOTA_TYPE_MULTIPATH));
+                    TEST_NETWORK, NetworkPolicyManagerInternal.QUOTA_TYPE_MULTIPATH));
         }
     }
 
@@ -1784,22 +2031,11 @@ public class NetworkPolicyManagerServiceTest {
                 true);
     }
 
-    private void increaseMockedTotalBytes(NetworkStats stats, long rxBytes, long txBytes) {
-        stats.insertEntry(TEST_IFACE, UID_A, SET_ALL, TAG_NONE,
-                rxBytes, 1, txBytes, 1, 0);
-        when(mStatsService.getNetworkTotalBytes(any(), anyLong(), anyLong()))
-                .thenReturn(stats.getTotalBytes());
-        when(mStatsService.getNetworkUidBytes(any(), anyLong(), anyLong()))
-                .thenReturn(stats);
-    }
-
     private void triggerOnStatsProviderWarningOrLimitReached() throws InterruptedException {
-        final NetworkPolicyManagerInternal npmi = LocalServices
-                .getService(NetworkPolicyManagerInternal.class);
-        npmi.onStatsProviderWarningOrLimitReached("TEST");
+        mService.notifyStatsProviderWarningOrLimitReached();
         // Wait for processing of MSG_STATS_PROVIDER_WARNING_OR_LIMIT_REACHED.
         postMsgAndWaitForCompletion();
-        verify(mStatsService).forceUpdate();
+        verify(mStatsManager).forceUpdate();
         // Wait for processing of MSG_*_INTERFACE_QUOTAS.
         postMsgAndWaitForCompletion();
     }
@@ -1812,13 +2048,12 @@ public class NetworkPolicyManagerServiceTest {
     public void testStatsProviderWarningAndLimitReached() throws Exception {
         final int CYCLE_DAY = 15;
 
-        final NetworkStats stats = new NetworkStats(0L, 1);
-        increaseMockedTotalBytes(stats, 2999, 2000);
+        mDeps.setMockedTotalBytes(UID_A, 2999, 2000);
 
         // Get active mobile network in place
         expectMobileDefaults();
         mService.updateNetworks();
-        verify(mStatsService).setStatsProviderWarningAndLimitAsync(TEST_IFACE, Long.MAX_VALUE,
+        verify(mStatsManager).setStatsProviderWarningAndLimitAsync(TEST_IFACE, Long.MAX_VALUE,
                 Long.MAX_VALUE);
 
         // Set warning to 7KB and limit to 10KB.
@@ -1828,32 +2063,32 @@ public class NetworkPolicyManagerServiceTest {
         postMsgAndWaitForCompletion();
 
         // Verifies that remaining quotas are set to providers.
-        verify(mStatsService).setStatsProviderWarningAndLimitAsync(TEST_IFACE, 2001L, 5001L);
-        reset(mStatsService);
+        verify(mStatsManager).setStatsProviderWarningAndLimitAsync(TEST_IFACE, 2001L, 5001L);
+        reset(mStatsManager);
 
         // Increase the usage and simulates that limit reached fires earlier by provider,
         // but actually the quota is not yet reached. Verifies that the limit reached leads to
         // a force update and new quotas should be set.
-        increaseMockedTotalBytes(stats, 1000, 999);
+        mDeps.increaseMockedTotalBytes(UID_A, 1000, 999);
         triggerOnStatsProviderWarningOrLimitReached();
-        verify(mStatsService).setStatsProviderWarningAndLimitAsync(TEST_IFACE, 2L, 3002L);
-        reset(mStatsService);
+        verify(mStatsManager).setStatsProviderWarningAndLimitAsync(TEST_IFACE, 2L, 3002L);
+        reset(mStatsManager);
 
         // Increase the usage and simulate warning reached, the new warning should be unlimited
         // since service will disable warning quota to stop lower layer from keep triggering
         // warning reached event.
-        increaseMockedTotalBytes(stats, 1000L, 1000);
+        mDeps.increaseMockedTotalBytes(UID_A, 1000L, 1000);
         triggerOnStatsProviderWarningOrLimitReached();
-        verify(mStatsService).setStatsProviderWarningAndLimitAsync(
+        verify(mStatsManager).setStatsProviderWarningAndLimitAsync(
                 TEST_IFACE, Long.MAX_VALUE, 1002L);
-        reset(mStatsService);
+        reset(mStatsManager);
 
         // Increase the usage that over the warning and limit, the new limit should set to 1 to
         // block the network traffic.
-        increaseMockedTotalBytes(stats, 1000L, 1000);
+        mDeps.increaseMockedTotalBytes(UID_A, 1000L, 1000);
         triggerOnStatsProviderWarningOrLimitReached();
-        verify(mStatsService).setStatsProviderWarningAndLimitAsync(TEST_IFACE, Long.MAX_VALUE, 1L);
-        reset(mStatsService);
+        verify(mStatsManager).setStatsProviderWarningAndLimitAsync(TEST_IFACE, Long.MAX_VALUE, 1L);
+        reset(mStatsManager);
     }
 
     private void enableRestrictedMode(boolean enable) throws Exception {
@@ -1869,6 +2104,12 @@ public class NetworkPolicyManagerServiceTest {
         clearInvocations(mNetworkManager);
         expectHasUseRestrictedNetworksPermission(UID_A, true);
         expectHasUseRestrictedNetworksPermission(UID_B, false);
+
+        // Set low enough proc-states to ensure these uids are allowed in the background chain.
+        // To maintain clean separation between separate firewall chains, the tests could
+        // check for the specific blockedReasons in the uidBlockedState.
+        callAndWaitOnUidStateChanged(UID_A, BACKGROUND_THRESHOLD_STATE - 1, 21);
+        callAndWaitOnUidStateChanged(UID_B, BACKGROUND_THRESHOLD_STATE - 1, 21);
 
         Map<Integer, Integer> firewallUidRules = new ArrayMap<>();
         doAnswer(arg -> {
@@ -1917,55 +2158,535 @@ public class NetworkPolicyManagerServiceTest {
     }
 
     @Test
+    @RequiresFlagsEnabled(Flags.FLAG_NETWORK_BLOCKED_FOR_TOP_SLEEPING_AND_ABOVE)
+    public void testBackgroundChainEnabled() throws Exception {
+        verify(mNetworkManager).setFirewallChainEnabled(FIREWALL_CHAIN_BACKGROUND, true);
+    }
+
+    @Test
+    @RequiresFlagsEnabled(Flags.FLAG_NETWORK_BLOCKED_FOR_TOP_SLEEPING_AND_ABOVE)
+    @RequiresFlagsDisabled(Flags.FLAG_USE_DIFFERENT_DELAYS_FOR_BACKGROUND_CHAIN)
+    public void testBackgroundChainOnProcStateChangeSameDelay() throws Exception {
+        // initialization calls setFirewallChainEnabled, so we want to reset the invocations.
+        clearInvocations(mNetworkManager);
+
+        mService.mBackgroundRestrictionDelayMs = 500; // To avoid waiting too long in tests.
+
+        // The app will be blocked when there is no prior proc-state.
+        assertTrue(mService.isUidNetworkingBlocked(UID_A, false));
+
+        int procStateSeq = 23;
+        callAndWaitOnUidStateChanged(UID_A, BACKGROUND_THRESHOLD_STATE - 1, procStateSeq++);
+
+        verify(mNetworkManager).setFirewallUidRule(FIREWALL_CHAIN_BACKGROUND, UID_A,
+                FIREWALL_RULE_ALLOW);
+        assertFalse(mService.isUidNetworkingBlocked(UID_A, false));
+
+        callAndWaitOnUidStateChanged(UID_A, BACKGROUND_THRESHOLD_STATE + 1, procStateSeq++);
+
+        // The app should be blocked after a delay. Posting a message just after the delay and
+        // waiting for it to complete to ensure that the blocking code has executed.
+        waitForDelayedMessageOnHandler(mService.mBackgroundRestrictionDelayMs + 1);
+
+        verify(mNetworkManager).setFirewallUidRule(FIREWALL_CHAIN_BACKGROUND, UID_A,
+                FIREWALL_RULE_DEFAULT);
+        assertTrue(mService.isUidNetworkingBlocked(UID_A, false));
+    }
+
+    @Test
+    @RequiresFlagsEnabled({
+            Flags.FLAG_NETWORK_BLOCKED_FOR_TOP_SLEEPING_AND_ABOVE,
+            Flags.FLAG_USE_DIFFERENT_DELAYS_FOR_BACKGROUND_CHAIN
+    })
+    public void testBackgroundChainOnProcStateChangeDifferentDelays() throws Exception {
+        // The app will be blocked when there is no prior proc-state.
+        assertTrue(mService.isUidNetworkingBlocked(UID_A, false));
+
+        // Tweak delays to avoid waiting too long in tests.
+        mService.mBackgroundRestrictionShortDelayMs = 50;
+        mService.mBackgroundRestrictionLongDelayMs = 1000;
+
+        int procStateSeq = 231; // Any arbitrary starting sequence.
+        for (int ps = BACKGROUND_THRESHOLD_STATE; ps <= MAX_PROCESS_STATE; ps++) {
+            clearInvocations(mNetworkManager);
+
+            // Make sure app is in correct process-state to access network.
+            callAndWaitOnUidStateChanged(UID_A, BACKGROUND_THRESHOLD_STATE - 1, procStateSeq++);
+            verify(mNetworkManager).setFirewallUidRule(FIREWALL_CHAIN_BACKGROUND, UID_A,
+                    FIREWALL_RULE_ALLOW);
+            assertFalse(mService.isUidNetworkingBlocked(UID_A, false));
+
+            // Now put the app into the background and test that it eventually loses network.
+            callAndWaitOnUidStateChanged(UID_A, ps, procStateSeq++);
+
+            final long uidStateChangeTime = SystemClock.uptimeMillis();
+            if (ps <= PROCESS_STATE_LAST_ACTIVITY) {
+                // Verify that the app is blocked after long delay but not after short delay.
+                waitForDelayedMessageOnHandler(mService.mBackgroundRestrictionShortDelayMs + 1);
+                verify(mNetworkManager, never()).setFirewallUidRule(FIREWALL_CHAIN_BACKGROUND,
+                        UID_A, FIREWALL_RULE_DEFAULT);
+                assertFalse(mService.isUidNetworkingBlocked(UID_A, false));
+
+                final long timeUntilLongDelay = uidStateChangeTime
+                        + mService.mBackgroundRestrictionLongDelayMs - SystemClock.uptimeMillis();
+                assertTrue("No time left to verify long delay in background transition",
+                        timeUntilLongDelay >= 0);
+
+                waitForDelayedMessageOnHandler(timeUntilLongDelay + 1);
+                verify(mNetworkManager).setFirewallUidRule(FIREWALL_CHAIN_BACKGROUND, UID_A,
+                        FIREWALL_RULE_DEFAULT);
+                assertTrue(mService.isUidNetworkingBlocked(UID_A, false));
+            } else {
+                // Verify that the app is blocked after short delay.
+                waitForDelayedMessageOnHandler(mService.mBackgroundRestrictionShortDelayMs + 1);
+                verify(mNetworkManager).setFirewallUidRule(FIREWALL_CHAIN_BACKGROUND, UID_A,
+                        FIREWALL_RULE_DEFAULT);
+                assertTrue(mService.isUidNetworkingBlocked(UID_A, false));
+            }
+        }
+    }
+
+    @Test
+    @RequiresFlagsEnabled(Flags.FLAG_NETWORK_BLOCKED_FOR_TOP_SLEEPING_AND_ABOVE)
+    public void testBackgroundChainOnAllowlistChange() throws Exception {
+        // initialization calls setFirewallChainEnabled, so we want to reset the invocations.
+        clearInvocations(mNetworkManager);
+
+        // The apps will be blocked when there is no prior proc-state.
+        assertTrue(mService.isUidNetworkingBlocked(UID_A, false));
+        assertTrue(mService.isUidNetworkingBlocked(UID_B, false));
+
+        final int procStateSeq = 29;
+        callAndWaitOnUidStateChanged(UID_A, BACKGROUND_THRESHOLD_STATE + 1, procStateSeq);
+        assertTrue(mService.isUidNetworkingBlocked(UID_A, false));
+
+        when(mPowerExemptionManager.getAllowListedAppIds(anyBoolean()))
+                .thenReturn(new int[]{APP_ID_A, APP_ID_B});
+        final SparseIntArray firewallUidRules = new SparseIntArray();
+        doAnswer(arg -> {
+            final int[] uids = arg.getArgument(1);
+            final int[] rules = arg.getArgument(2);
+            assertTrue(uids.length == rules.length);
+
+            for (int i = 0; i < uids.length; ++i) {
+                firewallUidRules.put(uids[i], rules[i]);
+            }
+            return null;
+        }).when(mNetworkManager).setFirewallUidRules(eq(FIREWALL_CHAIN_BACKGROUND),
+                any(int[].class), any(int[].class));
+
+        mPowerAllowlistReceiver.onReceive(mServiceContext, null);
+
+        assertEquals(FIREWALL_RULE_ALLOW, firewallUidRules.get(UID_A, -1));
+        assertEquals(FIREWALL_RULE_ALLOW, firewallUidRules.get(UID_B, -1));
+
+        assertFalse(mService.isUidNetworkingBlocked(UID_A, false));
+        assertFalse(mService.isUidNetworkingBlocked(UID_B, false));
+    }
+
+    @Test
+    @RequiresFlagsEnabled(Flags.FLAG_NETWORK_BLOCKED_FOR_TOP_SLEEPING_AND_ABOVE)
+    public void testBackgroundChainOnTempAllowlistChange() throws Exception {
+        // initialization calls setFirewallChainEnabled, so we want to reset the invocations.
+        clearInvocations(mNetworkManager);
+
+        // The app will be blocked as is no prior proc-state.
+        assertTrue(mService.isUidNetworkingBlocked(UID_A, false));
+
+        final int procStateSeq = 19;
+        callAndWaitOnUidStateChanged(UID_A, BACKGROUND_THRESHOLD_STATE + 1, procStateSeq);
+        assertTrue(mService.isUidNetworkingBlocked(UID_A, false));
+
+        final NetworkPolicyManagerInternal internal = LocalServices.getService(
+                NetworkPolicyManagerInternal.class);
+
+        internal.onTempPowerSaveWhitelistChange(APP_ID_A, true, REASON_OTHER, "testing");
+
+        verify(mNetworkManager).setFirewallUidRule(FIREWALL_CHAIN_BACKGROUND, UID_A,
+                FIREWALL_RULE_ALLOW);
+        assertFalse(mService.isUidNetworkingBlocked(UID_A, false));
+
+        internal.onTempPowerSaveWhitelistChange(APP_ID_A, false, REASON_OTHER, "testing");
+
+        verify(mNetworkManager).setFirewallUidRule(FIREWALL_CHAIN_BACKGROUND, UID_A,
+                FIREWALL_RULE_DEFAULT);
+        assertTrue(mService.isUidNetworkingBlocked(UID_A, false));
+    }
+
+    @SuppressWarnings("GuardedBy") // For not holding mUidRulesFirstLock
+    @Test
+    @RequiresFlagsEnabled(Flags.FLAG_NEVER_APPLY_RULES_TO_CORE_UIDS)
+    public void testRulesNeverAppliedToCoreUids() throws Exception {
+        clearInvocations(mNetworkManager);
+
+        final int coreAppId = Process.FIRST_APPLICATION_UID - 102;
+        final int coreUid = UserHandle.getUid(USER_ID, coreAppId);
+
+        // Enable all restrictions and add this core uid to all allowlists.
+        mService.mDeviceIdleMode = true;
+        mService.mRestrictPower = true;
+        setRestrictBackground(true);
+        expectHasUseRestrictedNetworksPermission(coreUid, true);
+        enableRestrictedMode(true);
+        final NetworkPolicyManagerInternal internal = LocalServices.getService(
+                NetworkPolicyManagerInternal.class);
+        internal.setLowPowerStandbyActive(true);
+        internal.setLowPowerStandbyAllowlist(new int[]{coreUid});
+        internal.onTempPowerSaveWhitelistChange(coreAppId, true, REASON_OTHER, "testing");
+
+        when(mPowerExemptionManager.getAllowListedAppIds(anyBoolean()))
+                .thenReturn(new int[]{coreAppId});
+        mPowerAllowlistReceiver.onReceive(mServiceContext, null);
+
+        // A normal uid would undergo a rule change from denied to allowed on all chains, but we
+        // should not request any rule change for this core uid.
+        verify(mNetworkManager, never()).setFirewallUidRule(anyInt(), eq(coreUid), anyInt());
+        verify(mNetworkManager, never()).setFirewallUidRules(anyInt(),
+                argThat(ar -> ArrayUtils.contains(ar, coreUid)), any(int[].class));
+    }
+
+    @SuppressWarnings("GuardedBy") // For not holding mUidRulesFirstLock
+    @Test
+    @RequiresFlagsEnabled(Flags.FLAG_NEVER_APPLY_RULES_TO_CORE_UIDS)
+    public void testRulesNeverAppliedToUidsWithoutInternetPermission() throws Exception {
+        clearInvocations(mNetworkManager);
+
+        mService.mInternetPermissionMap.clear();
+        expectHasInternetPermission(UID_A, false);
+
+        // Enable all restrictions and add this uid to all allowlists.
+        mService.mDeviceIdleMode = true;
+        mService.mRestrictPower = true;
+        setRestrictBackground(true);
+        expectHasUseRestrictedNetworksPermission(UID_A, true);
+        enableRestrictedMode(true);
+        final NetworkPolicyManagerInternal internal = LocalServices.getService(
+                NetworkPolicyManagerInternal.class);
+        internal.setLowPowerStandbyActive(true);
+        internal.setLowPowerStandbyAllowlist(new int[]{UID_A});
+        internal.onTempPowerSaveWhitelistChange(APP_ID_A, true, REASON_OTHER, "testing");
+
+        when(mPowerExemptionManager.getAllowListedAppIds(anyBoolean()))
+                .thenReturn(new int[]{APP_ID_A});
+        mPowerAllowlistReceiver.onReceive(mServiceContext, null);
+
+        // A normal uid would undergo a rule change from denied to allowed on all chains, but we
+        // should not request any rule this uid without the INTERNET permission.
+        verify(mNetworkManager, never()).setFirewallUidRule(anyInt(), eq(UID_A), anyInt());
+        verify(mNetworkManager, never()).setFirewallUidRules(anyInt(),
+                argThat(ar -> ArrayUtils.contains(ar, UID_A)), any(int[].class));
+    }
+
+    private boolean isUidState(int uid, int procState, int procStateSeq, int capability) {
+        final NetworkPolicyManager.UidState uidState = mService.getUidStateForTest(uid);
+        if (uidState == null) {
+            return false;
+        }
+        return uidState.uid == uid && uidState.procStateSeq == procStateSeq
+                && uidState.procState == procState && uidState.capability == capability;
+    }
+
+    @Test
+    @RequiresFlagsEnabled(Flags.FLAG_NETWORK_BLOCKED_FOR_TOP_SLEEPING_AND_ABOVE)
+    public void testUidObserverFiltersProcStateChanges() throws Exception {
+        int testProcStateSeq = 0;
+        try (SyncBarrier b = new SyncBarrier(mService.mUidEventHandler)) {
+            // First callback for uid.
+            callOnUidStatechanged(UID_A, BACKGROUND_THRESHOLD_STATE + 1, testProcStateSeq++,
+                    PROCESS_CAPABILITY_NONE);
+            assertTrue(mService.mUidEventHandler.hasMessages(UID_MSG_STATE_CHANGED));
+        }
+        waitForUidEventHandlerIdle();
+        try (SyncBarrier b = new SyncBarrier(mService.mUidEventHandler)) {
+            // Doesn't cross the background threshold.
+            callOnUidStatechanged(UID_A, BACKGROUND_THRESHOLD_STATE, testProcStateSeq++,
+                    PROCESS_CAPABILITY_NONE);
+            assertFalse(mService.mUidEventHandler.hasMessages(UID_MSG_STATE_CHANGED));
+        }
+        waitForUidEventHandlerIdle();
+        try (SyncBarrier b = new SyncBarrier(mService.mUidEventHandler)) {
+            // Crosses the background threshold.
+            callOnUidStatechanged(UID_A, BACKGROUND_THRESHOLD_STATE - 1, testProcStateSeq++,
+                    PROCESS_CAPABILITY_NONE);
+            assertTrue(mService.mUidEventHandler.hasMessages(UID_MSG_STATE_CHANGED));
+        }
+        waitForUidEventHandlerIdle();
+        try (SyncBarrier b = new SyncBarrier(mService.mUidEventHandler)) {
+            // Doesn't cross the foreground threshold.
+            callOnUidStatechanged(UID_A, FOREGROUND_THRESHOLD_STATE + 1, testProcStateSeq++,
+                    PROCESS_CAPABILITY_NONE);
+            assertFalse(mService.mUidEventHandler.hasMessages(UID_MSG_STATE_CHANGED));
+        }
+        waitForUidEventHandlerIdle();
+        try (SyncBarrier b = new SyncBarrier(mService.mUidEventHandler)) {
+            // Crosses the foreground threshold.
+            callOnUidStatechanged(UID_A, FOREGROUND_THRESHOLD_STATE, testProcStateSeq++,
+                    PROCESS_CAPABILITY_NONE);
+            assertTrue(mService.mUidEventHandler.hasMessages(UID_MSG_STATE_CHANGED));
+        }
+        waitForUidEventHandlerIdle();
+        try (SyncBarrier b = new SyncBarrier(mService.mUidEventHandler)) {
+            // Doesn't cross the top threshold.
+            callOnUidStatechanged(UID_A, TOP_THRESHOLD_STATE + 1, testProcStateSeq++,
+                    PROCESS_CAPABILITY_NONE);
+            assertFalse(mService.mUidEventHandler.hasMessages(UID_MSG_STATE_CHANGED));
+        }
+        waitForUidEventHandlerIdle();
+        try (SyncBarrier b = new SyncBarrier(mService.mUidEventHandler)) {
+            // Crosses the top threshold.
+            callOnUidStatechanged(UID_A, TOP_THRESHOLD_STATE, testProcStateSeq++,
+                    PROCESS_CAPABILITY_NONE);
+            assertTrue(mService.mUidEventHandler.hasMessages(UID_MSG_STATE_CHANGED));
+        }
+        waitForUidEventHandlerIdle();
+        try (SyncBarrier b = new SyncBarrier(mService.mUidEventHandler)) {
+            // Doesn't cross any threshold, but changes below TOP_THRESHOLD_STATE should always
+            // be processed
+            callOnUidStatechanged(UID_A, TOP_THRESHOLD_STATE - 1, testProcStateSeq++,
+                    PROCESS_CAPABILITY_NONE);
+            assertTrue(mService.mUidEventHandler.hasMessages(UID_MSG_STATE_CHANGED));
+        }
+        waitForUidEventHandlerIdle();
+    }
+
+    @Test
+    @RequiresFlagsEnabled(Flags.FLAG_NETWORK_BLOCKED_FOR_TOP_SLEEPING_AND_ABOVE)
+    public void testUidObserverFiltersStaleChanges() throws Exception {
+        final int testProcStateSeq = 51;
+        try (SyncBarrier b = new SyncBarrier(mService.mUidEventHandler)) {
+            // First callback for uid.
+            callOnUidStatechanged(UID_B, BACKGROUND_THRESHOLD_STATE + 100, testProcStateSeq,
+                    PROCESS_CAPABILITY_NONE);
+            assertTrue(mService.mUidEventHandler.hasMessages(UID_MSG_STATE_CHANGED));
+        }
+        waitForUidEventHandlerIdle();
+        try (SyncBarrier b = new SyncBarrier(mService.mUidEventHandler)) {
+            // Stale callback because the procStateSeq is smaller.
+            callOnUidStatechanged(UID_B, BACKGROUND_THRESHOLD_STATE - 100, testProcStateSeq - 10,
+                    PROCESS_CAPABILITY_NONE);
+            assertFalse(mService.mUidEventHandler.hasMessages(UID_MSG_STATE_CHANGED));
+        }
+        waitForUidEventHandlerIdle();
+    }
+
+    @Test
+    @RequiresFlagsEnabled(Flags.FLAG_NETWORK_BLOCKED_FOR_TOP_SLEEPING_AND_ABOVE)
+    public void testUidObserverFiltersCapabilityChanges() throws Exception {
+        int testProcStateSeq = 0;
+        try (SyncBarrier b = new SyncBarrier(mService.mUidEventHandler)) {
+            // First callback for uid.
+            callOnUidStatechanged(UID_A, FOREGROUND_THRESHOLD_STATE, testProcStateSeq++,
+                    PROCESS_CAPABILITY_NONE);
+            assertTrue(mService.mUidEventHandler.hasMessages(UID_MSG_STATE_CHANGED));
+        }
+        waitForUidEventHandlerIdle();
+        try (SyncBarrier b = new SyncBarrier(mService.mUidEventHandler)) {
+            // The same process-state with one network capability added.
+            callOnUidStatechanged(UID_A, FOREGROUND_THRESHOLD_STATE, testProcStateSeq++,
+                    PROCESS_CAPABILITY_USER_RESTRICTED_NETWORK);
+            assertTrue(mService.mUidEventHandler.hasMessages(UID_MSG_STATE_CHANGED));
+        }
+        waitForUidEventHandlerIdle();
+        try (SyncBarrier b = new SyncBarrier(mService.mUidEventHandler)) {
+            // The same process-state with another network capability added.
+            callOnUidStatechanged(UID_A, FOREGROUND_THRESHOLD_STATE, testProcStateSeq++,
+                    PROCESS_CAPABILITY_POWER_RESTRICTED_NETWORK
+                            | PROCESS_CAPABILITY_USER_RESTRICTED_NETWORK);
+            assertTrue(mService.mUidEventHandler.hasMessages(UID_MSG_STATE_CHANGED));
+        }
+        waitForUidEventHandlerIdle();
+        try (SyncBarrier b = new SyncBarrier(mService.mUidEventHandler)) {
+            // The same process-state with all capabilities, but no change in network capabilities.
+            callOnUidStatechanged(UID_A, FOREGROUND_THRESHOLD_STATE, testProcStateSeq++,
+                    PROCESS_CAPABILITY_ALL);
+            assertFalse(mService.mUidEventHandler.hasMessages(UID_MSG_STATE_CHANGED));
+        }
+        waitForUidEventHandlerIdle();
+
+        callAndWaitOnUidStateChanged(UID_A, TOP_THRESHOLD_STATE, testProcStateSeq++,
+                PROCESS_CAPABILITY_ALL);
+        try (SyncBarrier b = new SyncBarrier(mService.mUidEventHandler)) {
+            // No change in capabilities, but TOP_THRESHOLD_STATE change should always be processed.
+            callOnUidStatechanged(UID_A, TOP_THRESHOLD_STATE, testProcStateSeq++,
+                    PROCESS_CAPABILITY_ALL);
+            assertTrue(mService.mUidEventHandler.hasMessages(UID_MSG_STATE_CHANGED));
+        }
+        waitForUidEventHandlerIdle();
+    }
+
+    @Test
+    public void testUidStateChangeAfterUidGone() throws Exception {
+        final int testProcStateSeq = 51;
+        final int testProcState = PROCESS_STATE_IMPORTANT_FOREGROUND;
+
+        try (SyncBarrier b = new SyncBarrier(mService.mUidEventHandler)) {
+            // First callback for uid.
+            callOnUidStatechanged(UID_B, testProcState, testProcStateSeq, PROCESS_CAPABILITY_NONE);
+            assertTrue(mService.mUidEventHandler.hasMessages(UID_MSG_STATE_CHANGED));
+        }
+        waitForUidEventHandlerIdle();
+        assertTrue(isUidState(UID_B, testProcState, testProcStateSeq, PROCESS_CAPABILITY_NONE));
+
+        callAndWaitOnUidGone(UID_B);
+        try (SyncBarrier b = new SyncBarrier(mService.mUidEventHandler)) {
+            // Even though the procState is the same, the uid had exited - so this should be
+            // processed as a fresh callback.
+            callOnUidStatechanged(UID_B, testProcState, testProcStateSeq + 1,
+                    PROCESS_CAPABILITY_NONE);
+            assertTrue(mService.mUidEventHandler.hasMessages(UID_MSG_STATE_CHANGED));
+        }
+        waitForUidEventHandlerIdle();
+        assertTrue(isUidState(UID_B, testProcState, testProcStateSeq + 1, PROCESS_CAPABILITY_NONE));
+    }
+
+    @Test
+    public void testObsoleteHandleUidGone() throws Exception {
+        callAndWaitOnUidStateChanged(UID_A, PROCESS_STATE_TOP, 51);
+        assertFalse(mService.isUidNetworkingBlocked(UID_A, false));
+
+        clearInvocations(mNetworkManager);
+
+        // In the service, handleUidGone is only called from mUidEventHandler. Then a call to it may
+        // be rendered obsolete by a newer uid change posted on the handler. The latest uid state
+        // change is always reflected in the current UidStateChangeCallbackInfo for the uid, so to
+        // simulate an obsolete call for test, we directly call handleUidGone and leave the state in
+        // UidStateChangeCallbackInfo set by the previous call to onUidStateChanged(TOP). This call
+        // should then do nothing.
+        mService.handleUidGone(UID_A);
+
+        verify(mNetworkManager, times(0)).setFirewallUidRule(anyInt(), anyInt(), anyInt());
+        assertFalse(mService.isUidNetworkingBlocked(UID_A, false));
+    }
+
+    @Test
+    @RequiresFlagsEnabled(Flags.FLAG_NETWORK_BLOCKED_FOR_TOP_SLEEPING_AND_ABOVE)
+    public void testObsoleteHandleUidChanged() throws Exception {
+        callAndWaitOnUidGone(UID_A);
+        assertTrue(mService.isUidNetworkingBlocked(UID_A, false));
+
+        clearInvocations(mNetworkManager);
+
+        // In the service, handleUidChanged is only called from mUidEventHandler. Then a call to it
+        // may be rendered obsolete by an immediate uid-gone posted on the handler. The latest uid
+        // state change is always reflected in the current UidStateChangeCallbackInfo for the uid,
+        // so to simulate an obsolete call for test, we directly call handleUidChanged and leave the
+        // state in UidStateChangeCallbackInfo as null as it would get removed by the previous call
+        // to onUidGone(). This call should then do nothing.
+        mService.handleUidChanged(UID_A);
+
+        verify(mNetworkManager, times(0)).setFirewallUidRule(anyInt(), anyInt(), anyInt());
+        assertTrue(mService.isUidNetworkingBlocked(UID_A, false));
+    }
+
+    @Test
+    public void testLowPowerStandbyAllowlist() throws Exception {
+        // Chain background is also enabled but these procstates are important enough to be exempt.
+        callAndWaitOnUidStateChanged(UID_A, PROCESS_STATE_TOP, 0);
+        callAndWaitOnUidStateChanged(UID_B, ActivityManager.PROCESS_STATE_FOREGROUND_SERVICE, 0);
+        callAndWaitOnUidStateChanged(UID_C, ActivityManager.PROCESS_STATE_FOREGROUND_SERVICE, 0);
+        expectHasInternetPermission(UID_A, true);
+        expectHasInternetPermission(UID_B, true);
+        expectHasInternetPermission(UID_C, true);
+
+        final NetworkPolicyManagerInternal internal = LocalServices
+                .getService(NetworkPolicyManagerInternal.class);
+
+        Map<Integer, Integer> firewallUidRules = new ArrayMap<>();
+        doAnswer(arg -> {
+            int[] uids = arg.getArgument(1);
+            int[] rules = arg.getArgument(2);
+            assertTrue(uids.length == rules.length);
+
+            for (int i = 0; i < uids.length; ++i) {
+                firewallUidRules.put(uids[i], rules[i]);
+            }
+            return null;
+        }).when(mNetworkManager).setFirewallUidRules(eq(FIREWALL_CHAIN_LOW_POWER_STANDBY),
+                any(int[].class), any(int[].class));
+
+        internal.setLowPowerStandbyAllowlist(new int[] { UID_B });
+        internal.setLowPowerStandbyActive(true);
+        assertEquals(FIREWALL_RULE_ALLOW, firewallUidRules.get(UID_A).intValue());
+        assertEquals(FIREWALL_RULE_ALLOW, firewallUidRules.get(UID_B).intValue());
+        assertFalse(mService.isUidNetworkingBlocked(UID_A, false));
+        assertFalse(mService.isUidNetworkingBlocked(UID_B, false));
+        assertTrue(mService.isUidNetworkingBlocked(UID_C, false));
+
+        internal.setLowPowerStandbyActive(false);
+        assertFalse(mService.isUidNetworkingBlocked(UID_A, false));
+        assertFalse(mService.isUidNetworkingBlocked(UID_B, false));
+        assertFalse(mService.isUidNetworkingBlocked(UID_C, false));
+    }
+
+    @Test
     public void testUpdateEffectiveBlockedReasons() {
-        final SparseArray<Pair<Integer, Integer>> effectiveBlockedReasons = new SparseArray<>();
-        effectiveBlockedReasons.put(BLOCKED_REASON_NONE,
-                Pair.create(BLOCKED_REASON_NONE, ALLOWED_REASON_NONE));
+        final Map<Pair<Integer, Integer>, Integer> effectiveBlockedReasons = new HashMap<>();
+        effectiveBlockedReasons.put(Pair.create(BLOCKED_REASON_NONE, ALLOWED_REASON_NONE),
+                BLOCKED_REASON_NONE);
 
-        effectiveBlockedReasons.put(BLOCKED_REASON_NONE,
-                Pair.create(BLOCKED_REASON_BATTERY_SAVER, ALLOWED_REASON_SYSTEM));
-        effectiveBlockedReasons.put(BLOCKED_REASON_NONE,
-                Pair.create(BLOCKED_REASON_BATTERY_SAVER | BLOCKED_REASON_DOZE,
-                        ALLOWED_REASON_SYSTEM));
-        effectiveBlockedReasons.put(BLOCKED_REASON_NONE,
-                Pair.create(BLOCKED_METERED_REASON_DATA_SAVER,
-                        ALLOWED_METERED_REASON_SYSTEM));
-        effectiveBlockedReasons.put(BLOCKED_REASON_NONE,
-                Pair.create(BLOCKED_METERED_REASON_DATA_SAVER
-                                | BLOCKED_METERED_REASON_USER_RESTRICTED,
-                        ALLOWED_METERED_REASON_SYSTEM));
+        effectiveBlockedReasons.put(
+                Pair.create(BLOCKED_REASON_BATTERY_SAVER, ALLOWED_REASON_SYSTEM),
+                BLOCKED_REASON_NONE);
+        effectiveBlockedReasons.put(Pair.create(BLOCKED_REASON_BATTERY_SAVER | BLOCKED_REASON_DOZE,
+                ALLOWED_REASON_SYSTEM), BLOCKED_REASON_NONE);
+        effectiveBlockedReasons.put(
+                Pair.create(BLOCKED_METERED_REASON_DATA_SAVER, ALLOWED_METERED_REASON_SYSTEM),
+                BLOCKED_REASON_NONE);
+        effectiveBlockedReasons.put(Pair.create(BLOCKED_METERED_REASON_DATA_SAVER
+                        | BLOCKED_METERED_REASON_USER_RESTRICTED,
+                ALLOWED_METERED_REASON_SYSTEM), BLOCKED_REASON_NONE);
 
-        effectiveBlockedReasons.put(BLOCKED_METERED_REASON_DATA_SAVER,
+        effectiveBlockedReasons.put(
                 Pair.create(BLOCKED_REASON_BATTERY_SAVER | BLOCKED_METERED_REASON_DATA_SAVER,
-                        ALLOWED_REASON_SYSTEM));
-        effectiveBlockedReasons.put(BLOCKED_REASON_APP_STANDBY,
+                        ALLOWED_REASON_SYSTEM), BLOCKED_METERED_REASON_DATA_SAVER);
+        effectiveBlockedReasons.put(
                 Pair.create(BLOCKED_REASON_APP_STANDBY | BLOCKED_METERED_REASON_USER_RESTRICTED,
-                        ALLOWED_METERED_REASON_SYSTEM));
+                        ALLOWED_METERED_REASON_SYSTEM), BLOCKED_REASON_APP_STANDBY);
 
-        effectiveBlockedReasons.put(BLOCKED_REASON_NONE,
-                Pair.create(BLOCKED_REASON_BATTERY_SAVER, ALLOWED_REASON_FOREGROUND));
-        effectiveBlockedReasons.put(BLOCKED_REASON_NONE,
-                Pair.create(BLOCKED_REASON_BATTERY_SAVER | BLOCKED_REASON_DOZE,
-                        ALLOWED_REASON_FOREGROUND));
-        effectiveBlockedReasons.put(BLOCKED_REASON_NONE,
-                Pair.create(BLOCKED_METERED_REASON_DATA_SAVER, ALLOWED_METERED_REASON_FOREGROUND));
-        effectiveBlockedReasons.put(BLOCKED_REASON_NONE,
-                Pair.create(BLOCKED_METERED_REASON_DATA_SAVER
-                                | BLOCKED_METERED_REASON_USER_RESTRICTED,
-                        ALLOWED_METERED_REASON_FOREGROUND));
-        effectiveBlockedReasons.put(BLOCKED_METERED_REASON_DATA_SAVER,
+        effectiveBlockedReasons.put(
+                Pair.create(BLOCKED_REASON_BATTERY_SAVER, ALLOWED_REASON_FOREGROUND),
+                BLOCKED_REASON_NONE);
+        effectiveBlockedReasons.put(Pair.create(BLOCKED_REASON_BATTERY_SAVER | BLOCKED_REASON_DOZE,
+                ALLOWED_REASON_FOREGROUND), BLOCKED_REASON_NONE);
+        effectiveBlockedReasons.put(
+                Pair.create(BLOCKED_METERED_REASON_DATA_SAVER, ALLOWED_METERED_REASON_FOREGROUND),
+                BLOCKED_REASON_NONE);
+        effectiveBlockedReasons.put(Pair.create(BLOCKED_METERED_REASON_DATA_SAVER
+                        | BLOCKED_METERED_REASON_USER_RESTRICTED,
+                ALLOWED_METERED_REASON_FOREGROUND), BLOCKED_REASON_NONE);
+        effectiveBlockedReasons.put(
                 Pair.create(BLOCKED_REASON_BATTERY_SAVER | BLOCKED_METERED_REASON_DATA_SAVER,
-                        ALLOWED_REASON_FOREGROUND));
-        effectiveBlockedReasons.put(BLOCKED_REASON_BATTERY_SAVER,
-                Pair.create(BLOCKED_REASON_BATTERY_SAVER
-                                | BLOCKED_METERED_REASON_USER_RESTRICTED,
-                        ALLOWED_METERED_REASON_FOREGROUND));
-        // TODO: test more combinations of blocked reasons.
+                        ALLOWED_REASON_FOREGROUND), BLOCKED_METERED_REASON_DATA_SAVER);
+        effectiveBlockedReasons.put(Pair.create(BLOCKED_REASON_BATTERY_SAVER
+                        | BLOCKED_METERED_REASON_USER_RESTRICTED,
+                ALLOWED_METERED_REASON_FOREGROUND), BLOCKED_REASON_BATTERY_SAVER);
 
-        for (int i = 0; i < effectiveBlockedReasons.size(); ++i) {
-            final int expectedEffectiveBlockedReasons = effectiveBlockedReasons.keyAt(i);
-            final int blockedReasons = effectiveBlockedReasons.valueAt(i).first;
-            final int allowedReasons = effectiveBlockedReasons.valueAt(i).second;
+        effectiveBlockedReasons.put(Pair.create(BLOCKED_REASON_LOW_POWER_STANDBY,
+                ALLOWED_REASON_FOREGROUND), BLOCKED_REASON_LOW_POWER_STANDBY);
+        effectiveBlockedReasons.put(Pair.create(BLOCKED_REASON_LOW_POWER_STANDBY,
+                ALLOWED_REASON_TOP), BLOCKED_REASON_NONE);
+        effectiveBlockedReasons.put(Pair.create(BLOCKED_REASON_LOW_POWER_STANDBY,
+                ALLOWED_REASON_LOW_POWER_STANDBY_ALLOWLIST), BLOCKED_REASON_NONE);
+
+        effectiveBlockedReasons.put(Pair.create(BLOCKED_REASON_APP_BACKGROUND,
+                ALLOWED_REASON_NOT_IN_BACKGROUND), BLOCKED_REASON_NONE);
+        effectiveBlockedReasons.put(Pair.create(BLOCKED_REASON_APP_BACKGROUND
+                        | BLOCKED_REASON_BATTERY_SAVER, ALLOWED_REASON_NOT_IN_BACKGROUND),
+                BLOCKED_REASON_BATTERY_SAVER);
+        effectiveBlockedReasons.put(Pair.create(BLOCKED_REASON_APP_BACKGROUND
+                        | BLOCKED_REASON_DOZE, ALLOWED_REASON_NOT_IN_BACKGROUND),
+                BLOCKED_REASON_DOZE);
+        effectiveBlockedReasons.put(Pair.create(BLOCKED_REASON_APP_BACKGROUND,
+                        ALLOWED_REASON_RESTRICTED_MODE_PERMISSIONS), BLOCKED_REASON_APP_BACKGROUND);
+        effectiveBlockedReasons.put(Pair.create(BLOCKED_REASON_APP_BACKGROUND,
+                ALLOWED_REASON_POWER_SAVE_ALLOWLIST), BLOCKED_REASON_NONE);
+        effectiveBlockedReasons.put(Pair.create(BLOCKED_REASON_APP_BACKGROUND,
+                ALLOWED_REASON_POWER_SAVE_EXCEPT_IDLE_ALLOWLIST), BLOCKED_REASON_NONE);
+
+        for (Map.Entry<Pair<Integer, Integer>, Integer> test : effectiveBlockedReasons.entrySet()) {
+            final int expectedEffectiveBlockedReasons = test.getValue();
+            final int blockedReasons = test.getKey().first;
+            final int allowedReasons = test.getKey().second;
             final String errorMsg = "Expected="
                     + blockedReasonsToString(expectedEffectiveBlockedReasons)
                     + "; blockedReasons=" + blockedReasonsToString(blockedReasons)
@@ -1985,9 +2706,8 @@ public class NetworkPolicyManagerServiceTest {
         assertEquals("Unexpected template match rule in network policies",
                 NetworkTemplate.MATCH_CARRIER,
                 actualPolicy.template.getMatchRule());
-        assertEquals("Unexpected subscriberId match rule in network policies",
-                NetworkTemplate.SUBSCRIBER_ID_MATCH_RULE_EXACT,
-                actualPolicy.template.getSubscriberIdMatchRule());
+        assertTrue("Unexpected subscriberIds size in network policies",
+                actualPolicy.template.getSubscriberIds().size() > 0);
         assertEquals("Unexpected template meteredness in network policies",
                 METERED_YES, actualPolicy.template.getMeteredness());
     }
@@ -2000,13 +2720,27 @@ public class NetworkPolicyManagerServiceTest {
         assertEquals("Unexpected number of network policies", 1, policies.length);
         NetworkPolicy actualPolicy = policies[0];
         assertEquals("Unexpected template match rule in network policies",
-                NetworkTemplate.MATCH_WIFI,
+                MATCH_WIFI,
                 actualPolicy.template.getMatchRule());
-        assertEquals("Unexpected subscriberId match rule in network policies",
-                NetworkTemplate.SUBSCRIBER_ID_MATCH_RULE_ALL,
-                actualPolicy.template.getSubscriberIdMatchRule());
+        assertEquals("Unexpected subscriberIds size in network policies",
+                actualPolicy.template.getSubscriberIds().size(), 0);
         assertEquals("Unexpected template meteredness in network policies",
                 METERED_NO, actualPolicy.template.getMeteredness());
+    }
+
+    @Test
+    public void testNormalizeTemplate_duplicatedMergedImsiList() {
+        // This test leads to a Log.wtf, so skip it on eng builds. Otherwise, Log.wtf() would
+        // result in this process getting killed.
+        Assume.assumeFalse(Build.IS_ENG);
+        final NetworkTemplate template = new NetworkTemplate.Builder(MATCH_CARRIER)
+                .setSubscriberIds(Set.of(TEST_IMSI)).build();
+        final String[] mergedImsiGroup = new String[] {TEST_IMSI, TEST_IMSI};
+        final ArrayList<String[]> mergedList = new ArrayList<>();
+        mergedList.add(mergedImsiGroup);
+        // Verify the duplicated items in the merged IMSI list won't crash the system.
+        final NetworkTemplate result = normalizeTemplate(template, mergedList);
+        assertEquals(template, result);
     }
 
     private String formatBlockedStateError(int uid, int rule, boolean metered,
@@ -2030,12 +2764,18 @@ public class NetworkPolicyManagerServiceTest {
         return ai;
     }
 
-    private List<ApplicationInfo> buildInstalledApplicationInfoList() {
-        final List<ApplicationInfo> installedApps = new ArrayList<>();
-        installedApps.add(buildApplicationInfo(PKG_NAME_A, UID_A));
-        installedApps.add(buildApplicationInfo(PKG_NAME_B, UID_B));
-        installedApps.add(buildApplicationInfo(PKG_NAME_C, UID_C));
+    private List<AndroidPackage> buildInstalledPackageList() {
+        final List<AndroidPackage> installedApps = new ArrayList<>();
+        installedApps.add(createPackageMock(UID_A));
+        installedApps.add(createPackageMock(UID_B));
+        installedApps.add(createPackageMock(UID_C));
         return installedApps;
+    }
+
+    private AndroidPackage createPackageMock(int uid) {
+        final AndroidPackage androidPackage = mock(AndroidPackage.class);
+        when(androidPackage.getUid()).thenReturn(uid);
+        return androidPackage;
     }
 
     private List<UserInfo> buildUserInfoList() {
@@ -2051,14 +2791,14 @@ public class NetworkPolicyManagerServiceTest {
     }
 
     private NetworkCapabilities buildNetworkCapabilities(int subId, boolean roaming) {
-        final NetworkCapabilities nc = new NetworkCapabilities();
-        nc.addTransportType(TRANSPORT_CELLULAR);
+        final NetworkCapabilities.Builder builder = new NetworkCapabilities.Builder();
+        builder.addTransportType(TRANSPORT_CELLULAR);
         if (!roaming) {
-            nc.addCapability(NET_CAPABILITY_NOT_ROAMING);
+            builder.addCapability(NET_CAPABILITY_NOT_ROAMING);
         }
-        nc.setNetworkSpecifier(new TelephonyNetworkSpecifier.Builder()
+        builder.setNetworkSpecifier(new TelephonyNetworkSpecifier.Builder()
                 .setSubscriptionId(subId).build());
-        return nc;
+        return builder.build();
     }
 
     private NetworkPolicy buildDefaultFakeCarrierPolicy() {
@@ -2072,7 +2812,10 @@ public class NetworkPolicyManagerServiceTest {
 
     private static NetworkPolicy buildFakeCarrierPolicy(int cycleDay, long warningBytes,
             long limitBytes, boolean inferred) {
-        final NetworkTemplate template = buildTemplateCarrierMetered(FAKE_SUBSCRIBER_ID);
+        // TODO: Refactor this to use sTemplateCarrierMetered.
+        final NetworkTemplate template = new NetworkTemplate.Builder(MATCH_CARRIER)
+                .setSubscriberIds(Set.of(FAKE_SUBSCRIBER_ID))
+                .setMeteredness(METERED_YES).build();
         return new NetworkPolicy(template, cycleDay, TimeZone.getDefault().getID(), warningBytes,
                 limitBytes, SNOOZE_NEVER, SNOOZE_NEVER, true, inferred);
     }
@@ -2097,12 +2840,14 @@ public class NetworkPolicyManagerServiceTest {
     }
 
     private static NetworkStateSnapshot buildWifi() {
+        WifiInfo mockWifiInfo = mock(WifiInfo.class);
+        when(mockWifiInfo.makeCopy(anyLong())).thenReturn(mockWifiInfo);
+        when(mockWifiInfo.getNetworkKey()).thenReturn(TEST_WIFI_NETWORK_KEY);
         final LinkProperties prop = new LinkProperties();
         prop.setInterfaceName(TEST_IFACE);
-        final NetworkCapabilities networkCapabilities = new NetworkCapabilities();
-        networkCapabilities.addTransportType(TRANSPORT_WIFI);
-        networkCapabilities.setSSID(TEST_SSID);
-        return new NetworkStateSnapshot(new Network(TEST_NET_ID), networkCapabilities, prop,
+        final NetworkCapabilities networkCapabilities = new NetworkCapabilities.Builder()
+                .addTransportType(TRANSPORT_WIFI).setTransportInfo(mockWifiInfo).build();
+        return new NetworkStateSnapshot(TEST_NETWORK, networkCapabilities, prop,
                 null /*subscriberId*/, TYPE_WIFI);
     }
 
@@ -2124,7 +2869,7 @@ public class NetworkPolicyManagerServiceTest {
         when(mCarrierConfigManager.getConfigForSubId(eq(TEST_SUB_ID)))
                 .thenReturn(mCarrierConfig);
         List<NetworkStateSnapshot> snapshots = List.of(new NetworkStateSnapshot(
-                new Network(TEST_NET_ID),
+                TEST_NETWORK,
                 buildNetworkCapabilities(TEST_SUB_ID, roaming),
                 buildLinkProperties(TEST_IFACE), TEST_IMSI, TYPE_MOBILE));
         when(mConnManager.getAllNetworkStateSnapshots()).thenReturn(snapshots);
@@ -2143,18 +2888,7 @@ public class NetworkPolicyManagerServiceTest {
     }
 
     private void verifyAdvisePersistThreshold() throws Exception {
-        verify(mStatsService).advisePersistThreshold(anyLong());
-    }
-
-    private static class TestAbstractFuture<T> extends AbstractFuture<T> {
-        @Override
-        public T get() throws InterruptedException, ExecutionException {
-            try {
-                return get(5, TimeUnit.SECONDS);
-            } catch (TimeoutException e) {
-                throw new RuntimeException(e);
-            }
-        }
+        verify(mStatsManager).setDefaultGlobalAlert(anyLong());
     }
 
     private static void assertTimeEquals(long expected, long actual) {
@@ -2265,7 +2999,6 @@ public class NetworkPolicyManagerServiceTest {
     private FutureIntent mRestrictBackgroundChanged;
 
     private void postMsgAndWaitForCompletion() throws InterruptedException {
-        final Handler handler = mService.getHandlerForTesting();
         final CountDownLatch latch = new CountDownLatch(1);
         mService.getHandlerForTesting().post(latch::countDown);
         if (!latch.await(5, TimeUnit.SECONDS)) {
@@ -2273,9 +3006,22 @@ public class NetworkPolicyManagerServiceTest {
         }
     }
 
+    /**
+     * This posts a blocking message to the service handler with the given delayMs and waits for it
+     * to complete. This ensures that all messages posted before the given delayMs will also
+     * have been executed before this method returns and can be verified in subsequent code.
+     */
+    private void waitForDelayedMessageOnHandler(long delayMs) throws InterruptedException {
+        final CountDownLatch latch = new CountDownLatch(1);
+        mService.getHandlerForTesting().postDelayed(latch::countDown, delayMs);
+        if (!latch.await(delayMs + 5_000, TimeUnit.MILLISECONDS)) {
+            fail("Timed out waiting for delayed msg to be handled");
+        }
+    }
+
     private void setSubscriptionPlans(int subId, SubscriptionPlan[] plans, String callingPackage)
             throws InterruptedException {
-        mService.setSubscriptionPlans(subId, plans, callingPackage);
+        mService.setSubscriptionPlans(subId, plans, 0, callingPackage);
         // setSubscriptionPlans() triggers async events, wait for those to be completed before
         // moving forward as they could interfere with the tests later.
         postMsgAndWaitForCompletion();
@@ -2303,6 +3049,7 @@ public class NetworkPolicyManagerServiceTest {
             String subscriberId) {
         when(mSubscriptionManager.getActiveSubscriptionInfoList()).thenReturn(
                 createSubscriptionInfoList(subscriptionId));
+        notifyDefaultAndActiveDataSubIdChange(subscriptionId, subscriptionId);
 
         TelephonyManager subTelephonyManager;
         subTelephonyManager = mock(TelephonyManager.class);
@@ -2311,6 +3058,16 @@ public class NetworkPolicyManagerServiceTest {
         when(mTelephonyManager.createForSubscriptionId(subscriptionId))
                 .thenReturn(subTelephonyManager);
         return subTelephonyManager;
+    }
+
+    /**
+     * Telephony Manager callback notifies data sub Id changes.
+     * @param defaultDataSubId The mock default data sub Id.
+     * @param activeDataSubId The mock active data sub Id.
+     */
+    private void notifyDefaultAndActiveDataSubIdChange(int defaultDataSubId, int activeDataSubId) {
+        mDeps.setDefaultAndActiveDataSubId(defaultDataSubId, activeDataSubId);
+        mActiveDataSubIdListener.onActiveDataSubscriptionIdChanged(activeDataSubId);
     }
 
     /**

@@ -15,24 +15,25 @@
  */
 
 #include "CanvasTransform.h"
-#include "Properties.h"
-#include "utils/Color.h"
 
+#include <SkAndroidFrameworkUtils.h>
+#include <SkBlendMode.h>
 #include <SkColorFilter.h>
 #include <SkGradientShader.h>
+#include <SkHighContrastFilter.h>
 #include <SkPaint.h>
 #include <SkShader.h>
-#include <ui/ColorSpace.h>
+#include <log/log.h>
 
 #include <algorithm>
 #include <cmath>
 
-#include <log/log.h>
-#include <SkHighContrastFilter.h>
+#include "Properties.h"
+#include "utils/Color.h"
 
 namespace android::uirenderer {
 
-static SkColor makeLight(SkColor color) {
+SkColor makeLight(SkColor color) {
     Lab lab = sRGBToLab(color);
     float invertedL = std::min(110 - lab.L, 100.0f);
     if (invertedL > lab.L) {
@@ -43,7 +44,7 @@ static SkColor makeLight(SkColor color) {
     }
 }
 
-static SkColor makeDark(SkColor color) {
+SkColor makeDark(SkColor color) {
     Lab lab = sRGBToLab(color);
     float invertedL = std::min(110 - lab.L, 100.0f);
     if (invertedL < lab.L) {
@@ -54,7 +55,7 @@ static SkColor makeDark(SkColor color) {
     }
 }
 
-static SkColor transformColor(ColorTransform transform, SkColor color) {
+SkColor transformColor(ColorTransform transform, SkColor color) {
     switch (transform) {
         case ColorTransform::Light:
             return makeLight(color);
@@ -65,34 +66,52 @@ static SkColor transformColor(ColorTransform transform, SkColor color) {
     }
 }
 
+SkColor transformColorInverse(ColorTransform transform, SkColor color) {
+    switch (transform) {
+        case ColorTransform::Dark:
+            return makeLight(color);
+        case ColorTransform::Light:
+            return makeDark(color);
+        default:
+            return color;
+    }
+}
+
 static void applyColorTransform(ColorTransform transform, SkPaint& paint) {
     if (transform == ColorTransform::None) return;
+
+    if (transform == ColorTransform::Invert) {
+        auto filter = SkHighContrastFilter::Make(
+                {/* grayscale= */ false, SkHighContrastConfig::InvertStyle::kInvertLightness,
+                 /* contrast= */ 0.0f});
+
+        if (paint.getColorFilter()) {
+            paint.setColorFilter(SkColorFilters::Compose(filter, paint.refColorFilter()));
+        } else {
+            paint.setColorFilter(filter);
+        }
+        return;
+    }
 
     SkColor newColor = transformColor(transform, paint.getColor());
     paint.setColor(newColor);
 
     if (paint.getShader()) {
-        SkShader::GradientInfo info;
+        SkAndroidFrameworkUtils::LinearGradientInfo info;
         std::array<SkColor, 10> _colorStorage;
         std::array<SkScalar, _colorStorage.size()> _offsetStorage;
         info.fColorCount = _colorStorage.size();
         info.fColors = _colorStorage.data();
         info.fColorOffsets = _offsetStorage.data();
-        SkShader::GradientType type = paint.getShader()->asAGradient(&info);
 
-        if (info.fColorCount <= 10) {
-            switch (type) {
-                case SkShader::kLinear_GradientType:
-                    for (int i = 0; i < info.fColorCount; i++) {
-                        info.fColors[i] = transformColor(transform, info.fColors[i]);
-                    }
-                    paint.setShader(SkGradientShader::MakeLinear(info.fPoint, info.fColors,
-                                                                 info.fColorOffsets, info.fColorCount,
-                                                                 info.fTileMode, info.fGradientFlags, nullptr));
-                    break;
-                default:break;
+        if (SkAndroidFrameworkUtils::ShaderAsALinearGradient(paint.getShader(), &info) &&
+            info.fColorCount <= _colorStorage.size()) {
+            for (int i = 0; i < info.fColorCount; i++) {
+                info.fColors[i] = transformColor(transform, info.fColors[i]);
             }
-
+            paint.setShader(SkGradientShader::MakeLinear(
+                    info.fPoints, info.fColors, info.fColorOffsets, info.fColorCount,
+                    info.fTileMode, info.fGradientFlags, nullptr));
         }
     }
 
@@ -118,9 +137,10 @@ static BitmapPalette filterPalette(const SkPaint* paint, BitmapPalette palette) 
         return palette;
     }
 
-    SkColor color = palette == BitmapPalette::Light ? SK_ColorWHITE : SK_ColorBLACK;
-    color = paint->getColorFilter()->filterColor(color);
-    return paletteForColorHSV(color);
+    SkColor4f color = palette == BitmapPalette::Light ? SkColors::kWhite : SkColors::kBlack;
+    sk_sp<SkColorSpace> srgb = SkColorSpace::MakeSRGB();
+    color = paint->getColorFilter()->filterColor4f(color, srgb.get(), srgb.get());
+    return paletteForColorHSV(color.toSkColor());
 }
 
 bool transformPaint(ColorTransform transform, SkPaint* paint) {

@@ -27,6 +27,7 @@ import java.util.concurrent.Executor;
 /**
  * Shared singleton background thread for each process.
  */
+@android.ravenwood.annotation.RavenwoodKeepWholeClass
 public final class BackgroundThread extends HandlerThread {
     private static final long SLOW_DISPATCH_THRESHOLD_MS = 10_000;
     private static final long SLOW_DELIVERY_THRESHOLD_MS = 30_000;
@@ -46,7 +47,8 @@ public final class BackgroundThread extends HandlerThread {
             looper.setTraceTag(Trace.TRACE_TAG_SYSTEM_SERVER);
             looper.setSlowLogThresholdMs(
                     SLOW_DISPATCH_THRESHOLD_MS, SLOW_DELIVERY_THRESHOLD_MS);
-            sHandler = new Handler(sInstance.getLooper());
+            sHandler = new Handler(sInstance.getLooper(), /*callback=*/ null, /* async=*/ false,
+                    /* shared=*/ true);
             sHandlerExecutor = new HandlerExecutor(sHandler);
         }
     }

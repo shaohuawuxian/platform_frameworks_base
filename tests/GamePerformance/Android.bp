@@ -31,10 +31,10 @@ android_test_helper_app {
         enabled: false,
     },
     srcs: ["src/**/*.java"],
-    static_libs: ["android-support-test"],
+    static_libs: ["androidx.test.rules"],
     libs: [
-        "android.test.base",
-        "android.test.runner",
+        "android.test.base.stubs.system",
+        "android.test.runner.stubs.system",
     ],
     platform_apis: true,
     certificate: "platform",

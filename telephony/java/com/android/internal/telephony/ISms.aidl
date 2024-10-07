@@ -530,6 +530,25 @@ interface ISms {
             int subId, String callingPkg, String prefixes, in PendingIntent intent);
 
     /**
+     * set Memory Status in SmsStorageMonitor
+     *
+     * @param subId the subscription Id.
+     * @param callingPackage the package name of the calling app.
+     * @param isStorageAvailable sets StorageAvailable to false or true
+     *   for testing behaviour of SmsStorageMonitor
+     */
+    void setStorageMonitorMemoryStatusOverride(int subId, boolean isStorageAvailable);
+
+     /**
+     * reset Memory Status change made by TestApi setStorageMonitorMemoryStatusOverride
+     * in SmsStorageMonitor
+     *
+     * @param subId the subscription Id.
+     * @param callingPackage the package name of the calling app.
+     */
+    void clearStorageMonitorMemoryStatusOverride(int subId);
+
+    /**
      * Check if the destination is a possible premium short code.
      *
      * @param destAddress the destination address to test for possible short code
@@ -573,4 +592,17 @@ interface ISms {
      * @hide
      */
     boolean resetAllCellBroadcastRanges(int subId);
+
+    /**
+     * Gets the message size of a WAP from the cache.
+     *
+     * @param locationUrl the location to use as a key for looking up the size in the cache.
+     * The locationUrl may or may not have the transactionId appended to the url.
+     *
+     * @return long representing the message size
+     * @throws java.util.NoSuchElementException if the WAP push doesn't exist in the cache
+     *
+     * @hide
+     */
+    long getWapMessageSize(String locationUrl);
 }

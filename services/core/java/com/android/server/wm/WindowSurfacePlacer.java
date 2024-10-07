@@ -43,8 +43,7 @@ class WindowSurfacePlacer {
     private int mLayoutRepeatCount;
 
     static final int SET_UPDATE_ROTATION                = 1 << 0;
-    static final int SET_ORIENTATION_CHANGE_COMPLETE    = 1 << 2;
-    static final int SET_WALLPAPER_ACTION_PENDING       = 1 << 3;
+    static final int SET_WALLPAPER_ACTION_PENDING       = 1 << 1;
 
     private boolean mTraversalScheduled;
     private int mDeferDepth = 0;
@@ -211,6 +210,10 @@ class WindowSurfacePlacer {
         return mInLayout;
     }
 
+    boolean isTraversalScheduled() {
+        return mTraversalScheduled;
+    }
+
     void requestTraversal() {
         if (mTraversalScheduled) {
             return;
@@ -229,7 +232,5 @@ class WindowSurfacePlacer {
 
     public void dump(PrintWriter pw, String prefix) {
         pw.println(prefix + "mTraversalScheduled=" + mTraversalScheduled);
-        pw.println(prefix + "mHoldScreenWindow=" + mService.mRoot.mHoldScreenWindow);
-        pw.println(prefix + "mObscuringWindow=" + mService.mRoot.mObscuringWindow);
     }
 }

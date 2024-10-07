@@ -61,7 +61,6 @@ import android.print.PrinterId;
 import android.print.PrinterInfo;
 import android.printservice.PrintService;
 import android.printservice.PrintServiceInfo;
-import android.provider.DocumentsContract;
 import android.text.Editable;
 import android.text.TextUtils;
 import android.text.TextWatcher;
@@ -785,6 +784,9 @@ public class PrintActivity extends Activity implements RemotePrintDocument.Updat
                     onPrinterAvailable(printerInfo);
                 } else {
                     onPrinterUnavailable(printerInfo);
+                }
+                if (mPrinterRegistry != null) {
+                    mPrinterRegistry.setTrackedPrinter(mCurrentPrinter.getId());
                 }
 
                 mDestinationSpinnerAdapter.ensurePrinterInVisibleAdapterPosition(printerInfo);

@@ -20,10 +20,10 @@ import android.annotation.CallSuper;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.content.ContentResolver;
+import android.content.Context;
 import android.content.Intent;
 import android.content.res.AssetFileDescriptor;
 import android.database.Cursor;
-import android.database.DatabaseUtils;
 import android.database.MatrixCursor;
 import android.database.MatrixCursor.RowBuilder;
 import android.graphics.Point;
@@ -39,7 +39,6 @@ import android.provider.DocumentsContract;
 import android.provider.DocumentsContract.Document;
 import android.provider.DocumentsProvider;
 import android.provider.MediaStore;
-import android.provider.MediaStore.Files.FileColumns;
 import android.provider.MetadataReader;
 import android.system.Int64Ref;
 import android.text.TextUtils;
@@ -63,13 +62,14 @@ import java.nio.file.FileVisitor;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.BasicFileAttributes;
+ import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.LinkedList;
 import java.util.List;
+import java.util.Locale;
+import java.util.Queue;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.function.Predicate;
-import java.util.regex.Pattern;
 
 /**
  * A helper class for {@link android.provider.DocumentsProvider} to perform file operations on local
@@ -86,6 +86,8 @@ public abstract class FileSystemProvider extends DocumentsProvider {
             DocumentsContract.QUERY_ARG_FILE_SIZE_OVER,
             DocumentsContract.QUERY_ARG_LAST_MODIFIED_AFTER,
             DocumentsContract.QUERY_ARG_MIME_TYPES);
+
+    private static final int MAX_RESULTS_NUMBER = 23;
 
     private static String joinNewline(String... args) {
         return TextUtils.join("\n", args);
@@ -232,9 +234,9 @@ public abstract class FileSystemProvider extends DocumentsProvider {
             throw new FileNotFoundException(doc + " is not found under " + parent);
         }
 
-        LinkedList<String> path = new LinkedList<>();
+        List<String> path = new ArrayList<>();
         while (doc != null && FileUtils.contains(parent, doc)) {
-            path.addFirst(getDocIdForFile(doc));
+            path.add(0, getDocIdForFile(doc));
 
             doc = doc.getParentFile();
         }
@@ -271,8 +273,7 @@ public abstract class FileSystemProvider extends DocumentsProvider {
                 throw new IllegalStateException("Failed to touch " + file + ": " + e);
             }
         }
-        MediaStore.scanFile(getContext().getContentResolver(), file);
-
+        updateMediaStore(getContext(), file);
         return childId;
     }
 
@@ -295,7 +296,9 @@ public abstract class FileSystemProvider extends DocumentsProvider {
         onDocIdChanged(afterDocId);
 
         final File afterVisibleFile = getFileForDocId(afterDocId, true);
-        moveInMediaStore(beforeVisibleFile, afterVisibleFile);
+
+        updateMediaStore(getContext(), beforeVisibleFile);
+        updateMediaStore(getContext(), afterVisibleFile);
 
         if (!TextUtils.equals(docId, afterDocId)) {
             return afterDocId;
@@ -323,17 +326,23 @@ public abstract class FileSystemProvider extends DocumentsProvider {
         onDocIdChanged(sourceDocumentId);
         onDocIdDeleted(sourceDocumentId);
         onDocIdChanged(docId);
-        moveInMediaStore(visibleFileBefore, getFileForDocId(docId, true));
-
+        // update the database
+        updateMediaStore(getContext(), visibleFileBefore);
+        updateMediaStore(getContext(), getFileForDocId(docId, true));
         return docId;
     }
 
-    private void moveInMediaStore(@Nullable File oldVisibleFile, @Nullable File newVisibleFile) {
-        if (oldVisibleFile != null) {
-            MediaStore.scanFile(getContext().getContentResolver(), oldVisibleFile);
-        }
-        if (newVisibleFile != null) {
-            MediaStore.scanFile(getContext().getContentResolver(), newVisibleFile);
+    private static void updateMediaStore(@NonNull Context context, File file) {
+        if (file != null) {
+            final ContentResolver resolver = context.getContentResolver();
+            final String noMedia = ".nomedia";
+            // For file, check whether the file name is .nomedia or not.
+            // If yes, scan the parent directory to update all files in the directory.
+            if (!file.isDirectory() && file.getName().toLowerCase(Locale.ROOT).endsWith(noMedia)) {
+                MediaStore.scanFile(resolver, file.getParentFile());
+            } else {
+                MediaStore.scanFile(resolver, file);
+            }
         }
     }
 
@@ -354,35 +363,7 @@ public abstract class FileSystemProvider extends DocumentsProvider {
 
         onDocIdChanged(docId);
         onDocIdDeleted(docId);
-        removeFromMediaStore(visibleFile);
-    }
-
-    private void removeFromMediaStore(@Nullable File visibleFile)
-            throws FileNotFoundException {
-        // visibleFolder is null if we're removing a document from external thumb drive or SD card.
-        if (visibleFile != null) {
-            final long token = Binder.clearCallingIdentity();
-
-            try {
-                final ContentResolver resolver = getContext().getContentResolver();
-                final Uri externalUri = MediaStore.Files.getContentUri("external");
-                final Bundle queryArgs = new Bundle();
-                queryArgs.putInt(MediaStore.QUERY_ARG_MATCH_PENDING, MediaStore.MATCH_INCLUDE);
-
-                // Remove the media store entry corresponding to visibleFile and if it is a
-                // directory, also remove media store entries for any files inside this directory.
-                // Logic borrowed from com.android.providers.media.scan.ModernMediaScanner.
-                final String pathEscapedForLike = DatabaseUtils.escapeForLike(
-                        visibleFile.getAbsolutePath());
-                ContentResolver.includeSqlSelectionArgs(queryArgs,
-                        FileColumns.DATA + " LIKE ? ESCAPE '\\' OR "
-                                + FileColumns.DATA + " LIKE ? ESCAPE '\\'",
-                        new String[] {pathEscapedForLike + "/%", pathEscapedForLike});
-                resolver.delete(externalUri, queryArgs);
-            } finally {
-                Binder.restoreCallingIdentity(token);
-            }
-        }
+        updateMediaStore(getContext(), visibleFile);
     }
 
     @Override
@@ -394,56 +375,53 @@ public abstract class FileSystemProvider extends DocumentsProvider {
     }
 
     /**
-     * This method is similar to
-     * {@link DocumentsProvider#queryChildDocuments(String, String[], String)}. This method returns
-     * all children documents including hidden directories/files.
-     *
-     * <p>
-     * In a scoped storage world, access to "Android/data" style directories are hidden for privacy
-     * reasons. This method may show privacy sensitive data, so its usage should only be in
-     * restricted modes.
-     *
-     * @param parentDocumentId the directory to return children for.
-     * @param projection list of {@link Document} columns to put into the
-     *            cursor. If {@code null} all supported columns should be
-     *            included.
-     * @param sortOrder how to order the rows, formatted as an SQL
-     *            {@code ORDER BY} clause (excluding the ORDER BY itself).
-     *            Passing {@code null} will use the default sort order, which
-     *            may be unordered. This ordering is a hint that can be used to
-     *            prioritize how data is fetched from the network, but UI may
-     *            always enforce a specific ordering
-     * @throws FileNotFoundException when parent document doesn't exist or query fails
+     * WARNING: this method should really be {@code final}, but for the backward compatibility it's
+     * not; new classes that extend {@link FileSystemProvider} should override
+     * {@link #queryChildDocuments(String, String[], String, boolean)}, not this method.
      */
-    protected Cursor queryChildDocumentsShowAll(
-            String parentDocumentId, String[] projection, String sortOrder)
-            throws FileNotFoundException {
-        return queryChildDocuments(parentDocumentId, projection, sortOrder, File -> true);
-    }
-
     @Override
-    public Cursor queryChildDocuments(
-            String parentDocumentId, String[] projection, String sortOrder)
+    public Cursor queryChildDocuments(String documentId, String[] projection, String sortOrder)
             throws FileNotFoundException {
-        // Access to some directories is hidden for privacy reasons.
-        return queryChildDocuments(parentDocumentId, projection, sortOrder, this::shouldShow);
+        return queryChildDocuments(documentId, projection, sortOrder, /* includeHidden */ false);
     }
 
-    private Cursor queryChildDocuments(
-            String parentDocumentId, String[] projection, String sortOrder,
-            @NonNull Predicate<File> filter) throws FileNotFoundException {
-        final File parent = getFileForDocId(parentDocumentId);
+    /**
+     * This method is similar to {@link #queryChildDocuments(String, String[], String)}, however, it
+     * could return <b>all</b> content of the directory, <b>including restricted (hidden)
+     * directories and files</b>.
+     * <p>
+     * In the scoped storage world, some directories and files (e.g. {@code Android/data/} and
+     * {@code Android/obb/} on the external storage) are hidden for privacy reasons.
+     * Hence, this method may reveal privacy-sensitive data, thus should be used with extra care.
+     */
+    @Override
+    public final Cursor queryChildDocumentsForManage(String documentId, String[] projection,
+            String sortOrder) throws FileNotFoundException {
+        return queryChildDocuments(documentId, projection, sortOrder, /* includeHidden */ true);
+    }
+
+    protected Cursor queryChildDocuments(String documentId, String[] projection, String sortOrder,
+            boolean includeHidden) throws FileNotFoundException {
+        final File parent = getFileForDocId(documentId);
         final MatrixCursor result = new DirectoryCursor(
-                resolveProjection(projection), parentDocumentId, parent);
-        if (parent.isDirectory()) {
-            for (File file : FileUtils.listFilesOrEmpty(parent)) {
-                if (filter.test(file)) {
-                    includeFile(result, null, file);
-                }
-            }
-        } else {
-            Log.w(TAG, "parentDocumentId '" + parentDocumentId + "' is not Directory");
+                resolveProjection(projection), documentId, parent);
+
+        if (!parent.isDirectory()) {
+            Log.w(TAG, '"' + documentId + "\" is not a directory");
+            return result;
         }
+
+        if (!includeHidden && shouldHideDocument(documentId)) {
+            Log.w(TAG, "Queried directory \"" + documentId + "\" is hidden");
+            return result;
+        }
+
+        for (File file : FileUtils.listFilesOrEmpty(parent)) {
+            if (!includeHidden && shouldHideDocument(file)) continue;
+
+            includeFile(result, null, file);
+        }
+
         return result;
     }
 
@@ -465,23 +443,29 @@ public abstract class FileSystemProvider extends DocumentsProvider {
      *
      * @see ContentResolver#EXTRA_HONORED_ARGS
      */
-    protected final Cursor querySearchDocuments(
-            File folder, String[] projection, Set<String> exclusion, Bundle queryArgs)
-            throws FileNotFoundException {
+    protected final Cursor querySearchDocuments(File folder, String[] projection,
+            Set<String> exclusion, Bundle queryArgs) throws FileNotFoundException {
         final MatrixCursor result = new MatrixCursor(resolveProjection(projection));
-        final LinkedList<File> pending = new LinkedList<>();
-        pending.add(folder);
-        while (!pending.isEmpty() && result.getCount() < 24) {
-            final File file = pending.removeFirst();
-            if (shouldHide(file)) continue;
+
+        // We'll be a running a BFS here.
+        final Queue<File> pending = new ArrayDeque<>();
+        pending.offer(folder);
+
+        while (!pending.isEmpty() && result.getCount() < MAX_RESULTS_NUMBER) {
+            final File file = pending.poll();
+
+            // Skip hidden documents (both files and directories)
+            if (shouldHideDocument(file)) continue;
 
             if (file.isDirectory()) {
                 for (File child : FileUtils.listFilesOrEmpty(file)) {
-                    pending.add(child);
+                    pending.offer(child);
                 }
             }
-            if (!exclusion.contains(file.getAbsolutePath()) && matchSearchQueryArguments(file,
-                    queryArgs)) {
+
+            if (exclusion.contains(file.getAbsolutePath())) continue;
+
+            if (matchSearchQueryArguments(file, queryArgs)) {
                 includeFile(result, null, file);
             }
         }
@@ -525,8 +509,10 @@ public abstract class FileSystemProvider extends DocumentsProvider {
         final File visibleFile = getFileForDocId(documentId, true);
 
         final int pfdMode = ParcelFileDescriptor.parseMode(mode);
-        if (pfdMode == ParcelFileDescriptor.MODE_READ_ONLY || visibleFile == null) {
+        if (visibleFile == null) {
             return ParcelFileDescriptor.open(file, pfdMode);
+        } else if (pfdMode == ParcelFileDescriptor.MODE_READ_ONLY) {
+            return openFileForRead(visibleFile);
         } else {
             try {
                 // When finished writing, kick off media scanner
@@ -539,6 +525,29 @@ public abstract class FileSystemProvider extends DocumentsProvider {
                 throw new FileNotFoundException("Failed to open for writing: " + e);
             }
         }
+    }
+
+    private ParcelFileDescriptor openFileForRead(final File target) throws FileNotFoundException {
+        final Uri uri = MediaStore.scanFile(getContext().getContentResolver(), target);
+        if (uri == null) {
+            Log.w(TAG, "Failed to retrieve media store URI for: " + target);
+            return ParcelFileDescriptor.open(target, ParcelFileDescriptor.MODE_READ_ONLY);
+        }
+
+        // Passing the calling uid via EXTRA_MEDIA_CAPABILITIES_UID, so that the decision to
+        // transcode or not transcode can be made based upon the calling app's uid, and not based
+        // upon the Provider's uid.
+        final Bundle opts = new Bundle();
+        opts.putInt(MediaStore.EXTRA_MEDIA_CAPABILITIES_UID, Binder.getCallingUid());
+
+        final AssetFileDescriptor afd =
+                getContext().getContentResolver().openTypedAssetFileDescriptor(uri, "*/*", opts);
+        if (afd == null) {
+            Log.w(TAG, "Failed to open with media_capabilities uid for URI: " + uri);
+            return ParcelFileDescriptor.open(target, ParcelFileDescriptor.MODE_READ_ONLY);
+        }
+
+        return afd.getParcelFileDescriptor();
     }
 
     /**
@@ -600,24 +609,21 @@ public abstract class FileSystemProvider extends DocumentsProvider {
 
         final int flagIndex = ArrayUtils.indexOf(columns, Document.COLUMN_FLAGS);
         if (flagIndex != -1) {
+            final boolean isDir = mimeType.equals(Document.MIME_TYPE_DIR);
             int flags = 0;
             if (file.canWrite()) {
-                if (mimeType.equals(Document.MIME_TYPE_DIR)) {
+                flags |= Document.FLAG_SUPPORTS_DELETE;
+                flags |= Document.FLAG_SUPPORTS_RENAME;
+                flags |= Document.FLAG_SUPPORTS_MOVE;
+                if (isDir) {
                     flags |= Document.FLAG_DIR_SUPPORTS_CREATE;
-                    flags |= Document.FLAG_SUPPORTS_DELETE;
-                    flags |= Document.FLAG_SUPPORTS_RENAME;
-                    flags |= Document.FLAG_SUPPORTS_MOVE;
-
-                    if (shouldBlockFromTree(docId)) {
-                        flags |= Document.FLAG_DIR_BLOCKS_OPEN_DOCUMENT_TREE;
-                    }
-
                 } else {
                     flags |= Document.FLAG_SUPPORTS_WRITE;
-                    flags |= Document.FLAG_SUPPORTS_DELETE;
-                    flags |= Document.FLAG_SUPPORTS_RENAME;
-                    flags |= Document.FLAG_SUPPORTS_MOVE;
                 }
+            }
+
+            if (isDir && shouldBlockDirectoryFromTree(docId)) {
+                flags |= Document.FLAG_DIR_BLOCKS_OPEN_DOCUMENT_TREE;
             }
 
             if (mimeType.startsWith("image/")) {
@@ -652,22 +658,36 @@ public abstract class FileSystemProvider extends DocumentsProvider {
         return row;
     }
 
-    private static final Pattern PATTERN_HIDDEN_PATH = Pattern.compile(
-            "(?i)^/storage/[^/]+/(?:[0-9]+/)?Android/(?:data|obb|sandbox)$");
+    /**
+     * Some providers may want to restrict access to certain directories and files,
+     * e.g. <i>"Android/data"</i> and <i>"Android/obb"</i> on the shared storage for
+     * privacy reasons.
+     * Such providers should override this method.
+     */
+    protected boolean shouldHideDocument(@NonNull String documentId)
+            throws FileNotFoundException {
+        return false;
+    }
 
     /**
-     * In a scoped storage world, access to "Android/data" style directories are
-     * hidden for privacy reasons.
+     * A variant of the {@link #shouldHideDocument(String)} that takes a {@link File} instead of
+     * a {@link String} {@code documentId}.
+     *
+     * @see #shouldHideDocument(String)
      */
-    protected boolean shouldHide(@NonNull File file) {
-        return (PATTERN_HIDDEN_PATH.matcher(file.getAbsolutePath()).matches());
+    protected final boolean shouldHideDocument(@NonNull File document)
+            throws FileNotFoundException {
+        return shouldHideDocument(getDocIdForFile(document));
     }
 
-    private boolean shouldShow(@NonNull File file) {
-        return !shouldHide(file);
-    }
-
-    protected boolean shouldBlockFromTree(@NonNull String docId) {
+    /**
+     * @return if the directory that should be blocked from being selected when the user launches
+     * an {@link Intent#ACTION_OPEN_DOCUMENT_TREE} intent.
+     *
+     * @see Document#FLAG_DIR_BLOCKS_OPEN_DOCUMENT_TREE
+     */
+    protected boolean shouldBlockDirectoryFromTree(@NonNull String documentId)
+            throws FileNotFoundException {
         return false;
     }
 

@@ -17,6 +17,7 @@
 package com.android.server.webkit;
 
 import android.content.Context;
+import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager.NameNotFoundException;
 import android.webkit.UserPackage;
@@ -41,10 +42,8 @@ public interface SystemInterface {
     public void updateUserSetting(Context context, String newProviderName);
     public void killPackageDependents(String packageName);
 
-    public boolean isFallbackLogicEnabled();
-    public void enableFallbackLogic(boolean enable);
-
     public void enablePackageForAllUsers(Context context, String packageName, boolean enable);
+    public void installExistingPackageForAllUsers(Context context, String packageName);
 
     public boolean systemIsDebuggable();
     public PackageInfo getPackageInfoForProvider(WebViewProviderInfo configInfo)
@@ -64,4 +63,6 @@ public interface SystemInterface {
     /** Start the zygote if it's not already running. */
     public void ensureZygoteStarted();
     public boolean isMultiProcessDefaultEnabled();
+
+    public void pinWebviewIfRequired(ApplicationInfo appInfo);
 }

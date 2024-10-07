@@ -21,12 +21,15 @@ import android.os.Bundle;
 import android.os.IBinder;
 import android.os.IBinder.DeathRecipient;
 import android.os.RemoteException;
+import android.os.ResultReceiver;
 import android.telecom.Logging.Session;
 
 import com.android.internal.telecom.IConnectionService;
 import com.android.internal.telecom.IConnectionServiceAdapter;
 import com.android.internal.telecom.IVideoProvider;
 import com.android.internal.telecom.RemoteServiceCallback;
+import com.android.server.telecom.flags.FeatureFlags;
+import com.android.server.telecom.flags.FeatureFlagsImpl;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -239,13 +242,9 @@ final class RemoteConnectionService {
                     conference.addConnection(c);
                 }
             }
-            if (conference.getConnections().size() == 0) {
-                // A conference was created, but none of its connections are ones that have been
-                // created by, and therefore being tracked by, this remote connection service. It
-                // is of no interest to us.
-                Log.d(this, "addConferenceCall - skipping");
-                return;
-            }
+            // We used to skip adding empty conferences; however in the world of IMS conference
+            // calls we need to add them to the remote connection service because they will always
+            // start with no participants.
 
             conference.setState(parcel.getState());
             conference.setConnectionCapabilities(parcel.getConnectionCapabilities());
@@ -379,6 +378,8 @@ final class RemoteConnectionService {
         @Override
         public void addExistingConnection(String callId, ParcelableConnection connection,
                 Session.Info sessionInfo) {
+            Log.i(RemoteConnectionService.this, "addExistingConnection: callId=%s, conn=%s", callId,
+                    connection);
             String callingPackage = mOurConnectionServiceImpl.getApplicationContext().
                     getOpPackageName();
             int callingTargetSdkVersion = mOurConnectionServiceImpl.getApplicationInfo()
@@ -390,6 +391,20 @@ final class RemoteConnectionService {
             Bundle newExtras = new Bundle();
             newExtras.putParcelable(Connection.EXTRA_REMOTE_PHONE_ACCOUNT_HANDLE,
                     connection.getPhoneAccount());
+            if (connection.getParentCallId() != null) {
+                RemoteConference parentConf = mConferenceById.get(connection.getParentCallId());
+                // If there is a parent being set, we need to stash the conference ID here.
+                // Telephony can add an existing connection while specifying a parent conference.
+                // There is no equivalent version of that operation as part of the remote connection
+                // API, so we will stash the pre-defined parent's ID in the extras.  When the
+                // connectionmanager copies over the extras from the remote connection to the
+                // actual one, it'll get passed to Telecom so that it can make the association.
+                if (parentConf != null) {
+                    newExtras.putString(Connection.EXTRA_ADD_TO_CONFERENCE_ID, parentConf.getId());
+                    Log.i(this, "addExistingConnection: stash parent of %s as %s",
+                            connection.getParentCallId(), parentConf.getId());
+                }
+            }
             remoteConnection.putExtras(newExtras);
             mConnectionById.put(callId, remoteConnection);
             remoteConnection.registerCallback(new RemoteConnection.Callback() {
@@ -498,6 +513,18 @@ final class RemoteConnectionService {
         public void setCallDirection(String callId, int direction, Session.Info sessionInfo) {
             // Do nothing
         }
+
+        @Override
+        public void requestCallEndpointChange(String callId, CallEndpoint endpoint,
+                ResultReceiver callback, Session.Info sessionInfo) {
+            // Do nothing
+        }
+
+        @Override
+        public void queryLocation(String callId, long timeoutMillis, String provider,
+                ResultReceiver callback, Session.Info sessionInfo) {
+            // Do nothing
+        }
     };
 
     private final ConnectionServiceAdapterServant mServant =
@@ -524,6 +551,9 @@ final class RemoteConnectionService {
     private final Map<String, RemoteConnection> mConnectionById = new HashMap<>();
     private final Map<String, RemoteConference> mConferenceById = new HashMap<>();
     private final Set<RemoteConnection> mPendingConnections = new HashSet<>();
+
+    /** Telecom feature flags **/
+    private final FeatureFlags mTelecomFeatureFlags = new FeatureFlagsImpl();
 
     RemoteConnectionService(
             IConnectionService outgoingConnectionServiceRpc,
@@ -553,6 +583,14 @@ final class RemoteConnectionService {
         extras.putString(Connection.EXTRA_REMOTE_CONNECTION_ORIGINATING_PACKAGE_NAME,
                 mOurConnectionServiceImpl.getApplicationContext().getOpPackageName());
 
+        // Defaulted ConnectionRequest params
+        String telecomCallId = "";
+        boolean shouldShowIncomingUI = false;
+        if (mTelecomFeatureFlags.setRemoteConnectionCallId()) {
+            telecomCallId = id;
+            shouldShowIncomingUI = request.shouldShowIncomingCallUi();
+        }
+
         final ConnectionRequest newRequest = new ConnectionRequest.Builder()
                 .setAccountHandle(request.getAccountHandle())
                 .setAddress(request.getAddress())
@@ -560,6 +598,9 @@ final class RemoteConnectionService {
                 .setVideoState(request.getVideoState())
                 .setRttPipeFromInCall(request.getRttPipeFromInCall())
                 .setRttPipeToInCall(request.getRttPipeToInCall())
+                // Flagged changes
+                .setTelecomCallId(telecomCallId)
+                .setShouldShowIncomingCallUi(shouldShowIncomingUI)
                 .build();
         try {
             if (mConnectionById.isEmpty()) {
@@ -601,10 +642,28 @@ final class RemoteConnectionService {
                 mOutgoingConnectionServiceRpc.addConnectionServiceAdapter(mServant.getStub(),
                         null /*Session.Info*/);
             }
+
+            // Set telecom call id to what's being tracked by base ConnectionService.
+            String telecomCallId = mTelecomFeatureFlags.setRemoteConnectionCallId()
+                    ? id : request.getTelecomCallId();
+
+            final ConnectionRequest newRequest = new ConnectionRequest.Builder()
+                    .setAccountHandle(request.getAccountHandle())
+                    .setAddress(request.getAddress())
+                    .setExtras(request.getExtras())
+                    .setVideoState(request.getVideoState())
+                    .setShouldShowIncomingCallUi(request.shouldShowIncomingCallUi())
+                    .setRttPipeFromInCall(request.getRttPipeFromInCall())
+                    .setRttPipeToInCall(request.getRttPipeToInCall())
+                    .setParticipants(request.getParticipants())
+                    .setIsAdhocConferenceCall(request.isAdhocConferenceCall())
+                    .setTelecomCallId(telecomCallId)
+                    .build();
+
             RemoteConference conference = new RemoteConference(id, mOutgoingConnectionServiceRpc);
             mOutgoingConnectionServiceRpc.createConference(connectionManagerPhoneAccount,
                     id,
-                    request,
+                    newRequest,
                     isIncoming,
                     false /* isUnknownCall */,
                     null /*Session.info*/);
@@ -615,7 +674,7 @@ final class RemoteConnectionService {
                     maybeDisconnectAdapter();
                 }
             });
-            conference.putExtras(request.getExtras());
+            conference.putExtras(newRequest.getExtras());
             return conference;
         } catch (RemoteException e) {
             return RemoteConference.failure(

@@ -18,22 +18,30 @@ package com.android.server.pm;
 
 import android.annotation.NonNull;
 import android.content.ComponentName;
+import android.content.pm.ArchivedPackageParcel;
 import android.content.pm.DataLoaderParams;
 import android.content.pm.InstallationFile;
 import android.content.pm.PackageInstaller;
+import android.os.Parcel;
 import android.os.ParcelFileDescriptor;
 import android.os.ShellCommand;
 import android.service.dataloader.DataLoaderService;
 import android.util.Slog;
 import android.util.SparseArray;
 
+import com.android.internal.annotations.VisibleForTesting;
+
 import libcore.io.IoUtils;
 
 import java.io.IOException;
 import java.lang.ref.WeakReference;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
+import java.util.Arrays;
 import java.util.Collection;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Callback data loader for PackageManagerShellCommand installations.
@@ -67,7 +75,6 @@ public class PackageManagerShellCommandDataLoader extends DataLoaderService {
                 }
             }
 
-            // Sanity check.
             if (sShellCommands.size() > TOO_MANY_PENDING_SHELL_COMMANDS) {
                 Slog.e(TAG, "Too many pending shell commands: " + sShellCommands.size());
             }
@@ -113,7 +120,9 @@ public class PackageManagerShellCommandDataLoader extends DataLoaderService {
         }
     }
 
-    static class Metadata {
+    /** @hide */
+    @VisibleForTesting
+    public static class Metadata {
         /**
          * Full files read from stdin.
          */
@@ -130,16 +139,35 @@ public class PackageManagerShellCommandDataLoader extends DataLoaderService {
          * Everything streamed.
          */
         static final byte STREAMING = 3;
+        /**
+         * Archived install.
+         */
+        static final byte ARCHIVED = 4;
 
         private final byte mMode;
-        private final String mData;
+        private final byte[] mData;
+        private final String mSalt;
+
+        private static final AtomicLong sGlobalSalt =
+                new AtomicLong((new SecureRandom()).nextLong());
+        private static Long nextGlobalSalt() {
+            return sGlobalSalt.incrementAndGet();
+        }
 
         static Metadata forStdIn(String fileId) {
             return new Metadata(STDIN, fileId);
         }
 
-        static Metadata forLocalFile(String filePath) {
-            return new Metadata(LOCAL_FILE, filePath);
+        /** @hide */
+        @VisibleForTesting
+        public static Metadata forLocalFile(String filePath) {
+            return new Metadata(LOCAL_FILE, filePath, nextGlobalSalt().toString());
+        }
+
+        /** @hide */
+        @VisibleForTesting
+        public static Metadata forArchived(ArchivedPackageParcel archivedPackage) {
+            return new Metadata(ARCHIVED, writeArchivedPackageParcel(archivedPackage), null);
         }
 
         static Metadata forDataOnlyStreaming(String fileId) {
@@ -151,24 +179,74 @@ public class PackageManagerShellCommandDataLoader extends DataLoaderService {
         }
 
         private Metadata(byte mode, String data) {
+            this(mode, data, null);
+        }
+
+        private Metadata(byte mode, String data, String salt) {
+            this(mode, (data != null ? data : "").getBytes(StandardCharsets.UTF_8), salt);
+        }
+
+        private Metadata(byte mode, byte[] data, String salt) {
             this.mMode = mode;
-            this.mData = (data == null) ? "" : data;
+            this.mData = data;
+            this.mSalt = salt;
         }
 
         static Metadata fromByteArray(byte[] bytes) throws IOException {
-            if (bytes == null || bytes.length == 0) {
+            if (bytes == null || bytes.length < 5) {
                 return null;
             }
-            byte mode = bytes[0];
-            String data = new String(bytes, 1, bytes.length - 1, StandardCharsets.UTF_8);
-            return new Metadata(mode, data);
+            int offset = 0;
+            final byte mode = bytes[offset];
+            offset += 1;
+            final byte[] data;
+            final String salt;
+            switch (mode) {
+                case LOCAL_FILE: {
+                    int dataSize = ByteBuffer.wrap(bytes, offset, 4).order(
+                            ByteOrder.LITTLE_ENDIAN).getInt();
+                    offset += 4;
+                    data = Arrays.copyOfRange(bytes, offset, offset + dataSize);
+                    offset += dataSize;
+                    salt = new String(bytes, offset, bytes.length - offset,
+                            StandardCharsets.UTF_8);
+                    break;
+                }
+                default:
+                    data = Arrays.copyOfRange(bytes, offset, bytes.length);
+                    salt = null;
+                    break;
+            }
+            return new Metadata(mode, data, salt);
         }
 
-        byte[] toByteArray() {
-            byte[] dataBytes = this.mData.getBytes(StandardCharsets.UTF_8);
-            byte[] result = new byte[1 + dataBytes.length];
-            result[0] = this.mMode;
-            System.arraycopy(dataBytes, 0, result, 1, dataBytes.length);
+        /** @hide */
+        @VisibleForTesting
+        public byte[] toByteArray() {
+            final byte[] result;
+            final byte[] dataBytes = this.mData;
+            switch (this.mMode) {
+                case LOCAL_FILE: {
+                    int dataSize = dataBytes.length;
+                    byte[] saltBytes = this.mSalt.getBytes(StandardCharsets.UTF_8);
+                    result = new byte[1 + 4 + dataSize + saltBytes.length];
+                    int offset = 0;
+                    result[offset] = this.mMode;
+                    offset += 1;
+                    ByteBuffer.wrap(result, offset, 4).order(ByteOrder.LITTLE_ENDIAN).putInt(
+                            dataSize);
+                    offset += 4;
+                    System.arraycopy(dataBytes, 0, result, offset, dataSize);
+                    offset += dataSize;
+                    System.arraycopy(saltBytes, 0, result, offset, saltBytes.length);
+                    break;
+                }
+                default:
+                    result = new byte[1 + dataBytes.length];
+                    result[0] = this.mMode;
+                    System.arraycopy(dataBytes, 0, result, 1, dataBytes.length);
+                    break;
+            }
             return result;
         }
 
@@ -176,8 +254,38 @@ public class PackageManagerShellCommandDataLoader extends DataLoaderService {
             return this.mMode;
         }
 
-        String getData() {
+        byte[] getData() {
             return this.mData;
+        }
+
+        ArchivedPackageParcel getArchivedPackage() {
+            if (getMode() != ARCHIVED) {
+                throw new IllegalStateException("Not an archived package metadata.");
+            }
+            return readArchivedPackageParcel(this.mData);
+        }
+
+        static ArchivedPackageParcel readArchivedPackageParcel(byte[] bytes) {
+            Parcel parcel = Parcel.obtain();
+            ArchivedPackageParcel result;
+            try {
+                parcel.unmarshall(bytes, 0, bytes.length);
+                parcel.setDataPosition(0);
+                result = parcel.readParcelable(ArchivedPackageParcel.class.getClassLoader());
+            } finally {
+                parcel.recycle();
+            }
+            return result;
+        }
+
+        static byte[] writeArchivedPackageParcel(ArchivedPackageParcel archivedPackage) {
+            Parcel parcel = Parcel.obtain();
+            try {
+                parcel.writeParcelable(archivedPackage, 0);
+                return parcel.marshall();
+            } finally {
+                parcel.recycle();
+            }
         }
     }
 
@@ -197,10 +305,6 @@ public class PackageManagerShellCommandDataLoader extends DataLoaderService {
         public boolean onPrepareImage(@NonNull Collection<InstallationFile> addedFiles,
                 @NonNull Collection<String> removedFiles) {
             ShellCommand shellCommand = lookupShellCommand(mParams.getArguments());
-            if (shellCommand == null) {
-                Slog.e(TAG, "Missing shell command.");
-                return false;
-            }
             try {
                 for (InstallationFile file : addedFiles) {
                     Metadata metadata = Metadata.fromByteArray(file.getMetadata());
@@ -210,19 +314,33 @@ public class PackageManagerShellCommandDataLoader extends DataLoaderService {
                     }
                     switch (metadata.getMode()) {
                         case Metadata.STDIN: {
+                            if (shellCommand == null) {
+                                Slog.e(TAG, "Missing shell command for Metadata.STDIN.");
+                                return false;
+                            }
                             final ParcelFileDescriptor inFd = getStdInPFD(shellCommand);
                             mConnector.writeData(file.getName(), 0, file.getLengthBytes(), inFd);
                             break;
                         }
                         case Metadata.LOCAL_FILE: {
+                            if (shellCommand == null) {
+                                Slog.e(TAG, "Missing shell command for Metadata.LOCAL_FILE.");
+                                return false;
+                            }
                             ParcelFileDescriptor incomingFd = null;
                             try {
-                                incomingFd = getLocalFilePFD(shellCommand, metadata.getData());
+                                final String filePath = new String(metadata.getData(),
+                                        StandardCharsets.UTF_8);
+                                incomingFd = getLocalFilePFD(shellCommand, filePath);
                                 mConnector.writeData(file.getName(), 0, incomingFd.getStatSize(),
                                         incomingFd);
                             } finally {
                                 IoUtils.closeQuietly(incomingFd);
                             }
+                            break;
+                        }
+                        case Metadata.ARCHIVED: {
+                            // Do nothing, metadata already contains everything needed for install.
                             break;
                         }
                         default:

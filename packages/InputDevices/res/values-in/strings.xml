@@ -19,6 +19,7 @@
     <string name="keyboard_layout_swiss_german_label" msgid="2305520941993314258">"Jerman Swiss"</string>
     <string name="keyboard_layout_belgian" msgid="2011984572838651558">"Belgia"</string>
     <string name="keyboard_layout_bulgarian" msgid="8951224309972028398">"Bulgaria"</string>
+    <string name="keyboard_layout_bulgarian_phonetic" msgid="7568914730360106653">"Bulgaria, Fonetik"</string>
     <string name="keyboard_layout_italian" msgid="6497079660449781213">"Italia"</string>
     <string name="keyboard_layout_danish" msgid="8036432066627127851">"Denmark"</string>
     <string name="keyboard_layout_norwegian" msgid="9090097917011040937">"Norwegia"</string>
@@ -40,7 +41,7 @@
     <string name="keyboard_layout_arabic" msgid="5671970465174968712">"Arab"</string>
     <string name="keyboard_layout_greek" msgid="7289253560162386040">"Yunani"</string>
     <string name="keyboard_layout_hebrew" msgid="7241473985890173812">"Ibrani"</string>
-    <string name="keyboard_layout_lithuanian" msgid="6943110873053106534">"Lithuania"</string>
+    <string name="keyboard_layout_lithuanian" msgid="6943110873053106534">"Lituania"</string>
     <string name="keyboard_layout_spanish_latin" msgid="5690539836069535697">"Spanyol (Latin)"</string>
     <string name="keyboard_layout_latvian" msgid="4405417142306250595">"Latvia"</string>
     <string name="keyboard_layout_persian" msgid="3920643161015888527">"Persia"</string>
@@ -49,4 +50,10 @@
     <string name="keyboard_layout_belarusian" msgid="7619281752698687588">"Belarusia"</string>
     <string name="keyboard_layout_mongolian" msgid="7678483495823936626">"Mongolia"</string>
     <string name="keyboard_layout_georgian" msgid="4596185456863747454">"Georgia"</string>
+    <string name="keyboard_layout_thai_kedmanee" msgid="6637147314580760938">"Thai (Kedmanee)"</string>
+    <string name="keyboard_layout_thai_pattachote" msgid="2547992342794252205">"Thai (Pattachote)"</string>
+    <string name="keyboard_layout_serbian_latin" msgid="3128791759390046571">"Serbia (Latin)"</string>
+    <string name="keyboard_layout_montenegrin_latin" msgid="1467832503378949945">"Montenegro (Latin)"</string>
+    <string name="keyboard_layout_serbian_cyrillic" msgid="7013541044323542196">"Serbia (Sirilik)"</string>
+    <string name="keyboard_layout_montenegrin_cyrillic" msgid="2391253952894077421">"Montenegro (Sirilik)"</string>
 </resources>

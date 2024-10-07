@@ -22,12 +22,15 @@ import android.accessibilityservice.AccessibilityServiceInfo;
 import android.annotation.NonNull;
 import android.content.Context;
 import android.view.View;
-import android.view.accessibility.AccessibilityManager.ShortcutType;
 
 import com.android.internal.R;
 import com.android.internal.accessibility.common.ShortcutConstants.AccessibilityFragmentType;
 import com.android.internal.accessibility.common.ShortcutConstants.ShortcutMenuMode;
+import com.android.internal.accessibility.common.ShortcutConstants.UserShortcutType;
 import com.android.internal.accessibility.dialog.TargetAdapter.ViewHolder;
+
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
 
 /**
  * Extension for {@link AccessibilityServiceTarget} with {@link AccessibilityFragmentType#TOGGLE}
@@ -35,12 +38,24 @@ import com.android.internal.accessibility.dialog.TargetAdapter.ViewHolder;
  */
 class ToggleAccessibilityServiceTarget extends AccessibilityServiceTarget {
 
-    ToggleAccessibilityServiceTarget(Context context, @ShortcutType int shortcutType,
+    /** Float enum for view alpha setting. */
+    @Retention(RetentionPolicy.SOURCE)
+    @interface StatusViewAlphaScale {
+        float OPAQUE = 1.0f;
+        float DISABLED = 0.5f;
+    }
+
+    ToggleAccessibilityServiceTarget(Context context, @UserShortcutType int shortcutType,
             @NonNull AccessibilityServiceInfo serviceInfo) {
         super(context,
                 shortcutType,
                 AccessibilityFragmentType.TOGGLE,
                 serviceInfo);
+
+        final int statusResId = isAccessibilityServiceEnabled(getContext(), getId())
+                ? R.string.accessibility_shortcut_menu_item_status_on
+                : R.string.accessibility_shortcut_menu_item_status_off;
+        setStateDescription(getContext().getString(statusResId));
     }
 
     @Override
@@ -48,13 +63,13 @@ class ToggleAccessibilityServiceTarget extends AccessibilityServiceTarget {
             @ShortcutMenuMode int shortcutMenuMode) {
         super.updateActionItem(holder, shortcutMenuMode);
 
+        final boolean isAllowed = AccessibilityTargetHelper.isAccessibilityTargetAllowed(
+                getContext(), getComponentName().getPackageName(), getUid());
         final boolean isEditMenuMode =
                 shortcutMenuMode == ShortcutMenuMode.EDIT;
         holder.mStatusView.setVisibility(isEditMenuMode ? View.GONE : View.VISIBLE);
-
-        final int statusResId = isAccessibilityServiceEnabled(getContext(), getId())
-                ? R.string.accessibility_shortcut_menu_item_status_on
-                : R.string.accessibility_shortcut_menu_item_status_off;
-        holder.mStatusView.setText(getContext().getString(statusResId));
+        holder.mStatusView.setText(getStateDescription());
+        holder.mStatusView.setAlpha(isAllowed
+                ? StatusViewAlphaScale.OPAQUE : StatusViewAlphaScale.DISABLED);
     }
 }

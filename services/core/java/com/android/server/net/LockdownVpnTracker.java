@@ -208,7 +208,7 @@ public class LockdownVpnTracker {
                 //    network is the system default. So, if the VPN  is up and underlying network
                 //    (e.g., wifi) disconnects, CS will inform apps that the VPN's capabilities have
                 //    changed to match the new default network (e.g., cell).
-                mVpn.startLegacyVpnPrivileged(mProfile, network, egressProp);
+                mVpn.startLegacyVpnPrivileged(mProfile);
             } catch (IllegalStateException e) {
                 mAcceptedEgressIface = null;
                 Log.e(TAG, "Failed to start VPN", e);
@@ -293,7 +293,7 @@ public class LockdownVpnTracker {
                         .addAction(R.drawable.ic_menu_refresh, mContext.getString(R.string.reset),
                                 mResetIntent)
                         .setColor(mContext.getColor(
-                                com.android.internal.R.color.system_notification_accent_color));
+                                android.R.color.system_notification_accent_color));
 
         mNotificationManager.notify(null /* tag */, SystemMessage.NOTE_VPN_STATUS,
                 builder.build());

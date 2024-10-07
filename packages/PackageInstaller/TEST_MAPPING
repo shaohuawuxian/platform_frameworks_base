@@ -19,6 +19,12 @@
     },
     {
       "name": "CtsPackageUninstallTestCases"
+    },
+    {
+      "name": "PackageInstallerTests"
+    },
+    {
+      "name": "CtsIntentSignatureTestCases"
     }
   ]
 }

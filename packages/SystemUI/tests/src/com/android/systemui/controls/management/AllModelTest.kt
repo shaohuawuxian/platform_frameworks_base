@@ -19,7 +19,7 @@ package com.android.systemui.controls.management
 import android.app.PendingIntent
 import android.content.ComponentName
 import android.service.controls.Control
-import android.testing.AndroidTestingRunner
+import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.filters.SmallTest
 import com.android.systemui.SysuiTestCase
 import com.android.systemui.controls.ControlStatus
@@ -32,11 +32,12 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.mockito.Mock
 import org.mockito.Mockito.never
+import org.mockito.Mockito.times
 import org.mockito.Mockito.verify
 import org.mockito.MockitoAnnotations
 
 @SmallTest
-@RunWith(AndroidTestingRunner::class)
+@RunWith(AndroidJUnit4::class)
 class AllModelTest : SysuiTestCase() {
 
     companion object {
@@ -161,6 +162,7 @@ class AllModelTest : SysuiTestCase() {
         }
 
         verify(controlsModelCallback).onFirstChange()
+        verify(controlsModelCallback).onChange()
     }
 
     @Test
@@ -176,6 +178,7 @@ class AllModelTest : SysuiTestCase() {
         )
 
         verify(controlsModelCallback).onFirstChange()
+        verify(controlsModelCallback).onChange()
     }
 
     @Test
@@ -191,6 +194,7 @@ class AllModelTest : SysuiTestCase() {
         }
 
         verify(controlsModelCallback, never()).onFirstChange()
+        verify(controlsModelCallback, never()).onChange()
     }
 
     @Test
@@ -207,6 +211,7 @@ class AllModelTest : SysuiTestCase() {
         }
 
         verify(controlsModelCallback).onFirstChange()
+        verify(controlsModelCallback).onChange()
     }
 
     @Test
@@ -222,6 +227,7 @@ class AllModelTest : SysuiTestCase() {
         )
 
         verify(controlsModelCallback).onFirstChange()
+        verify(controlsModelCallback).onChange()
     }
 
     @Test
@@ -236,5 +242,24 @@ class AllModelTest : SysuiTestCase() {
         }
 
         verify(controlsModelCallback, never()).onFirstChange()
+        verify(controlsModelCallback, never()).onChange()
+    }
+
+    @Test
+    fun testAddSecondChange_callbacks() {
+        model.changeFavoriteStatus("${idPrefix}4", true)
+        model.changeFavoriteStatus("${idPrefix}5", true)
+
+        verify(controlsModelCallback).onFirstChange()
+        verify(controlsModelCallback, times(2)).onChange()
+    }
+
+    @Test
+    fun testRemoveSecondChange_callbacks() {
+        model.changeFavoriteStatus("${idPrefix}1", false)
+        model.changeFavoriteStatus("${idPrefix}3", false)
+
+        verify(controlsModelCallback).onFirstChange()
+        verify(controlsModelCallback, times(2)).onChange()
     }
 }

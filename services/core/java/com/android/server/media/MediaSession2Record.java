@@ -16,11 +16,12 @@
 
 package com.android.server.media;
 
+import android.app.ForegroundServiceDelegationOptions;
+import android.app.Notification;
 import android.media.MediaController2;
 import android.media.Session2CommandGroup;
 import android.media.Session2Token;
 import android.os.Handler;
-import android.os.HandlerExecutor;
 import android.os.Looper;
 import android.os.ResultReceiver;
 import android.os.UserHandle;
@@ -32,10 +33,10 @@ import com.android.internal.annotations.GuardedBy;
 import java.io.PrintWriter;
 
 /**
- * Keeps the record of {@link Session2Token} helps to send command to the corresponding session.
+ * Keeps the record of {@link Session2Token} to help send command to the corresponding session.
  */
 // TODO(jaewan): Do not call service method directly -- introduce listener instead.
-public class MediaSession2Record implements MediaSessionRecordImpl {
+public class MediaSession2Record extends MediaSessionRecordImpl {
     private static final String TAG = "MediaSession2Record";
     private static final boolean DEBUG = Log.isLoggable(TAG, Log.DEBUG);
     private final Object mLock = new Object();
@@ -55,15 +56,26 @@ public class MediaSession2Record implements MediaSessionRecordImpl {
     @GuardedBy("mLock")
     private boolean mIsClosed;
 
-    public MediaSession2Record(Session2Token sessionToken, MediaSessionService service,
-            Looper handlerLooper, int policies) {
-        mSessionToken = sessionToken;
-        mService = service;
-        mHandlerExecutor = new HandlerExecutor(new Handler(handlerLooper));
-        mController = new MediaController2.Builder(service.getContext(), sessionToken)
-                .setControllerCallback(mHandlerExecutor, new Controller2Callback())
-                .build();
-        mPolicies = policies;
+    private final int mPid;
+
+    public MediaSession2Record(
+            Session2Token sessionToken,
+            MediaSessionService service,
+            Looper handlerLooper,
+            int pid,
+            int policies) {
+        // The lock is required to prevent `Controller2Callback` from using partially initialized
+        // `MediaSession2Record.this`.
+        synchronized (mLock) {
+            mSessionToken = sessionToken;
+            mService = service;
+            mHandlerExecutor = new HandlerExecutor(new Handler(handlerLooper));
+            mController = new MediaController2.Builder(service.getContext(), sessionToken)
+                    .setControllerCallback(mHandlerExecutor, new Controller2Callback())
+                    .build();
+            mPid = pid;
+            mPolicies = policies;
+        }
     }
 
     @Override
@@ -86,8 +98,16 @@ public class MediaSession2Record implements MediaSessionRecordImpl {
     }
 
     @Override
+    public ForegroundServiceDelegationOptions getForegroundServiceDelegationOptions() {
+        // For an app to be eligible for FGS delegation, it needs a media session liked to a media
+        // notification. Currently, notifications cannot be linked to MediaSession2 so it is not
+        // supported.
+        return null;
+    }
+
+    @Override
     public boolean isSystemPriority() {
-        // System priority session is currently only allowed for telephony, and it's OK to stick to
+        // System priority session is currently only allowed for telephony, so it's OK to stick to
         // the media1 API at this moment.
         return false;
     }
@@ -108,7 +128,7 @@ public class MediaSession2Record implements MediaSessionRecordImpl {
     @Override
     public boolean checkPlaybackActiveState(boolean expected) {
         synchronized (mLock) {
-            return mIsConnected && mController.isPlaybackActive() == expected;
+            return (mIsConnected && mController.isPlaybackActive()) == expected;
         }
     }
 
@@ -122,7 +142,7 @@ public class MediaSession2Record implements MediaSessionRecordImpl {
     public void close() {
         synchronized (mLock) {
             mIsClosed = true;
-            // Call close regardless of the mIsAvailable. This may be called when it's not yet
+            // Call close regardless of the mIsConnected. This may be called when it's not yet
             // connected.
             mController.close();
         }
@@ -136,9 +156,26 @@ public class MediaSession2Record implements MediaSessionRecordImpl {
     }
 
     @Override
+    public void expireTempEngaged() {
+        // NA as MediaSession2 doesn't support UserEngagementStates for FGS.
+    }
+
+    @Override
     public boolean sendMediaButton(String packageName, int pid, int uid, boolean asSystemService,
             KeyEvent ke, int sequenceId, ResultReceiver cb) {
         // TODO(jaewan): Implement.
+        return false;
+    }
+
+    @Override
+    public boolean canHandleVolumeKey() {
+        // TODO: Implement when MediaSession2 starts to get key events.
+        return false;
+    }
+
+    @Override
+    boolean isLinkedToNotification(Notification notification) {
+        // Currently it's not possible to link MediaSession2 with a Notification
         return false;
     }
 
@@ -158,6 +195,7 @@ public class MediaSession2Record implements MediaSessionRecordImpl {
 
     @Override
     public void dump(PrintWriter pw, String prefix) {
+        pw.println(prefix + "uniqueId=" + getUniqueId());
         pw.println(prefix + "token=" + mSessionToken);
         pw.println(prefix + "controller=" + mController);
 
@@ -167,8 +205,7 @@ public class MediaSession2Record implements MediaSessionRecordImpl {
 
     @Override
     public String toString() {
-        // TODO(jaewan): Also add getId().
-        return getPackageName() + " (userId=" + getUserId() + ")";
+        return getPackageName() + "/" + getUniqueId() + " (userId=" + getUserId() + ")";
     }
 
     private class Controller2Callback extends MediaController2.ControllerCallback {
@@ -177,10 +214,13 @@ public class MediaSession2Record implements MediaSessionRecordImpl {
             if (DEBUG) {
                 Log.d(TAG, "connected to " + mSessionToken + ", allowed=" + allowedCommands);
             }
+            MediaSessionService service;
             synchronized (mLock) {
                 mIsConnected = true;
+                service = mService;
             }
-            mService.onSessionActiveStateChanged(MediaSession2Record.this);
+            service.onSessionActiveStateChanged(MediaSession2Record.this,
+                    /* playbackState= */ null);
         }
 
         @Override
@@ -188,10 +228,12 @@ public class MediaSession2Record implements MediaSessionRecordImpl {
             if (DEBUG) {
                 Log.d(TAG, "disconnected from " + mSessionToken);
             }
+            MediaSessionService service;
             synchronized (mLock) {
                 mIsConnected = false;
+                service = mService;
             }
-            mService.onSessionDied(MediaSession2Record.this);
+            service.onSessionDied(MediaSession2Record.this);
         }
 
         @Override
@@ -200,7 +242,12 @@ public class MediaSession2Record implements MediaSessionRecordImpl {
                 Log.d(TAG, "playback active changed, " + mSessionToken + ", active="
                         + playbackActive);
             }
-            mService.onSessionPlaybackStateChanged(MediaSession2Record.this, playbackActive);
+            MediaSessionService service;
+            synchronized (mLock) {
+                service = mService;
+            }
+            service.onSessionPlaybackStateChanged(
+                    MediaSession2Record.this, playbackActive, /* playbackState= */ null);
         }
     }
 }

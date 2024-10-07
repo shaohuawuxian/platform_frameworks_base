@@ -21,12 +21,15 @@ import static com.android.server.backup.BackupManagerService.MORE_DEBUG;
 import static com.android.server.backup.BackupManagerService.TAG;
 import static com.android.server.backup.UserBackupManagerService.BACKUP_MANIFEST_FILENAME;
 import static com.android.server.backup.UserBackupManagerService.BACKUP_METADATA_FILENAME;
-import static com.android.server.backup.UserBackupManagerService.OP_TYPE_RESTORE_WAIT;
 import static com.android.server.backup.UserBackupManagerService.SHARED_BACKUP_AGENT_PACKAGE;
 import static com.android.server.backup.internal.BackupHandler.MSG_RESTORE_OPERATION_TIMEOUT;
 
+import android.annotation.NonNull;
 import android.app.ApplicationThreadConstants;
 import android.app.IBackupAgent;
+import android.app.backup.BackupAgent;
+import android.app.backup.BackupAnnotations;
+import android.app.backup.BackupManagerMonitor;
 import android.app.backup.FullBackup;
 import android.app.backup.IBackupManagerMonitor;
 import android.app.backup.IFullBackupRestoreObserver;
@@ -38,22 +41,30 @@ import android.content.pm.Signature;
 import android.os.ParcelFileDescriptor;
 import android.os.RemoteException;
 import android.provider.Settings;
+import android.system.OsConstants;
 import android.text.TextUtils;
 import android.util.Slog;
 
 import com.android.internal.annotations.GuardedBy;
+import com.android.internal.annotations.VisibleForTesting;
 import com.android.server.LocalServices;
 import com.android.server.backup.BackupAgentTimeoutParameters;
 import com.android.server.backup.BackupRestoreTask;
 import com.android.server.backup.FileMetadata;
+import com.android.server.backup.Flags;
 import com.android.server.backup.KeyValueAdbRestoreEngine;
+import com.android.server.backup.OperationStorage;
+import com.android.server.backup.OperationStorage.OpType;
 import com.android.server.backup.UserBackupManagerService;
 import com.android.server.backup.fullbackup.FullBackupObbConnection;
+import com.android.server.backup.utils.BackupEligibilityRules;
+import com.android.server.backup.utils.BackupManagerMonitorEventSender;
 import com.android.server.backup.utils.BytesReadListener;
 import com.android.server.backup.utils.FullBackupRestoreObserverUtils;
 import com.android.server.backup.utils.RestoreUtils;
 import com.android.server.backup.utils.TarBackupReader;
 
+import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -69,6 +80,7 @@ import java.util.Objects;
 public class FullRestoreEngine extends RestoreEngine {
 
     private final UserBackupManagerService mBackupManagerService;
+    private final OperationStorage mOperationStorage;
     private final int mUserId;
 
     // Task in charge of monitoring timeouts
@@ -129,24 +141,56 @@ public class FullRestoreEngine extends RestoreEngine {
     private final boolean mIsAdbRestore;
     @GuardedBy("mPipesLock")
     private boolean mPipesClosed;
+    private final BackupEligibilityRules mBackupEligibilityRules;
 
-    public FullRestoreEngine(UserBackupManagerService backupManagerService,
+    private FileMetadata mReadOnlyParent = null;
+
+    private BackupManagerMonitorEventSender mBackupManagerMonitorEventSender;
+
+    public FullRestoreEngine(
+            UserBackupManagerService backupManagerService, OperationStorage operationStorage,
             BackupRestoreTask monitorTask, IFullBackupRestoreObserver observer,
             IBackupManagerMonitor monitor, PackageInfo onlyPackage, boolean allowApks,
-            int ephemeralOpToken, boolean isAdbRestore) {
+            int ephemeralOpToken, boolean isAdbRestore,
+            BackupEligibilityRules backupEligibilityRules) {
         mBackupManagerService = backupManagerService;
+        mOperationStorage = operationStorage;
         mEphemeralOpToken = ephemeralOpToken;
         mMonitorTask = monitorTask;
         mObserver = observer;
         mMonitor = monitor;
+        mBackupManagerMonitorEventSender = new BackupManagerMonitorEventSender(monitor);
         mOnlyPackage = onlyPackage;
         mAllowApks = allowApks;
-        mBuffer = new byte[32 * 1024];
         mAgentTimeoutParameters = Objects.requireNonNull(
                 backupManagerService.getAgentTimeoutParameters(),
                 "Timeout parameters cannot be null");
         mIsAdbRestore = isAdbRestore;
         mUserId = backupManagerService.getUserId();
+        mBackupEligibilityRules = backupEligibilityRules;
+
+        if (Flags.enableMaxSizeWritesToPipes()) {
+            // Linux pipe capacity (buffer size) is 16 pages where each page is 4KB
+            mBuffer = new byte[64 * 1024]; // 64KB
+        } else {
+            mBuffer = new byte[32 * 1024];
+        }
+    }
+
+    @VisibleForTesting
+    FullRestoreEngine() {
+        mIsAdbRestore = false;
+        mAllowApks = false;
+        mEphemeralOpToken = 0;
+        mUserId = 0;
+        mBackupEligibilityRules = null;
+        mAgentTimeoutParameters = null;
+        mBuffer = null;
+        mBackupManagerService = null;
+        mOperationStorage = null;
+        mMonitor = null;
+        mMonitorTask = null;
+        mOnlyPackage = null;
     }
 
     public IBackupAgent getAgent() {
@@ -186,6 +230,9 @@ public class FullRestoreEngine extends RestoreEngine {
                     // one app's data but see a different app's on the wire
                     if (onlyPackage != null) {
                         if (!pkg.equals(onlyPackage.packageName)) {
+                            logBMMEvent(
+                                    BackupManagerMonitor.LOG_EVENT_ID_RESTORE_DATA_DOES_NOT_BELONG_TO_PACKAGE,
+                                    onlyPackage);
                             Slog.w(TAG, "Expected data for " + onlyPackage + " but saw " + pkg);
                             setResult(RestoreEngine.TRANSPORT_FAILURE);
                             setRunning(false);
@@ -223,7 +270,8 @@ public class FullRestoreEngine extends RestoreEngine {
                             PackageManagerInternal.class);
                     RestorePolicy restorePolicy = tarBackupReader.chooseRestorePolicy(
                             mBackupManagerService.getPackageManager(), allowApks, info, signatures,
-                            pmi, mUserId);
+                            pmi, mUserId, mBackupEligibilityRules,
+                            mBackupManagerService.getContext());
                     mManifestSignatures.put(info.packageName, signatures);
                     mPackagePolicies.put(pkg, restorePolicy);
                     mPackageInstallers.put(pkg, info.installerPackageName);
@@ -364,14 +412,18 @@ public class FullRestoreEngine extends RestoreEngine {
                             setUpPipes();
                             mAgent = mBackupManagerService.bindToAgentSynchronous(mTargetApp,
                                     FullBackup.KEY_VALUE_DATA_TOKEN.equals(info.domain)
-                                            ? ApplicationThreadConstants.BACKUP_MODE_INCREMENTAL
-                                            : ApplicationThreadConstants.BACKUP_MODE_RESTORE_FULL);
+                                            ? ApplicationThreadConstants.BACKUP_MODE_RESTORE
+                                            : ApplicationThreadConstants.BACKUP_MODE_RESTORE_FULL,
+                                    mBackupEligibilityRules.getBackupDestination());
                             mAgentPackage = pkg;
                         } catch (IOException | NameNotFoundException e) {
                             // fall through to error handling
                         }
 
                         if (mAgent == null) {
+                            logBMMEvent(
+                                    BackupManagerMonitor.LOG_EVENT_ID_UNABLE_TO_CREATE_AGENT_FOR_RESTORE,
+                                    onlyPackage);
                             Slog.e(TAG, "Unable to create agent for " + pkg);
                             okay = false;
                             tearDownPipes();
@@ -379,11 +431,16 @@ public class FullRestoreEngine extends RestoreEngine {
                         }
                     }
 
-                    // Sanity check: make sure we never give data to the wrong app.  This
+                    // Make sure we never give data to the wrong app.  This
                     // should never happen but a little paranoia here won't go amiss.
                     if (okay && !pkg.equals(mAgentPackage)) {
                         Slog.e(TAG, "Restoring data for " + pkg
                                 + " but agent is for " + mAgentPackage);
+                        okay = false;
+                    }
+
+                    if (shouldSkipReadOnlyDir(info)) {
+                        // b/194894879: We don't support restore of read-only dirs.
                         okay = false;
                     }
 
@@ -397,12 +454,13 @@ public class FullRestoreEngine extends RestoreEngine {
                         final boolean isSharedStorage = pkg.equals(SHARED_BACKUP_AGENT_PACKAGE);
                         final long timeout = isSharedStorage ?
                                 mAgentTimeoutParameters.getSharedBackupAgentTimeoutMillis() :
-                                mAgentTimeoutParameters.getRestoreAgentTimeoutMillis();
+                                mAgentTimeoutParameters.getRestoreAgentTimeoutMillis(
+                                        mTargetApp.uid);
                         try {
                             mBackupManagerService.prepareOperationTimeout(token,
                                     timeout,
                                     mMonitorTask,
-                                    OP_TYPE_RESTORE_WAIT);
+                                    OpType.RESTORE_WAIT);
 
                             if (FullBackup.OBB_TREE_TOKEN.equals(info.domain)) {
                                 if (DEBUG) {
@@ -455,6 +513,9 @@ public class FullRestoreEngine extends RestoreEngine {
                         } catch (RemoteException e) {
                             // whoops, remote entity went away.  We'll eat the content
                             // ourselves, then, and not copy it over.
+                            logBMMEvent(
+                                    BackupManagerMonitor.LOG_EVENT_ID_AGENT_CRASHED_BEFORE_RESTORE_DATA_IS_SENT,
+                                    onlyPackage);
                             Slog.e(TAG, "Agent crashed during full restore");
                             agentSuccess = false;
                             okay = false;
@@ -485,6 +546,9 @@ public class FullRestoreEngine extends RestoreEngine {
                                     } catch (IOException e) {
                                         Slog.e(TAG, "Failed to write to restore pipe: "
                                                 + e.getMessage());
+                                        logBMMEvent(
+                                                BackupManagerMonitor.LOG_EVENT_ID_FAILED_TO_SEND_DATA_TO_AGENT_DURING_RESTORE,
+                                                onlyPackage);
                                         pipeOkay = false;
                                     }
                                 }
@@ -502,6 +566,8 @@ public class FullRestoreEngine extends RestoreEngine {
                         // okay, if the remote end failed at any point, deal with
                         // it by ignoring the rest of the restore on it
                         if (!agentSuccess) {
+                            logBMMEvent(BackupManagerMonitor.LOG_EVENT_ID_AGENT_FAILURE_DURING_RESTORE,
+                                    onlyPackage);
                             Slog.w(TAG, "Agent failure restoring " + pkg + "; ending restore");
                             mBackupManagerService.getBackupHandler().removeMessages(
                                     MSG_RESTORE_OPERATION_TIMEOUT);
@@ -544,6 +610,8 @@ public class FullRestoreEngine extends RestoreEngine {
             if (DEBUG) {
                 Slog.w(TAG, "io exception on restore socket read: " + e.getMessage());
             }
+            logBMMEvent(BackupManagerMonitor.LOG_EVENT_ID_FAILED_TO_READ_DATA_FROM_TRANSPORT,
+                    onlyPackage);
             setResult(RestoreEngine.TRANSPORT_FAILURE);
             info = null;
         }
@@ -560,6 +628,55 @@ public class FullRestoreEngine extends RestoreEngine {
             }
         }
         return (info != null);
+    }
+
+    boolean shouldSkipReadOnlyDir(FileMetadata info) {
+        if (isValidParent(mReadOnlyParent, info)) {
+            // This file has a read-only parent directory, we shouldn't
+            // restore it.
+            return true;
+        } else {
+            // We're now in a different branch of the file tree, update the parent
+            // value.
+            if (isReadOnlyDir(info)) {
+                // Current directory is read-only. Remember it so that we can skip all
+                // of its contents.
+                mReadOnlyParent = info;
+                Slog.w(TAG, "Skipping restore of " + info.path + " and its contents as "
+                        + "read-only dirs are currently not supported.");
+                return true;
+            } else {
+                mReadOnlyParent = null;
+            }
+        }
+
+        return false;
+    }
+
+    private void logBMMEvent(int eventId, PackageInfo pkgInfo) {
+        if (Flags.enableIncreasedBmmLoggingForRestoreAtInstall()) {
+            mBackupManagerMonitorEventSender.monitorEvent(eventId, pkgInfo,
+                    BackupManagerMonitor.LOG_EVENT_CATEGORY_BACKUP_MANAGER_POLICY,
+                    mBackupManagerMonitorEventSender.putMonitoringExtra(/*extras=*/
+                            null, BackupManagerMonitor.EXTRA_LOG_OPERATION_TYPE,
+                            BackupAnnotations.OperationType.RESTORE));
+        }
+    }
+
+    private static boolean isValidParent(FileMetadata parentDir, @NonNull FileMetadata childDir) {
+        return parentDir != null
+                && childDir.packageName.equals(parentDir.packageName)
+                && childDir.domain.equals(parentDir.domain)
+                && childDir.path.startsWith(getPathWithTrailingSeparator(parentDir.path));
+    }
+
+    private static String getPathWithTrailingSeparator(String path) {
+        return path.endsWith(File.separator) ? path : path + File.separator;
+    }
+
+    private static boolean isReadOnlyDir(FileMetadata file) {
+        // Check if owner has 'write' bit in the file's mode value (see 'man -7 inode' for details).
+        return file.type == BackupAgent.TYPE_DIRECTORY && (file.mode & OsConstants.S_IWUSR) == 0;
     }
 
     private void setUpPipes() throws IOException {
@@ -596,9 +713,9 @@ public class FullRestoreEngine extends RestoreEngine {
                     long fullBackupAgentTimeoutMillis =
                             mAgentTimeoutParameters.getFullBackupAgentTimeoutMillis();
                     final AdbRestoreFinishedLatch latch = new AdbRestoreFinishedLatch(
-                            mBackupManagerService, token);
+                            mBackupManagerService, mOperationStorage, token);
                     mBackupManagerService.prepareOperationTimeout(
-                            token, fullBackupAgentTimeoutMillis, latch, OP_TYPE_RESTORE_WAIT);
+                            token, fullBackupAgentTimeoutMillis, latch, OpType.RESTORE_WAIT);
                     if (mTargetApp.processName.equals("system")) {
                         if (MORE_DEBUG) {
                             Slog.d(TAG, "system agent - restoreFinished on thread");
@@ -628,7 +745,12 @@ public class FullRestoreEngine extends RestoreEngine {
         setRunning(false);
     }
 
-    private static boolean isRestorableFile(FileMetadata info) {
+    private boolean isRestorableFile(FileMetadata info) {
+        if (mBackupEligibilityRules.getBackupDestination()
+                == BackupAnnotations.BackupDestination.DEVICE_TRANSFER) {
+            // Everything is eligible for device-to-device migration.
+            return true;
+        }
         if (FullBackup.CACHE_TREE_TOKEN.equals(info.domain)) {
             if (MORE_DEBUG) {
                 Slog.i(TAG, "Dropping cache file path " + info.path);

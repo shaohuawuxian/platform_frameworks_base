@@ -16,9 +16,7 @@
 
 package com.android.server.wm;
 
-import static android.app.WindowConfiguration.ACTIVITY_TYPE_ASSISTANT;
 import static android.app.WindowConfiguration.ACTIVITY_TYPE_HOME;
-import static android.app.WindowConfiguration.ACTIVITY_TYPE_RECENTS;
 import static android.app.WindowConfiguration.ACTIVITY_TYPE_STANDARD;
 import static android.app.WindowConfiguration.ROTATION_UNDEFINED;
 import static android.app.WindowConfiguration.WINDOWING_MODE_FREEFORM;
@@ -27,8 +25,10 @@ import static android.app.WindowConfiguration.WINDOWING_MODE_UNDEFINED;
 import static android.app.WindowConfiguration.WINDOW_CONFIG_ALWAYS_ON_TOP;
 import static android.app.WindowConfiguration.WINDOW_CONFIG_APP_BOUNDS;
 import static android.app.WindowConfiguration.WINDOW_CONFIG_BOUNDS;
+import static android.app.WindowConfiguration.WINDOW_CONFIG_MAX_BOUNDS;
 import static android.app.WindowConfiguration.WINDOW_CONFIG_ROTATION;
 import static android.app.WindowConfiguration.WINDOW_CONFIG_WINDOWING_MODE;
+import static android.app.WindowConfiguration.areConfigurationsEqualForDisplay;
 import static android.content.pm.ActivityInfo.CONFIG_WINDOW_CONFIGURATION;
 import static android.view.Surface.ROTATION_270;
 
@@ -78,11 +78,14 @@ public class WindowConfigurationTests extends WindowTestsBase {
         final WindowConfiguration winConfig3 = config3.windowConfiguration;
         final Configuration config4 = new Configuration();
         final WindowConfiguration winConfig4 = config4.windowConfiguration;
+        final Configuration config5 = new Configuration();
+        final WindowConfiguration winConfig5 = config5.windowConfiguration;
 
         winConfig1.setAppBounds(0, 1, 1, 0);
         winConfig2.setAppBounds(1, 2, 2, 1);
         winConfig3.setAppBounds(winConfig1.getAppBounds());
         winConfig4.setRotation(Surface.ROTATION_90);
+        winConfig5.setAppBounds(winConfig1.getAppBounds());
 
         assertEquals(CONFIG_WINDOW_CONFIGURATION, config1.diff(config2));
         assertEquals(0, config1.diffPublicOnly(config2));
@@ -104,6 +107,13 @@ public class WindowConfigurationTests extends WindowTestsBase {
         assertEquals(0, config1.diff(config3));
         assertEquals(0, config1.diffPublicOnly(config3));
         assertEquals(0, winConfig1.diff(winConfig3, false /* compareUndefined */));
+
+        winConfig1.setMaxBounds(1, 1, 1, 1);
+        winConfig5.setMaxBounds(2, 2, 2, 2);
+        assertEquals(WINDOW_CONFIG_MAX_BOUNDS,
+                winConfig1.diff(winConfig5, false /* compareUndefined */));
+        assertEquals(CONFIG_WINDOW_CONFIGURATION, config1.diff(config5));
+        assertEquals(0, config1.diffPublicOnly(config5));
     }
 
     /** Tests {@link android.app.WindowConfiguration#compareTo(WindowConfiguration)}. */
@@ -115,6 +125,7 @@ public class WindowConfigurationTests extends WindowTestsBase {
         final Configuration config1 = new Configuration();
         final WindowConfiguration winConfig1 = config1.windowConfiguration;
         winConfig1.setAppBounds(1, 2, 3, 4);
+        winConfig1.setMaxBounds(1, 2, 3, 4);
 
         final Configuration config2 = new Configuration(config1);
         final WindowConfiguration winConfig2 = config2.windowConfiguration;
@@ -149,6 +160,12 @@ public class WindowConfigurationTests extends WindowTestsBase {
         assertNotEquals(0, config1.compareTo(config2));
         assertNotEquals(0, winConfig1.compareTo(winConfig2));
         winConfig2.setRotation(winConfig1.getRotation());
+
+        // Different max bounds
+        winConfig2.setMaxBounds(0, 2, 3, 4);
+        assertNotEquals(0, config1.compareTo(config2));
+        assertNotEquals(0, winConfig1.compareTo(winConfig2));
+        winConfig2.setMaxBounds(winConfig1.getMaxBounds());
 
         assertEquals(1, blankConfig.compareTo(config1));
         assertEquals(1, blankWinConfig.compareTo(winConfig1));
@@ -189,43 +206,6 @@ public class WindowConfigurationTests extends WindowTestsBase {
 
     /** Ensure the window always has a caption in Freeform window mode or display mode. */
     @Test
-    public void testCaptionShownForFreeformWindowingMode() {
-        final WindowConfiguration config = new WindowConfiguration();
-        config.setActivityType(ACTIVITY_TYPE_STANDARD);
-        config.setWindowingMode(WINDOWING_MODE_FREEFORM);
-        config.setDisplayWindowingMode(WINDOWING_MODE_FULLSCREEN);
-        assertTrue(config.hasWindowDecorCaption());
-
-        config.setDisplayWindowingMode(WINDOWING_MODE_FREEFORM);
-        assertTrue(config.hasWindowDecorCaption());
-
-        config.setWindowingMode(WINDOWING_MODE_FULLSCREEN);
-        assertTrue(config.hasWindowDecorCaption());
-
-        config.setDisplayWindowingMode(WINDOWING_MODE_FULLSCREEN);
-        assertFalse(config.hasWindowDecorCaption());
-    }
-
-    /** Caption should not show for non-standard activity window. */
-    @Test
-    public void testCaptionNotShownForNonStandardActivityType() {
-        final WindowConfiguration config = new WindowConfiguration();
-        config.setActivityType(ACTIVITY_TYPE_HOME);
-        config.setWindowingMode(WINDOWING_MODE_FREEFORM);
-        config.setDisplayWindowingMode(WINDOWING_MODE_FREEFORM);
-        assertFalse(config.hasWindowDecorCaption());
-
-        config.setActivityType(ACTIVITY_TYPE_ASSISTANT);
-        assertFalse(config.hasWindowDecorCaption());
-
-        config.setActivityType(ACTIVITY_TYPE_RECENTS);
-        assertFalse(config.hasWindowDecorCaption());
-
-        config.setActivityType(ACTIVITY_TYPE_STANDARD);
-        assertTrue(config.hasWindowDecorCaption());
-    }
-
-    @Test
     public void testMaskedSetTo() {
         final WindowConfiguration config = new WindowConfiguration();
         final WindowConfiguration other = new WindowConfiguration();
@@ -250,5 +230,44 @@ public class WindowConfigurationTests extends WindowTestsBase {
         final int justWindowingMode = WINDOW_CONFIG_WINDOWING_MODE;
         config.setTo(other, justWindowingMode);
         assertEquals(WINDOWING_MODE_UNDEFINED, config.getWindowingMode());
+    }
+
+    @Test
+    public void testAreConfigurationsEqualForDisplay() {
+        final Configuration config0 = new Configuration();
+        final Configuration config1 = new Configuration();
+
+        assertTrue(areConfigurationsEqualForDisplay(config0, config1));
+
+        // Only compare fields read in Display.
+        config0.densityDpi = 1;
+        config1.densityDpi = 2;
+
+        assertTrue(areConfigurationsEqualForDisplay(config0, config1));
+
+        // MaxBounds
+        final Rect bounds0 = new Rect(0, 0, 500, 1000);
+        final Rect bounds1 = new Rect(0, 0, 1000, 500);
+
+        config0.windowConfiguration.setMaxBounds(bounds0);
+        config1.windowConfiguration.setMaxBounds(bounds1);
+
+        assertFalse(areConfigurationsEqualForDisplay(config0, config1));
+
+        config0.windowConfiguration.setMaxBounds(null);
+        config1.windowConfiguration.setMaxBounds(null);
+
+        assertTrue(areConfigurationsEqualForDisplay(config0, config1));
+
+        // DisplayRotation
+        config0.windowConfiguration.setDisplayRotation(0);
+        config1.windowConfiguration.setDisplayRotation(1);
+
+        assertFalse(areConfigurationsEqualForDisplay(config0, config1));
+
+        config0.windowConfiguration.setDisplayRotation(2);
+        config1.windowConfiguration.setDisplayRotation(2);
+
+        assertTrue(areConfigurationsEqualForDisplay(config0, config1));
     }
 }

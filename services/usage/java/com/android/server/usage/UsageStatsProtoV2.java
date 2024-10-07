@@ -17,19 +17,25 @@ package com.android.server.usage;
 
 import android.app.usage.ConfigurationStats;
 import android.app.usage.UsageEvents;
+import android.app.usage.UsageEvents.Event.UserInteractionEventExtrasToken;
 import android.app.usage.UsageStats;
 import android.content.res.Configuration;
+import android.os.PersistableBundle;
+import android.util.Pair;
 import android.util.Slog;
 import android.util.SparseArray;
 import android.util.SparseIntArray;
 import android.util.proto.ProtoInputStream;
 import android.util.proto.ProtoOutputStream;
 
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.ArrayList;
 import java.util.LinkedList;
+import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -89,6 +95,10 @@ final class UsageStatsProtoV2 {
                 case (int) UsageStatsObfuscatedProto.TOTAL_TIME_VISIBLE_MS:
                     stats.mTotalTimeVisible = proto.readLong(
                             UsageStatsObfuscatedProto.TOTAL_TIME_VISIBLE_MS);
+                    break;
+                case (int) UsageStatsObfuscatedProto.LAST_TIME_COMPONENT_USED_MS:
+                    stats.mLastTimeComponentUsed = beginTime + proto.readLong(
+                            UsageStatsObfuscatedProto.LAST_TIME_COMPONENT_USED_MS);
                     break;
                 case ProtoInputStream.NO_MORE_FIELDS:
                     return stats;
@@ -276,6 +286,16 @@ final class UsageStatsProtoV2 {
                     event.mLocusIdToken = proto.readInt(
                             EventObfuscatedProto.LOCUS_ID_TOKEN) - 1;
                     break;
+                case (int) EventObfuscatedProto.INTERACTION_EXTRAS:
+                    try {
+                        final long interactionExtrasToken = proto.start(
+                                EventObfuscatedProto.INTERACTION_EXTRAS);
+                        event.mUserInteractionExtrasToken = parseUserInteractionEventExtras(proto);
+                        proto.end(interactionExtrasToken);
+                    } catch (IOException e) {
+                        Slog.e(TAG, "Unable to read some user interaction extras from proto.", e);
+                    }
+                    break;
                 case ProtoInputStream.NO_MORE_FIELDS:
                     return event.mPackageToken == PackagesTokenData.UNASSIGNED_TOKEN ? null : event;
             }
@@ -312,6 +332,8 @@ final class UsageStatsProtoV2 {
         writeOffsetTimestamp(proto, UsageStatsObfuscatedProto.LAST_TIME_VISIBLE_MS,
                 stats.mLastTimeVisible, beginTime);
         proto.write(UsageStatsObfuscatedProto.TOTAL_TIME_VISIBLE_MS, stats.mTotalTimeVisible);
+        writeOffsetTimestamp(proto, UsageStatsObfuscatedProto.LAST_TIME_COMPONENT_USED_MS,
+                stats.mLastTimeComponentUsed, beginTime);
         proto.write(UsageStatsObfuscatedProto.APP_LAUNCH_COUNT, stats.mAppLaunchCount);
         try {
             writeChooserCounts(proto, stats);
@@ -378,7 +400,7 @@ final class UsageStatsProtoV2 {
     }
 
     private static void writeEvent(ProtoOutputStream proto, final long statsBeginTime,
-            final UsageEvents.Event event) throws IllegalArgumentException {
+            final UsageEvents.Event event) throws IOException, IllegalArgumentException {
         proto.write(EventObfuscatedProto.PACKAGE_TOKEN, event.mPackageToken + 1);
         if (event.mClassToken != PackagesTokenData.UNASSIGNED_TOKEN) {
             proto.write(EventObfuscatedProto.CLASS_TOKEN, event.mClassToken + 1);
@@ -421,6 +443,12 @@ final class UsageStatsProtoV2 {
                             event.mNotificationChannelIdToken + 1);
                 }
                 break;
+            case UsageEvents.Event.USER_INTERACTION:
+                if (event.mUserInteractionExtrasToken != null) {
+                    writeUserInteractionEventExtras(proto, EventObfuscatedProto.INTERACTION_EXTRAS,
+                            event.mUserInteractionExtrasToken);
+                }
+                break;
         }
     }
 
@@ -430,7 +458,8 @@ final class UsageStatsProtoV2 {
      * @param in the input stream from which to read events.
      * @param stats the interval stats object which will be populated.
      */
-    public static void read(InputStream in, IntervalStats stats) throws IOException {
+    public static void read(InputStream in, IntervalStats stats, boolean skipEvents)
+            throws IOException {
         final ProtoInputStream proto = new ProtoInputStream(in);
         while (true) {
             switch (proto.nextField()) {
@@ -484,6 +513,9 @@ final class UsageStatsProtoV2 {
                     }
                     break;
                 case (int) IntervalStatsObfuscatedProto.EVENT_LOG:
+                    if (skipEvents) {
+                        break;
+                    }
                     try {
                         final long eventsToken = proto.start(
                                 IntervalStatsObfuscatedProto.EVENT_LOG);
@@ -691,6 +723,9 @@ final class UsageStatsProtoV2 {
                 case (int) PendingEventProto.TASK_ROOT_CLASS:
                     event.mTaskRootClass = proto.readString(PendingEventProto.TASK_ROOT_CLASS);
                     break;
+                case (int) PendingEventProto.EXTRAS:
+                    event.mExtras = parsePendingEventExtras(proto, PendingEventProto.EXTRAS);
+                    break;
                 case ProtoInputStream.NO_MORE_FIELDS:
                     // Handle default values for certain events types
                     switch (event.mEventType) {
@@ -745,7 +780,7 @@ final class UsageStatsProtoV2 {
     }
 
     private static void writePendingEvent(ProtoOutputStream proto, UsageEvents.Event event)
-            throws IllegalArgumentException {
+            throws IOException, IllegalArgumentException {
         proto.write(PendingEventProto.PACKAGE_NAME, event.mPackage);
         if (event.mClass != null) {
             proto.write(PendingEventProto.CLASS_NAME, event.mClass);
@@ -782,6 +817,11 @@ final class UsageStatsProtoV2 {
                             event.mNotificationChannelId);
                 }
                 break;
+            case UsageEvents.Event.USER_INTERACTION:
+                if (event.mExtras != null && event.mExtras.size() != 0) {
+                    writePendingEventExtras(proto, PendingEventProto.EXTRAS, event.mExtras);
+                }
+                break;
         }
     }
 
@@ -805,5 +845,123 @@ final class UsageStatsProtoV2 {
             }
         }
         proto.flush();
+    }
+
+    private static Pair<String, Long> parseGlobalComponentUsage(ProtoInputStream proto)
+            throws IOException {
+        String packageName = "";
+        long time = 0;
+        while (true) {
+            switch (proto.nextField()) {
+                case (int) IntervalStatsObfuscatedProto.PackageUsage.PACKAGE_NAME:
+                    packageName = proto.readString(
+                            IntervalStatsObfuscatedProto.PackageUsage.PACKAGE_NAME);
+                    break;
+                case (int) IntervalStatsObfuscatedProto.PackageUsage.TIME_MS:
+                    time = proto.readLong(IntervalStatsObfuscatedProto.PackageUsage.TIME_MS);
+                    break;
+                case ProtoInputStream.NO_MORE_FIELDS:
+                    return new Pair<>(packageName, time);
+            }
+        }
+    }
+
+    /**
+     * Populates the map of latest package usage from the input stream given.
+     *
+     * @param in the input stream from which to read the package usage.
+     * @param lastTimeComponentUsedGlobal the map of package's global component usage to populate.
+     */
+    static void readGlobalComponentUsage(InputStream in,
+            Map<String, Long> lastTimeComponentUsedGlobal) throws IOException {
+        final ProtoInputStream proto = new ProtoInputStream(in);
+        while (true) {
+            switch (proto.nextField()) {
+                case (int) IntervalStatsObfuscatedProto.PACKAGE_USAGE:
+                    try {
+                        final long token = proto.start(IntervalStatsObfuscatedProto.PACKAGE_USAGE);
+                        final Pair<String, Long> usage = parseGlobalComponentUsage(proto);
+                        proto.end(token);
+                        if (!usage.first.isEmpty() && usage.second > 0) {
+                            lastTimeComponentUsedGlobal.put(usage.first, usage.second);
+                        }
+                    } catch (IOException e) {
+                        Slog.e(TAG, "Unable to parse some package usage from proto.", e);
+                    }
+                    break;
+                case ProtoInputStream.NO_MORE_FIELDS:
+                    return;
+            }
+        }
+    }
+
+    /**
+     * Writes the user-agnostic last time package usage to a ProtoBuf file.
+     *
+     * @param out the output stream to which to write the package usage
+     * @param lastTimeComponentUsedGlobal the map storing the global component usage of packages
+     */
+    static void writeGlobalComponentUsage(OutputStream out,
+            Map<String, Long> lastTimeComponentUsedGlobal) {
+        final ProtoOutputStream proto = new ProtoOutputStream(out);
+        final Map.Entry<String, Long>[] entries =
+                (Map.Entry<String, Long>[]) lastTimeComponentUsedGlobal.entrySet().toArray();
+        final int size = entries.length;
+        for (int i = 0; i < size; ++i) {
+            if (entries[i].getValue() <= 0) continue;
+            final long token = proto.start(IntervalStatsObfuscatedProto.PACKAGE_USAGE);
+            proto.write(IntervalStatsObfuscatedProto.PackageUsage.PACKAGE_NAME,
+                    entries[i].getKey());
+            proto.write(IntervalStatsObfuscatedProto.PackageUsage.TIME_MS, entries[i].getValue());
+            proto.end(token);
+        }
+    }
+
+    private static UserInteractionEventExtrasToken parseUserInteractionEventExtras(
+            ProtoInputStream proto) throws IOException {
+        UserInteractionEventExtrasToken interactionExtrasToken =
+                new UserInteractionEventExtrasToken();
+        while (true) {
+            switch (proto.nextField()) {
+                case (int) ObfuscatedUserInteractionExtrasProto.CATEGORY_TOKEN:
+                    interactionExtrasToken.mCategoryToken = proto.readInt(
+                            ObfuscatedUserInteractionExtrasProto.CATEGORY_TOKEN) - 1;
+                    break;
+                case (int) ObfuscatedUserInteractionExtrasProto.ACTION_TOKEN:
+                    interactionExtrasToken.mActionToken = proto.readInt(
+                            ObfuscatedUserInteractionExtrasProto.ACTION_TOKEN) - 1;
+                    break;
+                case ProtoInputStream.NO_MORE_FIELDS:
+                    return interactionExtrasToken;
+            }
+        }
+    }
+
+    static void writeUserInteractionEventExtras(ProtoOutputStream proto, long fieldId,
+            UserInteractionEventExtrasToken interactionExtras) {
+        final long token = proto.start(fieldId);
+        proto.write(ObfuscatedUserInteractionExtrasProto.CATEGORY_TOKEN,
+                interactionExtras.mCategoryToken + 1);
+        proto.write(ObfuscatedUserInteractionExtrasProto.ACTION_TOKEN,
+                interactionExtras.mActionToken + 1);
+        proto.end(token);
+    }
+
+    /**
+     * Populates the extra details for pending interaction event from the protobuf stream.
+     */
+    private static PersistableBundle parsePendingEventExtras(ProtoInputStream proto, long fieldId)
+            throws IOException {
+        return PersistableBundle.readFromStream(new ByteArrayInputStream(proto.readBytes(fieldId)));
+    }
+
+    /**
+     * Write the extra details for pending interaction event to a protobuf stream.
+     */
+    static void writePendingEventExtras(ProtoOutputStream proto, long fieldId,
+            PersistableBundle eventExtras) throws IOException {
+        final ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        eventExtras.writeToStream(baos);
+        proto.write(fieldId, baos.toByteArray());
     }
 }

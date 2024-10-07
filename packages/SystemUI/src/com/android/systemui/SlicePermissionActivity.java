@@ -35,6 +35,8 @@ import android.util.Log;
 import android.widget.CheckBox;
 import android.widget.TextView;
 
+import com.android.systemui.res.R;
+
 public class SlicePermissionActivity extends Activity implements OnClickListener,
         OnDismissListener {
 
@@ -50,8 +52,20 @@ public class SlicePermissionActivity extends Activity implements OnClickListener
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
-        mUri = getIntent().getParcelableExtra(SliceProvider.EXTRA_BIND_URI);
+        // Verify intent is valid
+        try {
+            mUri = getIntent().getParcelableExtra(SliceProvider.EXTRA_BIND_URI);
+        } catch (Exception e) {
+            Log.w(TAG, "Failed to getParcelableExtra", e);
+        }
         mCallingPkg = getIntent().getStringExtra(SliceProvider.EXTRA_PKG);
+        if (mUri == null
+                || !SliceProvider.SLICE_TYPE.equals(getContentResolver().getType(mUri))
+                || !SliceManager.ACTION_REQUEST_SLICE_PERMISSION.equals(getIntent().getAction())) {
+            Log.e(TAG, "Intent is not valid");
+            finish();
+            return;
+        }
 
         try {
             PackageManager pm = getPackageManager();
@@ -103,7 +117,7 @@ public class SlicePermissionActivity extends Activity implements OnClickListener
     }
 
     private void verifyCallingPkg() {
-        final String providerPkg = getIntent().getStringExtra(SliceProvider.EXTRA_PROVIDER_PKG);
+        final String providerPkg = getIntent().getStringExtra("provider_pkg");
         if (providerPkg == null || mProviderPkg.equals(providerPkg)) return;
         final String callingPkg = getCallingPkg();
         EventLog.writeEvent(0x534e4554, "159145361", getUid(callingPkg));

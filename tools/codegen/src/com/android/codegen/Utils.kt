@@ -103,6 +103,10 @@ val TypeDeclaration<*>.nestedTypes get() = childNodes.filterIsInstance<TypeDecla
 val TypeDeclaration<*>.nestedDataClasses get()
         = nestedTypes.filterIsInstance<ClassOrInterfaceDeclaration>()
             .filter { it.annotations.any { it.nameAsString.endsWith("DataClass") } }
+val TypeDeclaration<*>.nestedNonDataClasses get()
+        = nestedTypes.filterIsInstance<ClassOrInterfaceDeclaration>()
+            .filter { it.annotations.none { it.nameAsString.endsWith("DataClass") } }
+            .filterNot { it.isInterface }
 val TypeDeclaration<*>.startLine get() = range.get()!!.begin.line
 
 inline fun <T> List<T>.forEachSequentialPair(action: (T, T?) -> Unit) {
@@ -132,15 +136,5 @@ private fun parseFailed(source: String, cause: Throwable? = null, desc: String =
                     .joinToString("\n") + "\n$desc",
             cause)
 }
-
-var <T> MutableList<T>.last
-    get() = last()
-    set(value) {
-        if (isEmpty()) {
-            add(value)
-        } else {
-            this[size - 1] = value
-        }
-    }
 
 inline fun <T> buildList(init: MutableList<T>.() -> Unit) = mutableListOf<T>().apply(init)

@@ -14,19 +14,22 @@
  * limitations under the License.
  */
 
-#include <VectorDrawable.h>
-#include <gtest/gtest.h>
-
+#include <SkBlendMode.h>
 #include <SkClipStack.h>
 #include <SkSurface_Base.h>
+#include <VectorDrawable.h>
+#include <gtest/gtest.h>
+#include <include/effects/SkImageFilters.h>
 #include <string.h>
+
 #include "AnimationContext.h"
 #include "DamageAccumulator.h"
 #include "FatalTestCanvas.h"
 #include "IContextFactory.h"
-#include "hwui/Paint.h"
 #include "RecordingCanvas.h"
 #include "SkiaCanvas.h"
+#include "hwui/Paint.h"
+#include "pipeline/skia/BackdropFilterDrawable.h"
 #include "pipeline/skia/SkiaDisplayList.h"
 #include "pipeline/skia/SkiaOpenGLPipeline.h"
 #include "pipeline/skia/SkiaPipeline.h"
@@ -108,27 +111,27 @@ protected:
 TEST(RenderNodeDrawable, zReorder) {
     auto parent = TestUtils::createSkiaNode(0, 0, 100, 100, [](RenderProperties& props,
                                                                SkiaRecordingCanvas& canvas) {
-        canvas.insertReorderBarrier(true);
-        canvas.insertReorderBarrier(false);
+        canvas.enableZ(true);
+        canvas.enableZ(false);
         drawOrderedNode(&canvas, 0, 10.0f);  // in reorder=false at this point, so played inorder
         drawOrderedRect(&canvas, 1);
-        canvas.insertReorderBarrier(true);
+        canvas.enableZ(true);
         drawOrderedNode(&canvas, 6, 2.0f);
         drawOrderedRect(&canvas, 3);
         drawOrderedNode(&canvas, 4, 0.0f);
         drawOrderedRect(&canvas, 5);
         drawOrderedNode(&canvas, 2, -2.0f);
         drawOrderedNode(&canvas, 7, 2.0f);
-        canvas.insertReorderBarrier(false);
+        canvas.enableZ(false);
         drawOrderedRect(&canvas, 8);
         drawOrderedNode(&canvas, 9, -10.0f);  // in reorder=false at this point, so played inorder
-        canvas.insertReorderBarrier(true);    // reorder a node ahead of drawrect op
+        canvas.enableZ(true);    // reorder a node ahead of drawrect op
         drawOrderedRect(&canvas, 11);
         drawOrderedNode(&canvas, 10, -1.0f);
-        canvas.insertReorderBarrier(false);
-        canvas.insertReorderBarrier(true);  // test with two empty reorder sections
-        canvas.insertReorderBarrier(true);
-        canvas.insertReorderBarrier(false);
+        canvas.enableZ(false);
+        canvas.enableZ(true);  // test with two empty reorder sections
+        canvas.enableZ(true);
+        canvas.enableZ(false);
         drawOrderedRect(&canvas, 12);
     });
 
@@ -140,7 +143,7 @@ TEST(RenderNodeDrawable, zReorder) {
 }
 
 TEST(RenderNodeDrawable, composeOnLayer) {
-    auto surface = SkSurface::MakeRasterN32Premul(1, 1);
+    auto surface = SkSurfaces::Raster(SkImageInfo::MakeN32Premul(1, 1));
     SkCanvas& canvas = *surface->getCanvas();
     canvas.drawColor(SK_ColorBLUE, SkBlendMode::kSrcOver);
     ASSERT_EQ(TestUtils::getColor(surface, 0, 0), SK_ColorBLUE);
@@ -151,7 +154,7 @@ TEST(RenderNodeDrawable, composeOnLayer) {
             });
 
     // attach a layer to the render node
-    auto surfaceLayer = SkSurface::MakeRasterN32Premul(1, 1);
+    auto surfaceLayer = SkSurfaces::Raster(SkImageInfo::MakeN32Premul(1, 1));
     auto canvas2 = surfaceLayer->getCanvas();
     canvas2->drawColor(SK_ColorWHITE, SkBlendMode::kSrcOver);
     rootNode->setLayerSurface(surfaceLayer);
@@ -186,7 +189,7 @@ static SkMatrix getRecorderMatrix(const SkiaRecordingCanvas& recorder) {
 }
 
 TEST(RenderNodeDrawable, saveLayerClipAndMatrixRestore) {
-    auto surface = SkSurface::MakeRasterN32Premul(400, 800);
+    auto surface = SkSurfaces::Raster(SkImageInfo::MakeN32Premul(400, 800));
     SkCanvas& canvas = *surface->getCanvas();
     canvas.drawColor(SK_ColorWHITE, SkBlendMode::kSrcOver);
     ASSERT_EQ(TestUtils::getColor(surface, 0, 0), SK_ColorWHITE);
@@ -198,7 +201,7 @@ TEST(RenderNodeDrawable, saveLayerClipAndMatrixRestore) {
                 EXPECT_TRUE(getRecorderMatrix(recorder).isIdentity());
 
                 // note we don't pass SaveFlags::MatrixClip, but matrix and clip will be saved
-                recorder.saveLayer(0, 0, 400, 400, &layerPaint, SaveFlags::ClipToLayer);
+                recorder.saveLayer(0, 0, 400, 400, &layerPaint);
                 ASSERT_EQ(SkRect::MakeLTRB(0, 0, 400, 400), getRecorderClipBounds(recorder));
                 EXPECT_TRUE(getRecorderMatrix(recorder).isIdentity());
 
@@ -206,7 +209,7 @@ TEST(RenderNodeDrawable, saveLayerClipAndMatrixRestore) {
                 ASSERT_EQ(SkRect::MakeLTRB(50, 50, 350, 350), getRecorderClipBounds(recorder));
 
                 recorder.translate(300.0f, 400.0f);
-                EXPECT_EQ(SkMatrix::MakeTrans(300.0f, 400.0f), getRecorderMatrix(recorder));
+                EXPECT_EQ(SkMatrix::Translate(300.0f, 400.0f), getRecorderMatrix(recorder));
 
                 recorder.restore();
                 ASSERT_EQ(SkRect::MakeLTRB(0, 0, 400, 800), getRecorderClipBounds(recorder));
@@ -334,7 +337,7 @@ RENDERTHREAD_TEST(RenderNodeDrawable, projectionReorder) {
             "A");
     ContextFactory contextFactory;
     std::unique_ptr<CanvasContext> canvasContext(
-            CanvasContext::create(renderThread, false, parent.get(), &contextFactory));
+            CanvasContext::create(renderThread, false, parent.get(), &contextFactory, 0, 0));
     TreeInfo info(TreeInfo::MODE_RT_ONLY, *canvasContext.get());
     DamageAccumulator damageAccumulator;
     info.damageAccumulator = &damageAccumulator;
@@ -352,7 +355,7 @@ RENDERTHREAD_TEST(RenderNodeDrawable, projectionReorder) {
     EXPECT_EQ(3, canvas.getIndex());
 }
 
-RENDERTHREAD_SKIA_PIPELINE_TEST(RenderNodeDrawable, emptyReceiver) {
+RENDERTHREAD_TEST(RenderNodeDrawable, emptyReceiver) {
     class ProjectionTestCanvas : public SkCanvas {
     public:
         ProjectionTestCanvas(int width, int height) : SkCanvas(width, height) {}
@@ -398,7 +401,7 @@ RENDERTHREAD_SKIA_PIPELINE_TEST(RenderNodeDrawable, emptyReceiver) {
                                       "A");
     ContextFactory contextFactory;
     std::unique_ptr<CanvasContext> canvasContext(
-            CanvasContext::create(renderThread, false, parent.get(), &contextFactory));
+            CanvasContext::create(renderThread, false, parent.get(), &contextFactory, 0, 0));
     TreeInfo info(TreeInfo::MODE_RT_ONLY, *canvasContext.get());
     DamageAccumulator damageAccumulator;
     info.damageAccumulator = &damageAccumulator;
@@ -416,7 +419,7 @@ RENDERTHREAD_SKIA_PIPELINE_TEST(RenderNodeDrawable, emptyReceiver) {
     EXPECT_EQ(2, canvas.getDrawCounter());
 }
 
-RENDERTHREAD_SKIA_PIPELINE_TEST(RenderNodeDrawable, projectionHwLayer) {
+RENDERTHREAD_TEST(RenderNodeDrawable, projectionHwLayer) {
     /* R is backward projected on B and C is a layer.
                 A
                / \
@@ -469,7 +472,7 @@ RENDERTHREAD_SKIA_PIPELINE_TEST(RenderNodeDrawable, projectionHwLayer) {
         }
         SkCanvas* onNewCanvas() override { return new ProjectionTestCanvas(mDrawCounter); }
         sk_sp<SkSurface> onNewSurface(const SkImageInfo&) override { return nullptr; }
-        void onCopyOnWrite(ContentChangeMode) override {}
+        bool onCopyOnWrite(ContentChangeMode) override { return true; }
         int* mDrawCounter;
         void onWritePixels(const SkPixmap&, int x, int y) {}
     };
@@ -518,7 +521,7 @@ RENDERTHREAD_SKIA_PIPELINE_TEST(RenderNodeDrawable, projectionHwLayer) {
     // prepareTree is required to find, which receivers have backward projected nodes
     ContextFactory contextFactory;
     std::unique_ptr<CanvasContext> canvasContext(
-            CanvasContext::create(renderThread, false, parent.get(), &contextFactory));
+            CanvasContext::create(renderThread, false, parent.get(), &contextFactory, 0, 0));
     TreeInfo info(TreeInfo::MODE_RT_ONLY, *canvasContext.get());
     DamageAccumulator damageAccumulator;
     info.damageAccumulator = &damageAccumulator;
@@ -618,7 +621,7 @@ RENDERTHREAD_TEST(RenderNodeDrawable, projectionChildScroll) {
     // prepareTree is required to find, which receivers have backward projected nodes
     ContextFactory contextFactory;
     std::unique_ptr<CanvasContext> canvasContext(
-            CanvasContext::create(renderThread, false, parent.get(), &contextFactory));
+            CanvasContext::create(renderThread, false, parent.get(), &contextFactory, 0, 0));
     TreeInfo info(TreeInfo::MODE_RT_ONLY, *canvasContext.get());
     DamageAccumulator damageAccumulator;
     info.damageAccumulator = &damageAccumulator;
@@ -634,7 +637,7 @@ namespace {
 static int drawNode(RenderThread& renderThread, const sp<RenderNode>& renderNode) {
     ContextFactory contextFactory;
     std::unique_ptr<CanvasContext> canvasContext(
-            CanvasContext::create(renderThread, false, renderNode.get(), &contextFactory));
+            CanvasContext::create(renderThread, false, renderNode.get(), &contextFactory, 0, 0));
     TreeInfo info(TreeInfo::MODE_RT_ONLY, *canvasContext.get());
     DamageAccumulator damageAccumulator;
     info.damageAccumulator = &damageAccumulator;
@@ -938,7 +941,9 @@ RENDERTHREAD_TEST(RenderNodeDrawable, simple) {
         void onDrawRect(const SkRect& rect, const SkPaint& paint) override {
             EXPECT_EQ(0, mDrawCounter++);
         }
-        void onDrawImage(const SkImage*, SkScalar dx, SkScalar dy, const SkPaint*) override {
+        void onDrawImageRect2(const SkImage*, const SkRect&, const SkRect&,
+                              const SkSamplingOptions&, const SkPaint*,
+                              SrcRectConstraint) override {
             EXPECT_EQ(1, mDrawCounter++);
         }
     };
@@ -1047,8 +1052,8 @@ TEST(RenderNodeDrawable, renderNode) {
     EXPECT_EQ(2, canvas.mDrawCounter);
 }
 
-// Verify that layers are composed with kLow_SkFilterQuality filter quality.
-RENDERTHREAD_SKIA_PIPELINE_TEST(RenderNodeDrawable, layerComposeQuality) {
+// Verify that layers are composed with linear filtering.
+RENDERTHREAD_TEST(RenderNodeDrawable, layerComposeQuality) {
     static const int CANVAS_WIDTH = 1;
     static const int CANVAS_HEIGHT = 1;
     static const int LAYER_WIDTH = 1;
@@ -1056,10 +1061,12 @@ RENDERTHREAD_SKIA_PIPELINE_TEST(RenderNodeDrawable, layerComposeQuality) {
     class FrameTestCanvas : public TestCanvasBase {
     public:
         FrameTestCanvas() : TestCanvasBase(CANVAS_WIDTH, CANVAS_HEIGHT) {}
-        void onDrawImageRect(const SkImage* image, const SkRect* src, const SkRect& dst,
-                             const SkPaint* paint, SrcRectConstraint constraint) override {
+        void onDrawImageRect2(const SkImage* image, const SkRect& src, const SkRect& dst,
+                              const SkSamplingOptions& sampling, const SkPaint* paint,
+                              SrcRectConstraint constraint) override {
             mDrawCounter++;
-            EXPECT_EQ(kLow_SkFilterQuality, paint->getFilterQuality());
+            EXPECT_FALSE(sampling.useCubic);
+            EXPECT_EQ(SkFilterMode::kLinear, sampling.filter);
         }
     };
 
@@ -1070,7 +1077,8 @@ RENDERTHREAD_SKIA_PIPELINE_TEST(RenderNodeDrawable, layerComposeQuality) {
             });
 
     layerNode->animatorProperties().mutateLayerProperties().setType(LayerType::RenderLayer);
-    layerNode->setLayerSurface(SkSurface::MakeRasterN32Premul(LAYER_WIDTH, LAYER_HEIGHT));
+    layerNode->setLayerSurface(SkSurfaces::Raster(SkImageInfo::MakeN32Premul(LAYER_WIDTH, 
+                                                                             LAYER_HEIGHT)));
 
     FrameTestCanvas canvas;
     RenderNodeDrawable drawable(layerNode.get(), &canvas, true);
@@ -1107,27 +1115,27 @@ TEST(ReorderBarrierDrawable, testShadowMatrix) {
             EXPECT_EQ(dy, TRANSLATE_Y);
         }
 
-        virtual void didSetMatrix(const SkMatrix& matrix) override {
+        virtual void didSetM44(const SkM44& matrix) override {
             mDrawCounter++;
             // First invocation is EndReorderBarrierDrawable::drawShadow to apply shadow matrix.
             // Second invocation is preparing the matrix for an elevated RenderNodeDrawable.
-            EXPECT_TRUE(matrix.isIdentity());
+            EXPECT_TRUE(matrix == SkM44());
             EXPECT_TRUE(getTotalMatrix().isIdentity());
         }
 
-        virtual void didConcat(const SkMatrix& matrix) override {
+        virtual void didConcat44(const SkM44& matrix) override {
             mDrawCounter++;
             if (mFirstDidConcat) {
                 // First invocation is EndReorderBarrierDrawable::drawShadow to apply shadow matrix.
                 mFirstDidConcat = false;
-                EXPECT_EQ(SkMatrix::MakeTrans(CASTER_X + TRANSLATE_X, CASTER_Y + TRANSLATE_Y),
+                EXPECT_EQ(SkM44::Translate(CASTER_X + TRANSLATE_X, CASTER_Y + TRANSLATE_Y),
                           matrix);
-                EXPECT_EQ(SkMatrix::MakeTrans(CASTER_X + TRANSLATE_X, CASTER_Y + TRANSLATE_Y),
+                EXPECT_EQ(SkMatrix::Translate(CASTER_X + TRANSLATE_X, CASTER_Y + TRANSLATE_Y),
                           getTotalMatrix());
             } else {
                 // Second invocation is preparing the matrix for an elevated RenderNodeDrawable.
-                EXPECT_EQ(SkMatrix::MakeTrans(TRANSLATE_X, TRANSLATE_Y), matrix);
-                EXPECT_EQ(SkMatrix::MakeTrans(TRANSLATE_X, TRANSLATE_Y), getTotalMatrix());
+                EXPECT_EQ(SkM44::Translate(TRANSLATE_X, TRANSLATE_Y), matrix);
+                EXPECT_EQ(SkMatrix::Translate(TRANSLATE_X, TRANSLATE_Y), getTotalMatrix());
             }
         }
 
@@ -1142,7 +1150,7 @@ TEST(ReorderBarrierDrawable, testShadowMatrix) {
             0, 0, CANVAS_WIDTH, CANVAS_HEIGHT,
             [](RenderProperties& props, SkiaRecordingCanvas& canvas) {
                 canvas.translate(TRANSLATE_X, TRANSLATE_Y);
-                canvas.insertReorderBarrier(true);
+                canvas.enableZ(true);
 
                 auto node = TestUtils::createSkiaNode(
                         CASTER_X, CASTER_Y, CASTER_X + CASTER_WIDTH, CASTER_Y + CASTER_HEIGHT,
@@ -1152,7 +1160,7 @@ TEST(ReorderBarrierDrawable, testShadowMatrix) {
                             props.mutableOutline().setShouldClip(true);
                         });
                 canvas.drawRenderNode(node.get());
-                canvas.insertReorderBarrier(false);
+                canvas.enableZ(false);
             });
 
     // create a canvas not backed by any device/pixels, but with dimensions to avoid quick rejection
@@ -1163,14 +1171,15 @@ TEST(ReorderBarrierDrawable, testShadowMatrix) {
 }
 
 // Draw a vector drawable twice but with different bounds and verify correct bounds are used.
-RENDERTHREAD_SKIA_PIPELINE_TEST(SkiaRecordingCanvas, drawVectorDrawable) {
+RENDERTHREAD_TEST(SkiaRecordingCanvas, drawVectorDrawable) {
     static const int CANVAS_WIDTH = 100;
     static const int CANVAS_HEIGHT = 200;
     class VectorDrawableTestCanvas : public TestCanvasBase {
     public:
         VectorDrawableTestCanvas() : TestCanvasBase(CANVAS_WIDTH, CANVAS_HEIGHT) {}
-        void onDrawBitmapRect(const SkBitmap& bitmap, const SkRect* src, const SkRect& dst,
-                              const SkPaint* paint, SrcRectConstraint constraint) override {
+        void onDrawImageRect2(const SkImage*, const SkRect& src, const SkRect& dst,
+                              const SkSamplingOptions&, const SkPaint* paint,
+                              SrcRectConstraint constraint) override {
             const int index = mDrawCounter++;
             switch (index) {
                 case 0:
@@ -1204,4 +1213,78 @@ RENDERTHREAD_SKIA_PIPELINE_TEST(SkiaRecordingCanvas, drawVectorDrawable) {
     RenderNodeDrawable drawable(node.get(), &canvas, true);
     canvas.drawDrawable(&drawable);
     EXPECT_EQ(2, canvas.mDrawCounter);
+}
+
+// Verify drawing logics for BackdropFilterDrawable
+RENDERTHREAD_TEST(BackdropFilterDrawable, drawing) {
+    static const int CANVAS_WIDTH = 100;
+    static const int CANVAS_HEIGHT = 200;
+    class SimpleTestCanvas : public TestCanvasBase {
+    public:
+        SkRect mDstBounds;
+        SimpleTestCanvas() : TestCanvasBase(CANVAS_WIDTH, CANVAS_HEIGHT) {}
+        void onDrawRect(const SkRect& rect, const SkPaint& paint) override {
+            // did nothing.
+        }
+
+        // called when BackdropFilterDrawable is drawn.
+        void onDrawImageRect2(const SkImage*, const SkRect& src, const SkRect& dst,
+                              const SkSamplingOptions&, const SkPaint*,
+                              SrcRectConstraint) override {
+            mDrawCounter++;
+            mDstBounds = dst;
+        }
+    };
+    class SimpleLayer : public SkSurface_Base {
+    public:
+        SimpleLayer()
+                : SkSurface_Base(SkImageInfo::MakeN32Premul(CANVAS_WIDTH, CANVAS_HEIGHT), nullptr) {
+        }
+        virtual sk_sp<SkImage> onNewImageSnapshot(const SkIRect* bounds) override {
+            SkBitmap bitmap;
+            bitmap.allocN32Pixels(CANVAS_WIDTH, CANVAS_HEIGHT);
+            bitmap.setImmutable();
+            return bitmap.asImage();
+        }
+        SkCanvas* onNewCanvas() override { return new SimpleTestCanvas(); }
+        sk_sp<SkSurface> onNewSurface(const SkImageInfo&) override { return nullptr; }
+        bool onCopyOnWrite(ContentChangeMode) override { return true; }
+        void onWritePixels(const SkPixmap&, int x, int y) {}
+    };
+
+    auto node = TestUtils::createSkiaNode(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT,
+                                          [](RenderProperties& props, SkiaRecordingCanvas& canvas) {
+                                              canvas.drawRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT,
+                                                              Paint());
+                                          });
+
+    sk_sp<SkSurface> surface(new SimpleLayer());
+    auto* canvas = reinterpret_cast<SimpleTestCanvas*>(surface->getCanvas());
+    RenderNodeDrawable drawable(node.get(), canvas, true);
+    BackdropFilterDrawable backdropDrawable(node.get(), canvas);
+    canvas->drawDrawable(&drawable);
+    canvas->drawDrawable(&backdropDrawable);
+    // no backdrop filter, skip drawing.
+    EXPECT_EQ(0, canvas->mDrawCounter);
+
+    sk_sp<SkImageFilter> filter(SkImageFilters::Blur(3, 3, nullptr));
+    node->animatorProperties().mutateLayerProperties().setBackdropImageFilter(filter.get());
+    canvas->drawDrawable(&drawable);
+    canvas->drawDrawable(&backdropDrawable);
+    // backdrop filter is set, ok to draw.
+    EXPECT_EQ(1, canvas->mDrawCounter);
+    EXPECT_EQ(SkRect::MakeLTRB(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT), canvas->mDstBounds);
+
+    canvas->translate(30, 30);
+    canvas->drawDrawable(&drawable);
+    canvas->drawDrawable(&backdropDrawable);
+    // the drawable is still visible, ok to draw.
+    EXPECT_EQ(2, canvas->mDrawCounter);
+    EXPECT_EQ(SkRect::MakeLTRB(0, 0, CANVAS_WIDTH - 30, CANVAS_HEIGHT - 30), canvas->mDstBounds);
+
+    canvas->translate(CANVAS_WIDTH, CANVAS_HEIGHT);
+    canvas->drawDrawable(&drawable);
+    canvas->drawDrawable(&backdropDrawable);
+    // the drawable is invisible, skip drawing.
+    EXPECT_EQ(2, canvas->mDrawCounter);
 }

@@ -27,6 +27,8 @@ import android.graphics.drawable.Drawable;
 import android.os.RemoteException;
 import android.util.IconDrawableFactory;
 
+import androidx.annotation.Nullable;
+
 import com.android.settingslib.widget.CandidateInfo;
 
 /**
@@ -92,6 +94,10 @@ public class DefaultAppInfo extends CandidateInfo {
             return null;
         }
 
+    }
+
+    public @Nullable String getSummary() {
+        return this.summary;
     }
 
     @Override

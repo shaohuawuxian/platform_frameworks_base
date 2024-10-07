@@ -27,13 +27,14 @@ import android.annotation.PluralsRes;
 import android.annotation.RawRes;
 import android.annotation.StyleRes;
 import android.annotation.StyleableRes;
+import android.app.LocaleConfig;
+import android.app.ResourcesManager;
 import android.compat.annotation.UnsupportedAppUsage;
 import android.content.pm.ActivityInfo;
 import android.content.pm.ActivityInfo.Config;
 import android.content.res.AssetManager.AssetInputStream;
 import android.content.res.Configuration.NativeConfig;
 import android.content.res.Resources.NotFoundException;
-import android.graphics.Bitmap;
 import android.graphics.ImageDecoder;
 import android.graphics.Typeface;
 import android.graphics.drawable.ColorDrawable;
@@ -41,10 +42,10 @@ import android.graphics.drawable.ColorStateListDrawable;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.DrawableContainer;
 import android.icu.text.PluralRules;
+import android.net.Uri;
 import android.os.Build;
 import android.os.LocaleList;
-import android.os.SystemClock;
-import android.os.SystemProperties;
+import android.os.ParcelFileDescriptor;
 import android.os.Trace;
 import android.util.AttributeSet;
 import android.util.DisplayMetrics;
@@ -55,13 +56,19 @@ import android.util.TypedValue;
 import android.util.Xml;
 import android.view.DisplayAdjustments;
 
+import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.util.GrowingArrayUtils;
+
+import libcore.util.NativeAllocationRegistry;
 
 import org.xmlpull.v1.XmlPullParser;
 import org.xmlpull.v1.XmlPullParserException;
 
+import java.io.File;
+import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.PrintWriter;
 import java.util.Arrays;
 import java.util.Locale;
 
@@ -81,21 +88,10 @@ public class ResourcesImpl {
     private static final boolean DEBUG_LOAD = false;
     private static final boolean DEBUG_CONFIG = false;
 
-    static final String TAG_PRELOAD = TAG + ".preload";
-
     @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     private static final boolean TRACE_FOR_PRELOAD = false; // Do we still need it?
     @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     private static final boolean TRACE_FOR_MISS_PRELOAD = false; // Do we still need it?
-
-    public static final boolean TRACE_FOR_DETAILED_PRELOAD =
-            SystemProperties.getBoolean("debug.trace_resource_preload", false);
-
-    /** Used only when TRACE_FOR_DETAILED_PRELOAD is true. */
-    private static int sPreloadTracingNumLoadedDrawables;
-    private long mPreloadTracingPreloadStartTime;
-    private long mPreloadTracingStartBitmapSize;
-    private long mPreloadTracingStartBitmapCount;
 
     private static final int ID_OTHER = 0x01000004;
 
@@ -148,6 +144,10 @@ public class ResourcesImpl {
 
     // Cyclical cache used for recently-accessed XML files.
     private int mLastCachedXmlBlockIndex = -1;
+
+    // The hash that allows to detect when the shared libraries applied to this object have changed,
+    // and it is outdated and needs to be replaced.
+    private final int mAppliedSharedLibsHash;
     private final int[] mCachedXmlBlockCookies = new int[XML_BLOCK_CACHE_SIZE];
     private final String[] mCachedXmlBlockFiles = new String[XML_BLOCK_CACHE_SIZE];
     private final XmlBlock[] mCachedXmlBlocks = new XmlBlock[XML_BLOCK_CACHE_SIZE];
@@ -170,6 +170,23 @@ public class ResourcesImpl {
     }
 
     /**
+     * Clear the cache when the framework resources packages is changed.
+     *
+     * It's only used in the test initial function instead of regular app behaviors. It doesn't
+     * guarantee the thread-safety so mark this with @VisibleForTesting.
+     */
+    @VisibleForTesting(visibility = VisibleForTesting.Visibility.PACKAGE)
+    static void resetDrawableStateCache() {
+        synchronized (sSync) {
+            sPreloadedDrawables[0].clear();
+            sPreloadedDrawables[1].clear();
+            sPreloadedColorDrawables.clear();
+            sPreloadedComplexColors.clear();
+            sPreloaded = false;
+        }
+    }
+
+    /**
      * Creates a new ResourcesImpl object with CompatibilityInfo.
      *
      * @param assets Previously created AssetManager.
@@ -184,10 +201,12 @@ public class ResourcesImpl {
     public ResourcesImpl(@NonNull AssetManager assets, @Nullable DisplayMetrics metrics,
             @Nullable Configuration config, @NonNull DisplayAdjustments displayAdjustments) {
         mAssets = assets;
+        mAppliedSharedLibsHash =
+                ResourcesManager.getInstance().updateResourceImplWithRegisteredLibs(this);
         mMetrics.setToDefaults();
         mDisplayAdjustments = displayAdjustments;
         mConfiguration.setToDefaults();
-        updateConfiguration(config, metrics, displayAdjustments.getCompatibilityInfo());
+        updateConfigurationImpl(config, metrics, displayAdjustments.getCompatibilityInfo(), true);
     }
 
     public DisplayAdjustments getDisplayAdjustments() {
@@ -199,6 +218,11 @@ public class ResourcesImpl {
         return mAssets;
     }
 
+    @UnsupportedAppUsage
+    public DisplayMetrics getMetrics() {
+        return mMetrics;
+    }
+
     @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     DisplayMetrics getDisplayMetrics() {
         if (DEBUG_CONFIG) Slog.v(TAG, "Returning DisplayMetrics: " + mMetrics.widthPixels
@@ -206,12 +230,17 @@ public class ResourcesImpl {
         return mMetrics;
     }
 
-    Configuration getConfiguration() {
+    @UnsupportedAppUsage
+    public Configuration getConfiguration() {
         return mConfiguration;
     }
 
     Configuration[] getSizeConfigurations() {
         return mAssets.getSizeConfigurations();
+    }
+
+    Configuration[] getSizeAndUiModeConfigurations() {
+        return mAssets.getSizeAndUiModeConfigurations();
     }
 
     CompatibilityInfo getCompatibilityInfo() {
@@ -256,14 +285,27 @@ public class ResourcesImpl {
         throw new NotFoundException("String resource name " + name);
     }
 
+    private static boolean isIntLike(@NonNull String s) {
+        if (s.isEmpty() || s.length() > 10) return false;
+        for (int i = 0, size = s.length(); i < size; i++) {
+            final char c = s.charAt(i);
+            if (c < '0' || c > '9') {
+                return false;
+            }
+        }
+        return true;
+    }
+
     int getIdentifier(String name, String defType, String defPackage) {
         if (name == null) {
             throw new NullPointerException("name is null");
         }
-        try {
-            return Integer.parseInt(name);
-        } catch (Exception e) {
-            // Ignore
+        if (isIntLike(name)) {
+            try {
+                return Integer.parseInt(name);
+            } catch (Exception e) {
+                // Ignore
+            }
         }
         return mAssets.getResourceIdentifier(name, defType, defPackage);
     }
@@ -372,7 +414,12 @@ public class ResourcesImpl {
     }
 
     public void updateConfiguration(Configuration config, DisplayMetrics metrics,
-                                    CompatibilityInfo compat) {
+            CompatibilityInfo compat) {
+        updateConfigurationImpl(config, metrics, compat, false);
+    }
+
+    private void updateConfigurationImpl(Configuration config, DisplayMetrics metrics,
+                                    CompatibilityInfo compat, boolean forceAssetsRefresh) {
         Trace.traceBegin(Trace.TRACE_TAG_RESOURCES, "ResourcesImpl#updateConfiguration");
         try {
             synchronized (mAccessLock) {
@@ -409,26 +456,60 @@ public class ResourcesImpl {
                     mConfiguration.setLocales(locales);
                 }
 
+                String[] selectedLocales = null;
+                String defaultLocale = null;
+                LocaleConfig lc = ResourcesManager.getInstance().getLocaleConfig();
                 if ((configChanges & ActivityInfo.CONFIG_LOCALE) != 0) {
                     if (locales.size() > 1) {
-                        // The LocaleList has changed. We must query the AssetManager's available
-                        // Locales and figure out the best matching Locale in the new LocaleList.
-                        String[] availableLocales = mAssets.getNonSystemLocales();
-                        if (LocaleList.isPseudoLocalesOnly(availableLocales)) {
-                            // No app defined locales, so grab the system locales.
-                            availableLocales = mAssets.getLocales();
+                        if (Flags.defaultLocale() && (lc.getDefaultLocale() != null)) {
+                            Locale[] intersection =
+                                    locales.getIntersection(lc.getSupportedLocales());
+                            mConfiguration.setLocales(new LocaleList(intersection));
+                            selectedLocales = new String[intersection.length];
+                            for (int i = 0; i < intersection.length; i++) {
+                                selectedLocales[i] =
+                                        adjustLanguageTag(intersection[i].toLanguageTag());
+                            }
+                            defaultLocale =
+                                    adjustLanguageTag(lc.getDefaultLocale().toLanguageTag());
+                        } else {
+                            String[] availableLocales;
+                            // The LocaleList has changed. We must query the AssetManager's
+                            // available Locales and figure out the best matching Locale in the new
+                            // LocaleList.
+                            availableLocales = mAssets.getNonSystemLocales();
                             if (LocaleList.isPseudoLocalesOnly(availableLocales)) {
-                                availableLocales = null;
+                                // No app defined locales, so grab the system locales.
+                                availableLocales = mAssets.getLocales();
+                                if (LocaleList.isPseudoLocalesOnly(availableLocales)) {
+                                    availableLocales = null;
+                                }
                             }
-                        }
 
-                        if (availableLocales != null) {
-                            final Locale bestLocale = locales.getFirstMatchWithEnglishSupported(
-                                    availableLocales);
-                            if (bestLocale != null && bestLocale != locales.get(0)) {
-                                mConfiguration.setLocales(new LocaleList(bestLocale, locales));
+                            if (availableLocales != null) {
+                                final Locale bestLocale = locales.getFirstMatchWithEnglishSupported(
+                                        availableLocales);
+                                if (bestLocale != null) {
+                                    selectedLocales = new String[]{
+                                            adjustLanguageTag(bestLocale.toLanguageTag())};
+                                    if (!bestLocale.equals(locales.get(0))) {
+                                        mConfiguration.setLocales(
+                                                new LocaleList(bestLocale, locales));
+                                    }
+                                }
                             }
                         }
+                    }
+                }
+                if (selectedLocales == null) {
+                    if (Flags.defaultLocale() && (lc.getDefaultLocale() != null)) {
+                        selectedLocales = new String[locales.size()];
+                        for (int i = 0; i < locales.size(); i++) {
+                            selectedLocales[i] = adjustLanguageTag(locales.get(i).toLanguageTag());
+                        }
+                    } else {
+                        selectedLocales = new String[]{
+                                adjustLanguageTag(locales.get(0).toLanguageTag())};
                     }
                 }
 
@@ -441,6 +522,8 @@ public class ResourcesImpl {
                 // Protect against an unset fontScale.
                 mMetrics.scaledDensity = mMetrics.density *
                         (mConfiguration.fontScale != 0 ? mConfiguration.fontScale : 1.0f);
+                mMetrics.fontScaleConverter =
+                        FontScaleConverterFactory.forScale(mConfiguration.fontScale);
 
                 final int width, height;
                 if (mMetrics.widthPixels >= mMetrics.heightPixels) {
@@ -462,8 +545,9 @@ public class ResourcesImpl {
                     keyboardHidden = mConfiguration.keyboardHidden;
                 }
 
-                mAssets.setConfiguration(mConfiguration.mcc, mConfiguration.mnc,
-                        adjustLanguageTag(mConfiguration.getLocales().get(0).toLanguageTag()),
+                mAssets.setConfigurationInternal(mConfiguration.mcc, mConfiguration.mnc,
+                        defaultLocale,
+                        selectedLocales,
                         mConfiguration.orientation,
                         mConfiguration.touchscreen,
                         mConfiguration.densityDpi, mConfiguration.keyboard,
@@ -471,7 +555,8 @@ public class ResourcesImpl {
                         mConfiguration.smallestScreenWidthDp,
                         mConfiguration.screenWidthDp, mConfiguration.screenHeightDp,
                         mConfiguration.screenLayout, mConfiguration.uiMode,
-                        mConfiguration.colorMode, Build.VERSION.RESOURCES_SDK_INT);
+                        mConfiguration.colorMode, mConfiguration.getGrammaticalGender(),
+                        Build.VERSION.RESOURCES_SDK_INT, forceAssetsRefresh);
 
                 if (DEBUG_CONFIG) {
                     Slog.i(TAG, "**** Updating config of " + this + ": final config is "
@@ -650,11 +735,12 @@ public class ResourcesImpl {
                 key = (((long) value.assetCookie) << 32) | value.data;
             }
 
+            int cacheGeneration = caches.getGeneration();
             // First, check whether we have a cached version of this drawable
             // that was inflated against the specified theme. Skip the cache if
             // we're currently preloading or we're not using the cache.
             if (!mPreloading && useCache) {
-                final Drawable cachedDrawable = caches.getInstance(key, wrapper, theme);
+                Drawable cachedDrawable = caches.getInstance(key, wrapper, theme);
                 if (cachedDrawable != null) {
                     cachedDrawable.setChangingConfigurations(value.changingConfigurations);
                     return cachedDrawable;
@@ -673,16 +759,6 @@ public class ResourcesImpl {
             Drawable dr;
             boolean needsNewDrawableAfterCache = false;
             if (cs != null) {
-                if (TRACE_FOR_DETAILED_PRELOAD) {
-                    // Log only framework resources
-                    if (((id >>> 24) == 0x1) && (android.os.Process.myUid() != 0)) {
-                        final String name = getResourceName(id);
-                        if (name != null) {
-                            Log.d(TAG_PRELOAD, "Hit preloaded FW drawable #"
-                                    + Integer.toHexString(id) + " " + name);
-                        }
-                    }
-                }
                 dr = cs.newDrawable(wrapper);
             } else if (isColorDrawable) {
                 dr = new ColorDrawable(value.data);
@@ -712,7 +788,8 @@ public class ResourcesImpl {
             if (dr != null) {
                 dr.setChangingConfigurations(value.changingConfigurations);
                 if (useCache) {
-                    cacheDrawable(value, isColorDrawable, caches, theme, canApplyTheme, key, dr);
+                    cacheDrawable(value, isColorDrawable, caches, theme, canApplyTheme, key, dr,
+                            cacheGeneration);
                     if (needsNewDrawableAfterCache) {
                         Drawable.ConstantState state = dr.getConstantState();
                         if (state != null) {
@@ -743,7 +820,7 @@ public class ResourcesImpl {
     }
 
     private void cacheDrawable(TypedValue value, boolean isColorDrawable, DrawableCache caches,
-            Resources.Theme theme, boolean usesTheme, long key, Drawable dr) {
+            Resources.Theme theme, boolean usesTheme, long key, Drawable dr, int cacheGeneration) {
         final Drawable.ConstantState cs = dr.getConstantState();
         if (cs == null) {
             return;
@@ -771,7 +848,7 @@ public class ResourcesImpl {
             }
         } else {
             synchronized (mAccessLock) {
-                caches.put(key, theme, cs, usesTheme);
+                caches.put(key, theme, cs, cacheGeneration, usesTheme);
             }
         }
     }
@@ -820,7 +897,21 @@ public class ResourcesImpl {
     private Drawable decodeImageDrawable(@NonNull AssetInputStream ais,
             @NonNull Resources wrapper, @NonNull TypedValue value) {
         ImageDecoder.Source src = new ImageDecoder.AssetInputStreamSource(ais,
-                            wrapper, value);
+                wrapper, value);
+        try {
+            return ImageDecoder.decodeDrawable(src, (decoder, info, s) -> {
+                decoder.setAllocator(ImageDecoder.ALLOCATOR_SOFTWARE);
+            });
+        } catch (IOException ioe) {
+            // This is okay. This may be something that ImageDecoder does not
+            // support, like SVG.
+            return null;
+        }
+    }
+
+    @Nullable
+    private Drawable decodeImageDrawable(@NonNull FileInputStream fis, @NonNull Resources wrapper) {
+        ImageDecoder.Source src = ImageDecoder.createSource(wrapper, fis);
         try {
             return ImageDecoder.decodeDrawable(src, (decoder, info, s) -> {
                 decoder.setAllocator(ImageDecoder.ALLOCATOR_SOFTWARE);
@@ -858,18 +949,6 @@ public class ResourcesImpl {
             }
         }
 
-        // For preload tracing.
-        long startTime = 0;
-        int startBitmapCount = 0;
-        long startBitmapSize = 0;
-        int startDrawableCount = 0;
-        if (TRACE_FOR_DETAILED_PRELOAD) {
-            startTime = System.nanoTime();
-            startBitmapCount = Bitmap.sPreloadTracingNumInstantiatedBitmaps;
-            startBitmapSize = Bitmap.sPreloadTracingTotalBitmapsSize;
-            startDrawableCount = sPreloadTracingNumLoadedDrawables;
-        }
-
         if (DEBUG_LOAD) {
             Log.v(TAG, "Loading drawable for cookie " + value.assetCookie + ": " + file);
         }
@@ -893,6 +972,17 @@ public class ResourcesImpl {
                     } else {
                         dr = loadXmlDrawable(wrapper, value, id, density, file);
                     }
+                } else if (file.startsWith("frro://")) {
+                    Uri uri = Uri.parse(file);
+                    File f = new File('/' + uri.getHost() + uri.getPath());
+                    ParcelFileDescriptor pfd = ParcelFileDescriptor.open(f,
+                            ParcelFileDescriptor.MODE_READ_ONLY);
+                    AssetFileDescriptor afd = new AssetFileDescriptor(
+                            pfd,
+                            Long.parseLong(uri.getQueryParameter("offset")),
+                            Long.parseLong(uri.getQueryParameter("size")));
+                    FileInputStream is = afd.createInputStream();
+                    dr = decodeImageDrawable(is, wrapper);
                 } else {
                     final InputStream is = mAssets.openNonAsset(
                             value.assetCookie, file, AssetManager.ACCESS_STREAMING);
@@ -910,37 +1000,6 @@ public class ResourcesImpl {
             throw rnf;
         }
         Trace.traceEnd(Trace.TRACE_TAG_RESOURCES);
-
-        if (TRACE_FOR_DETAILED_PRELOAD) {
-            if (((id >>> 24) == 0x1)) {
-                final String name = getResourceName(id);
-                if (name != null) {
-                    final long time = System.nanoTime() - startTime;
-                    final int loadedBitmapCount =
-                            Bitmap.sPreloadTracingNumInstantiatedBitmaps - startBitmapCount;
-                    final long loadedBitmapSize =
-                            Bitmap.sPreloadTracingTotalBitmapsSize - startBitmapSize;
-                    final int loadedDrawables =
-                            sPreloadTracingNumLoadedDrawables - startDrawableCount;
-
-                    sPreloadTracingNumLoadedDrawables++;
-
-                    final boolean isRoot = (android.os.Process.myUid() == 0);
-
-                    Log.d(TAG_PRELOAD,
-                            (isRoot ? "Preloaded FW drawable #"
-                                    : "Loaded non-preloaded FW drawable #")
-                            + Integer.toHexString(id)
-                            + " " + name
-                            + " " + file
-                            + " " + dr.getClass().getCanonicalName()
-                            + " #nested_drawables= " + loadedDrawables
-                            + " #bitmaps= " + loadedBitmapCount
-                            + " total_bitmap_size= " + loadedBitmapSize
-                            + " in[us] " + (time / 1000));
-                }
-            }
-        }
 
         return dr;
     }
@@ -1034,6 +1093,7 @@ public class ResourcesImpl {
         if (complexColor != null) {
             return complexColor;
         }
+        int cacheGeneration = cache.getGeneration();
 
         final android.content.res.ConstantState<ComplexColor> factory =
                 sPreloadedComplexColors.get(key);
@@ -1054,7 +1114,7 @@ public class ResourcesImpl {
                     sPreloadedComplexColors.put(key, complexColor.getConstantState());
                 }
             } else {
-                cache.put(key, theme, complexColor.getConstantState());
+                cache.put(key, theme, complexColor.getConstantState(), cacheGeneration);
             }
         }
         return complexColor;
@@ -1302,13 +1362,6 @@ public class ResourcesImpl {
             mPreloading = true;
             mConfiguration.densityDpi = DisplayMetrics.DENSITY_DEVICE;
             updateConfiguration(null, null, null);
-
-            if (TRACE_FOR_DETAILED_PRELOAD) {
-                mPreloadTracingPreloadStartTime = SystemClock.uptimeMillis();
-                mPreloadTracingStartBitmapSize = Bitmap.sPreloadTracingTotalBitmapsSize;
-                mPreloadTracingStartBitmapCount = Bitmap.sPreloadTracingNumInstantiatedBitmaps;
-                Log.d(TAG_PRELOAD, "Preload starting");
-            }
         }
     }
 
@@ -1318,16 +1371,6 @@ public class ResourcesImpl {
      */
     void finishPreloading() {
         if (mPreloading) {
-            if (TRACE_FOR_DETAILED_PRELOAD) {
-                final long time = SystemClock.uptimeMillis() - mPreloadTracingPreloadStartTime;
-                final long size =
-                        Bitmap.sPreloadTracingTotalBitmapsSize - mPreloadTracingStartBitmapSize;
-                final long count = Bitmap.sPreloadTracingNumInstantiatedBitmaps
-                        - mPreloadTracingStartBitmapCount;
-                Log.d(TAG_PRELOAD, "Preload finished, "
-                        + count + " bitmaps of " + size + " bytes in " + time + " ms");
-            }
-
             mPreloading = false;
             flushLayoutCache();
         }
@@ -1349,14 +1392,14 @@ public class ResourcesImpl {
         return new ThemeImpl();
     }
 
-    /**
-     * Creates a new ThemeImpl which is already set to the given Resources.ThemeKey.
-     */
-    ThemeImpl newThemeImpl(Resources.ThemeKey key) {
-        ThemeImpl impl = new ThemeImpl();
-        impl.mKey.setTo(key);
-        impl.rebase();
-        return impl;
+    private static final NativeAllocationRegistry sThemeRegistry =
+            NativeAllocationRegistry.createMalloced(ResourcesImpl.class.getClassLoader(),
+                    AssetManager.getThemeFreeFunction());
+
+    void dump(PrintWriter pw, String prefix) {
+        pw.println(prefix + "class=" + getClass());
+        pw.println(prefix + "assets");
+        mAssets.dump(pw, prefix + "  ");
     }
 
     public class ThemeImpl {
@@ -1366,7 +1409,7 @@ public class ResourcesImpl {
         private final Resources.ThemeKey mKey = new Resources.ThemeKey();
 
         @SuppressWarnings("hiding")
-        private final AssetManager mAssets;
+        private AssetManager mAssets;
         private final long mTheme;
 
         /**
@@ -1377,6 +1420,7 @@ public class ResourcesImpl {
         /*package*/ ThemeImpl() {
             mAssets = ResourcesImpl.this.mAssets;
             mTheme = mAssets.createTheme();
+            sThemeRegistry.registerNativeAllocation(this, mTheme);
         }
 
         @Override
@@ -1397,23 +1441,25 @@ public class ResourcesImpl {
             return mThemeResId;
         }
 
-        void applyStyle(int resId, boolean force) {
-            synchronized (mKey) {
-                mAssets.applyStyleToTheme(mTheme, resId, force);
-                mThemeResId = resId;
-                mKey.append(resId, force);
+        @StyleRes
+        /*package*/ int getParentThemeIdentifier(@StyleRes int resId) {
+            if (resId > 0) {
+                return mAssets.getParentThemeIdentifier(resId);
             }
+            return 0;
+        }
+
+        void applyStyle(int resId, boolean force) {
+            mAssets.applyStyleToTheme(mTheme, resId, force);
+            mThemeResId = resId;
+            mKey.append(resId, force);
         }
 
         void setTo(ThemeImpl other) {
-            synchronized (mKey) {
-                synchronized (other.mKey) {
-                    mAssets.setThemeTo(mTheme, other.mAssets, other.mTheme);
+            mAssets.setThemeTo(mTheme, other.mAssets, other.mTheme);
 
-                    mThemeResId = other.mThemeResId;
-                    mKey.setTo(other.getKey());
-                }
-            }
+            mThemeResId = other.mThemeResId;
+            mKey.setTo(other.getKey());
         }
 
         @NonNull
@@ -1422,46 +1468,40 @@ public class ResourcesImpl {
                 @StyleableRes int[] attrs,
                 @AttrRes int defStyleAttr,
                 @StyleRes int defStyleRes) {
-            synchronized (mKey) {
-                final int len = attrs.length;
-                final TypedArray array = TypedArray.obtain(wrapper.getResources(), len);
+            final int len = attrs.length;
+            final TypedArray array = TypedArray.obtain(wrapper.getResources(), len);
 
-                // XXX note that for now we only work with compiled XML files.
-                // To support generic XML files we will need to manually parse
-                // out the attributes from the XML file (applying type information
-                // contained in the resources and such).
-                final XmlBlock.Parser parser = (XmlBlock.Parser) set;
-                mAssets.applyStyle(mTheme, defStyleAttr, defStyleRes, parser, attrs,
-                        array.mDataAddress, array.mIndicesAddress);
-                array.mTheme = wrapper;
-                array.mXml = parser;
-                return array;
-            }
+            // XXX note that for now we only work with compiled XML files.
+            // To support generic XML files we will need to manually parse
+            // out the attributes from the XML file (applying type information
+            // contained in the resources and such).
+            final XmlBlock.Parser parser = (XmlBlock.Parser) set;
+            mAssets.applyStyle(mTheme, defStyleAttr, defStyleRes, parser, attrs,
+                    array.mDataAddress, array.mIndicesAddress);
+            array.mTheme = wrapper;
+            array.mXml = parser;
+            return array;
         }
 
         @NonNull
         TypedArray resolveAttributes(@NonNull Resources.Theme wrapper,
                 @NonNull int[] values,
                 @NonNull int[] attrs) {
-            synchronized (mKey) {
-                final int len = attrs.length;
-                if (values == null || len != values.length) {
-                    throw new IllegalArgumentException(
-                            "Base attribute values must the same length as attrs");
-                }
-
-                final TypedArray array = TypedArray.obtain(wrapper.getResources(), len);
-                mAssets.resolveAttrs(mTheme, 0, 0, values, attrs, array.mData, array.mIndices);
-                array.mTheme = wrapper;
-                array.mXml = null;
-                return array;
+            final int len = attrs.length;
+            if (values == null || len != values.length) {
+                throw new IllegalArgumentException(
+                        "Base attribute values must the same length as attrs");
             }
+
+            final TypedArray array = TypedArray.obtain(wrapper.getResources(), len);
+            mAssets.resolveAttrs(mTheme, 0, 0, values, attrs, array.mData, array.mIndices);
+            array.mTheme = wrapper;
+            array.mXml = null;
+            return array;
         }
 
         boolean resolveAttribute(int resid, TypedValue outValue, boolean resolveRefs) {
-            synchronized (mKey) {
-                return mAssets.getThemeValue(mTheme, resid, outValue, resolveRefs);
-            }
+            return mAssets.getThemeValue(mTheme, resid, outValue, resolveRefs);
         }
 
         int[] getAllAttributes() {
@@ -1469,35 +1509,29 @@ public class ResourcesImpl {
         }
 
         @Config int getChangingConfigurations() {
-            synchronized (mKey) {
-                final @NativeConfig int nativeChangingConfig =
-                        AssetManager.nativeThemeGetChangingConfigurations(mTheme);
-                return ActivityInfo.activityInfoConfigNativeToJava(nativeChangingConfig);
-            }
+            final @NativeConfig int nativeChangingConfig =
+                    AssetManager.nativeThemeGetChangingConfigurations(mTheme);
+            return ActivityInfo.activityInfoConfigNativeToJava(nativeChangingConfig);
         }
 
         public void dump(int priority, String tag, String prefix) {
-            synchronized (mKey) {
-                mAssets.dumpTheme(mTheme, priority, tag, prefix);
-            }
+            mAssets.dumpTheme(mTheme, priority, tag, prefix);
         }
 
         String[] getTheme() {
-            synchronized (mKey) {
-                final int N = mKey.mCount;
-                final String[] themes = new String[N * 2];
-                for (int i = 0, j = N - 1; i < themes.length; i += 2, --j) {
-                    final int resId = mKey.mResId[j];
-                    final boolean forced = mKey.mForce[j];
-                    try {
-                        themes[i] = getResourceName(resId);
-                    } catch (NotFoundException e) {
-                        themes[i] = Integer.toHexString(i);
-                    }
-                    themes[i + 1] = forced ? "forced" : "not forced";
+            final int n = mKey.mCount;
+            final String[] themes = new String[n * 2];
+            for (int i = 0, j = n - 1; i < themes.length; i += 2, --j) {
+                final int resId = mKey.mResId[j];
+                final boolean forced = mKey.mForce[j];
+                try {
+                    themes[i] = getResourceName(resId);
+                } catch (NotFoundException e) {
+                    themes[i] = Integer.toHexString(i);
                 }
-                return themes;
+                themes[i + 1] = forced ? "forced" : "not forced";
             }
+            return themes;
         }
 
         /**
@@ -1506,16 +1540,18 @@ public class ResourcesImpl {
          * {@link #applyStyle(int, boolean)}.
          */
         void rebase() {
-            synchronized (mKey) {
-                AssetManager.nativeThemeClear(mTheme);
+            rebase(mAssets);
+        }
 
-                // Reapply the same styles in the same order.
-                for (int i = 0; i < mKey.mCount; i++) {
-                    final int resId = mKey.mResId[i];
-                    final boolean force = mKey.mForce[i];
-                    mAssets.applyStyleToTheme(mTheme, resId, force);
-                }
-            }
+        /**
+         * Rebases the theme against the {@code newAssets} by re-applying the styles passed to
+         * {@link #applyStyle(int, boolean)}.
+         *
+         * The theme will use {@code newAssets} for all future invocations of
+         * {@link #applyStyle(int, boolean)}.
+         */
+        void rebase(AssetManager newAssets) {
+            mAssets = mAssets.rebaseTheme(mTheme, newAssets, mKey.mResId, mKey.mForce, mKey.mCount);
         }
 
         /**
@@ -1539,10 +1575,8 @@ public class ResourcesImpl {
         @Nullable
         public int[] getAttributeResolutionStack(@AttrRes int defStyleAttr,
                 @StyleRes int defStyleRes, @StyleRes int explicitStyleRes) {
-            synchronized (mKey) {
-                return mAssets.getAttributeResolutionStack(
-                        mTheme, defStyleAttr, defStyleRes, explicitStyleRes);
-            }
+            return mAssets.getAttributeResolutionStack(
+                    mTheme, defStyleAttr, defStyleRes, explicitStyleRes);
         }
     }
 
@@ -1569,5 +1603,9 @@ public class ResourcesImpl {
         public void pop() {
             mSize--;
         }
+    }
+
+    public int getAppliedSharedLibsHash() {
+        return mAppliedSharedLibsHash;
     }
 }

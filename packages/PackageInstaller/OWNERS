@@ -1,7 +1,4 @@
-svetoslavganov@google.com
-toddke@google.com
-patb@google.com
-suprabh@google.com
+# Bug component: 1002434
+include /PACKAGE_MANAGER_OWNERS
 
-# For automotive related changes
-rogerxue@google.com
+sumedhsen@google.com

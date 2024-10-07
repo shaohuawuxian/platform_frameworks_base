@@ -63,6 +63,17 @@
     <item msgid="6336372935919715515">"ଫିଲ୍ଟର୍‌କୁ ସକ୍ଷମ କରାଯାଇଛି"</item>
     <item msgid="2779123106632690576">"ସକ୍ଷମ କରାଯାଇଛି"</item>
   </string-array>
+  <string-array name="bt_hci_snoop_log_filters_entries">
+    <item msgid="195768089203590086">"କେବଳ ACL ହେଡରଗୁଡ଼ିକୁ ଛାଡ଼ି ଦିଅନ୍ତୁ"</item>
+    <item msgid="2776218217644557831">"A2DP ମିଡିଆ ପେକେଟଗୁଡ଼ିକୁ ଫିଲ୍ଟର କରନ୍ତୁ"</item>
+    <item msgid="8163235976612675092">"RFCOMM ଚେନେଲକୁ ଫିଲ୍ଟର କରନ୍ତୁ"</item>
+  </string-array>
+  <string-array name="bt_hci_snoop_log_profile_filter_entries">
+    <item msgid="3961868665260627524">"ଅକ୍ଷମ କରନ୍ତୁ"</item>
+    <item msgid="2505973306504851132">"କେରେକ୍ଟରଗୁଡ଼ିକର ଷ୍ଟ୍ରିଂ ସହ ପୂରଣ କରନ୍ତୁ"</item>
+    <item msgid="5883011000629613855">"କେବଳ ହେଡରକୁ ଛାଡ଼ି ଦିଅନ୍ତୁ"</item>
+    <item msgid="1051534112762023603">"ସମ୍ପୂର୍ଣ୍ଣ ଭାବେ କାଢ଼ି ଦିଅନ୍ତୁ"</item>
+  </string-array>
   <string-array name="bluetooth_avrcp_versions">
     <item msgid="6603880723315236832">"AVRCP 1.5 (ଡିଫଲ୍ଟ)"</item>
     <item msgid="1637054408779685086">"AVRCP 1.3"</item>
@@ -92,6 +103,8 @@
     <item msgid="1049450003868150455">"<xliff:g id="QUALCOMM">Qualcomm®</xliff:g> <xliff:g id="APTX">aptX™</xliff:g> ଅଡିଓ"</item>
     <item msgid="2908219194098827570">"<xliff:g id="QUALCOMM">Qualcomm®</xliff:g> <xliff:g id="APTX_HD">aptX™ HD</xliff:g> ଅଡିଓ"</item>
     <item msgid="3825367753087348007">"LDAC"</item>
+    <item msgid="328951785723550863">"LC3"</item>
+    <item msgid="506175145534048710">"Opus"</item>
   </string-array>
   <string-array name="bluetooth_a2dp_codec_summaries">
     <item msgid="8868109554557331312">"ସିଷ୍ଟମ୍‌ର ଚୟନ (ଡିଫଲ୍ଟ୍) ବ୍ୟବହାର କରନ୍ତୁ"</item>
@@ -100,6 +113,8 @@
     <item msgid="8627333814413492563">"<xliff:g id="QUALCOMM">Qualcomm®</xliff:g> <xliff:g id="APTX">aptX™</xliff:g> ଅଡିଓ"</item>
     <item msgid="3517061573669307965">"<xliff:g id="QUALCOMM">Qualcomm®</xliff:g> <xliff:g id="APTX_HD">aptX™ HD</xliff:g> ଅଡିଓ"</item>
     <item msgid="2553206901068987657">"LDAC"</item>
+    <item msgid="3940992993241040716">"LC3"</item>
+    <item msgid="7940970833006181407">"Opus"</item>
   </string-array>
   <string-array name="bluetooth_a2dp_codec_sample_rate_titles">
     <item msgid="926809261293414607">"ସିଷ୍ଟମ୍‌ର ଚୟନ (ଡିଫଲ୍ଟ୍) ବ୍ୟବହାର କରନ୍ତୁ"</item>
@@ -171,11 +186,11 @@
   </string-array>
   <string-array name="select_logd_size_summaries">
     <item msgid="409235464399258501">"ବନ୍ଦ"</item>
-    <item msgid="4195153527464162486">"64K ପିଛା ଲଗ୍‌ ବଫର୍‌"</item>
-    <item msgid="7464037639415220106">"256K ଲଗ୍‌ ପ୍ରତି ବଫର୍‌"</item>
-    <item msgid="8539423820514360724">"1M ପ୍ରତି ଲଗ୍‌ ବଫର୍‌"</item>
-    <item msgid="1984761927103140651">"ଲଗ୍‌ ବଫର୍‌ ପ୍ରତି 4M"</item>
-    <item msgid="2983219471251787208">"ଲଗ୍ ବଫର୍ ପ୍ରତି 8M"</item>
+    <item msgid="4195153527464162486">"ପ୍ରତି ଲଗ ବଫର 64K"</item>
+    <item msgid="7464037639415220106">"ପ୍ରତି ଲଗ ବଫର 256K"</item>
+    <item msgid="8539423820514360724">"ପ୍ରତି ଲଗ ବଫର 1M"</item>
+    <item msgid="1984761927103140651">"ପ୍ରତି ଲଗ ବଫର 4M"</item>
+    <item msgid="2983219471251787208">"ପ୍ରତି ଲଗ ବଫର 8M"</item>
   </string-array>
   <string-array name="select_logpersist_titles">
     <item msgid="704720725704372366">"ବନ୍ଦ"</item>
@@ -228,7 +243,7 @@
     <item msgid="8612549335720461635">"4K (ସୁରକ୍ଷିତ)"</item>
     <item msgid="7322156123728520872">"4K (ଅପ୍‌ସ୍କେଲ୍‌ କରାଯାଇଛି)"</item>
     <item msgid="7735692090314849188">"4K (ଉତ୍ତମ, ସୁରକ୍ଷିତ)"</item>
-    <item msgid="7346816300608639624">"720p, 1080p (ଡୁଆଲ୍ ସ୍କ୍ରୀନ୍‌)"</item>
+    <item msgid="7346816300608639624">"720p, 1080p (Dual Screen)"</item>
   </string-array>
   <string-array name="enable_opengl_traces_entries">
     <item msgid="4433736508877934305">"କିଛିନାହିଁ"</item>
@@ -266,5 +281,11 @@
     <item msgid="3825132913289380004">"RNDIS (USB ଏଥରନେଟ)"</item>
     <item msgid="8828567335701536560">"ଅଡିଓ ଉତ୍ସ"</item>
     <item msgid="8688681727755534982">"MIDI"</item>
+  </string-array>
+  <string-array name="grammatical_gender_values">
+    <item msgid="4976102487934077239">"0"</item>
+    <item msgid="2646486108212979598">"1"</item>
+    <item msgid="3753634915787796632">"2"</item>
+    <item msgid="4779928470672877922">"3"</item>
   </string-array>
 </resources>

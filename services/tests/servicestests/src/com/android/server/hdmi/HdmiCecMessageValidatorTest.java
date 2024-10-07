@@ -16,8 +16,11 @@
 
 package com.android.server.hdmi;
 
+import static com.android.server.hdmi.Constants.ADDR_AUDIO_SYSTEM;
+import static com.android.server.hdmi.Constants.ADDR_BROADCAST;
 import static com.android.server.hdmi.HdmiCecMessageValidator.ERROR_DESTINATION;
 import static com.android.server.hdmi.HdmiCecMessageValidator.ERROR_PARAMETER;
+import static com.android.server.hdmi.HdmiCecMessageValidator.ERROR_PARAMETER_LONG;
 import static com.android.server.hdmi.HdmiCecMessageValidator.ERROR_PARAMETER_SHORT;
 import static com.android.server.hdmi.HdmiCecMessageValidator.ERROR_SOURCE;
 import static com.android.server.hdmi.HdmiCecMessageValidator.OK;
@@ -37,6 +40,8 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
 
+import java.util.Collections;
+
 /** Tests for {@link com.android.server.hdmi.HdmiCecMessageValidator} class. */
 @SmallTest
 @Presubmit
@@ -48,11 +53,13 @@ public class HdmiCecMessageValidatorTest {
 
     @Before
     public void setUp() throws Exception {
+        FakeAudioFramework audioFramework = new FakeAudioFramework();
+
         HdmiControlService mHdmiControlService = new HdmiControlService(
-                InstrumentationRegistry.getTargetContext());
+                InstrumentationRegistry.getTargetContext(), Collections.emptyList(),
+                audioFramework.getAudioManager(), audioFramework.getAudioDeviceVolumeManager());
 
         mHdmiControlService.setIoLooper(mTestLooper.getLooper());
-        mHdmiCecMessageValidator = new HdmiCecMessageValidator(mHdmiControlService);
     }
 
     @Test
@@ -91,8 +98,8 @@ public class HdmiCecMessageValidatorTest {
     public void isValid_reportPowerStatus() {
         assertMessageValidity("04:90:00").isEqualTo(OK);
         assertMessageValidity("04:90:03:05").isEqualTo(OK);
+        assertMessageValidity("0F:90:00").isEqualTo(OK);
 
-        assertMessageValidity("0F:90:00").isEqualTo(ERROR_DESTINATION);
         assertMessageValidity("F0:90").isEqualTo(ERROR_SOURCE);
         assertMessageValidity("04:90").isEqualTo(ERROR_PARAMETER_SHORT);
         assertMessageValidity("04:90:04").isEqualTo(ERROR_PARAMETER);
@@ -132,22 +139,24 @@ public class HdmiCecMessageValidatorTest {
 
     @Test
     public void isValid_setSystemAudioMode() {
-        assertMessageValidity("40:72:00").isEqualTo(OK);
-        assertMessageValidity("4F:72:01:03").isEqualTo(OK);
+        assertMessageValidity("50:72:00").isEqualTo(OK);
+        assertMessageValidity("50:72:01").isEqualTo(OK);
+        assertMessageValidity("5F:72:01:03").isEqualTo(ERROR_PARAMETER_LONG);
 
-        assertMessageValidity("F0:72").isEqualTo(ERROR_SOURCE);
-        assertMessageValidity("40:72").isEqualTo(ERROR_PARAMETER_SHORT);
-        assertMessageValidity("40:72:02").isEqualTo(ERROR_PARAMETER);
+        assertMessageValidity("40:72:00").isEqualTo(ERROR_SOURCE);
+        assertMessageValidity("50:72").isEqualTo(ERROR_PARAMETER_SHORT);
+        assertMessageValidity("50:72:02").isEqualTo(ERROR_PARAMETER);
     }
 
     @Test
     public void isValid_systemAudioModeStatus() {
         assertMessageValidity("40:7E:00").isEqualTo(OK);
-        assertMessageValidity("40:7E:01:01").isEqualTo(OK);
+        assertMessageValidity("40:7E:01").isEqualTo(OK);
 
         assertMessageValidity("0F:7E:00").isEqualTo(ERROR_DESTINATION);
         assertMessageValidity("F0:7E").isEqualTo(ERROR_SOURCE);
         assertMessageValidity("40:7E").isEqualTo(ERROR_PARAMETER_SHORT);
+        assertMessageValidity("40:7E:01:1F:28").isEqualTo(ERROR_PARAMETER_LONG);
         assertMessageValidity("40:7E:02").isEqualTo(ERROR_PARAMETER);
     }
 
@@ -176,13 +185,13 @@ public class HdmiCecMessageValidatorTest {
 
     @Test
     public void isValid_setMenuLanguage() {
-        assertMessageValidity("4F:32:53:50:41").isEqualTo(OK);
+        assertMessageValidity("0F:32:53:50:41").isEqualTo(OK);
         assertMessageValidity("0F:32:45:4E:47:8C:49:D3:48").isEqualTo(OK);
 
-        assertMessageValidity("40:32:53:50:41").isEqualTo(ERROR_DESTINATION);
-        assertMessageValidity("F0:32").isEqualTo(ERROR_SOURCE);
-        assertMessageValidity("4F:32:45:55").isEqualTo(ERROR_PARAMETER_SHORT);
-        assertMessageValidity("4F:32:19:7F:83").isEqualTo(ERROR_PARAMETER);
+        assertMessageValidity("04:32:53:50:41").isEqualTo(ERROR_DESTINATION);
+        assertMessageValidity("40:32").isEqualTo(ERROR_SOURCE);
+        assertMessageValidity("0F:32:45:55").isEqualTo(ERROR_PARAMETER_SHORT);
+        assertMessageValidity("0F:32:19:7F:83").isEqualTo(ERROR_PARAMETER);
     }
 
     @Test
@@ -231,6 +240,9 @@ public class HdmiCecMessageValidatorTest {
     public void isValid_setAnalogueTimer_clearAnalogueTimer() {
         assertMessageValidity("04:33:0C:08:10:1E:04:30:08:00:13:AD:06").isEqualTo(OK);
         assertMessageValidity("04:34:04:0C:16:0F:08:37:00:02:EA:60:03:34").isEqualTo(OK);
+        // Allow [Recording Sequence] set multiple days of the week.
+        // e.g. Monday (0x02) | Tuesday (0x04) -> Monday or Tuesday (0x06)
+        assertMessageValidity("04:34:04:0C:16:0F:08:37:06:02:EA:60:03:34").isEqualTo(OK);
 
         assertMessageValidity("0F:33:0C:08:10:1E:04:30:08:00:13:AD:06")
                 .isEqualTo(ERROR_DESTINATION);
@@ -238,120 +250,120 @@ public class HdmiCecMessageValidatorTest {
         assertMessageValidity("04:33:0C:08:10:1E:04:30:08:13:AD:06")
                 .isEqualTo(ERROR_PARAMETER_SHORT);
         // Out of range Day of Month
-        assertMessageValidity("04:34:20:0C:16:0F:08:37:00:02:EA:60:03").isEqualTo(ERROR_PARAMETER);
+        assertMessageValidity("04:34:20:0C:22:15:08:55:00:02:EA:60:03").isEqualTo(ERROR_PARAMETER);
         // Out of range Month of Year
-        assertMessageValidity("04:33:0C:00:10:1E:04:30:08:00:13:AD:06").isEqualTo(ERROR_PARAMETER);
+        assertMessageValidity("04:33:0C:00:16:30:04:48:08:00:13:AD:06").isEqualTo(ERROR_PARAMETER);
         // Out of range Start Time - Hour
-        assertMessageValidity("04:34:04:0C:18:0F:08:37:00:02:EA:60:03").isEqualTo(ERROR_PARAMETER);
+        assertMessageValidity("04:34:04:0C:24:15:08:55:00:02:EA:60:03").isEqualTo(ERROR_PARAMETER);
         // Out of range Start Time - Minute
-        assertMessageValidity("04:33:0C:08:10:50:04:30:08:00:13:AD:06").isEqualTo(ERROR_PARAMETER);
+        assertMessageValidity("04:33:0C:08:16:60:04:48:08:00:13:AD:06").isEqualTo(ERROR_PARAMETER);
         // Out of range Duration - Duration Hours
-        assertMessageValidity("04:34:04:0C:16:0F:64:37:00:02:EA:60:03").isEqualTo(ERROR_PARAMETER);
+        assertMessageValidity("04:34:04:0C:22:15:9A:55:00:02:EA:60:03").isEqualTo(ERROR_PARAMETER);
         // Out of range Duration - Minute
-        assertMessageValidity("04:33:0C:08:10:1E:04:64:08:00:13:AD:06").isEqualTo(ERROR_PARAMETER);
+        assertMessageValidity("04:33:0C:08:16:30:04:60:08:00:13:AD:06").isEqualTo(ERROR_PARAMETER);
         // Invalid Recording Sequence
-        assertMessageValidity("04:34:04:0C:16:0F:08:37:88:02:EA:60:03").isEqualTo(ERROR_PARAMETER);
+        assertMessageValidity("04:34:04:0C:22:15:08:55:88:02:EA:60:03").isEqualTo(ERROR_PARAMETER);
         // Invalid Recording Sequence
-        assertMessageValidity("04:33:0C:08:10:1E:04:30:A2:00:13:AD:06").isEqualTo(ERROR_PARAMETER);
+        assertMessageValidity("04:33:0C:08:16:30:04:48:A2:00:13:AD:06").isEqualTo(ERROR_PARAMETER);
         // Out of range Analogue Broadcast Type
-        assertMessageValidity("04:34:04:0C:16:0F:08:37:00:03:EA:60:03").isEqualTo(ERROR_PARAMETER);
+        assertMessageValidity("04:34:04:0C:22:15:08:55:00:03:EA:60:03").isEqualTo(ERROR_PARAMETER);
         // Out of range Analogue Frequency
-        assertMessageValidity("04:33:0C:08:10:1E:04:30:08:00:FF:FF:06").isEqualTo(ERROR_PARAMETER);
+        assertMessageValidity("04:33:0C:08:16:30:04:48:08:00:FF:FF:06").isEqualTo(ERROR_PARAMETER);
         // Out of range Broadcast System
-        assertMessageValidity("04:34:04:0C:16:0F:08:37:00:02:EA:60:20").isEqualTo(ERROR_PARAMETER);
+        assertMessageValidity("04:34:04:0C:22:15:08:55:00:02:EA:60:20").isEqualTo(ERROR_PARAMETER);
     }
 
     @Test
     public void isValid_setDigitalTimer_clearDigitalTimer() {
         // Services identified by Digital IDs - ARIB Broadcast System
-        assertMessageValidity("04:99:0C:08:15:05:04:1E:00:00:C4:C2:11:D8:75:30").isEqualTo(OK);
+        assertMessageValidity("04:99:0C:08:21:05:04:30:00:00:C4:C2:11:D8:75:30").isEqualTo(OK);
         // Service identified by Digital IDs - ATSC Broadcast System
-        assertMessageValidity("04:97:1E:07:12:20:50:28:01:01:8B:5E:39:5A").isEqualTo(OK);
+        assertMessageValidity("04:97:1E:07:18:32:80:40:01:01:8B:5E:39:5A").isEqualTo(OK);
         // Service identified by Digital IDs - DVB Broadcast System
-        assertMessageValidity("04:99:05:0C:06:0A:19:3B:40:19:8B:44:03:11:04:FC").isEqualTo(OK);
+        assertMessageValidity("04:99:05:0C:06:10:25:59:40:19:8B:44:03:11:04:FC").isEqualTo(OK);
         // Service identified by Channel - 1 part channel number
-        assertMessageValidity("04:97:12:06:0C:2D:5A:19:08:91:04:00:B1").isEqualTo(OK);
+        assertMessageValidity("04:97:12:06:12:45:90:25:08:91:04:00:B1").isEqualTo(OK);
         // Service identified by Channel - 2 part channel number
-        assertMessageValidity("04:99:15:09:00:0F:00:2D:04:82:09:C8:72:C8").isEqualTo(OK);
+        assertMessageValidity("04:99:15:09:00:15:00:45:04:82:09:C8:72:C8").isEqualTo(OK);
 
-        assertMessageValidity("4F:97:0C:08:15:05:04:1E:00:00:C4:C2:11:D8:75:30")
+        assertMessageValidity("4F:97:0C:08:21:05:04:30:00:00:C4:C2:11:D8:75:30")
                 .isEqualTo(ERROR_DESTINATION);
-        assertMessageValidity("F0:99:15:09:00:0F:00:2D:04:82:09:C8:72:C8").isEqualTo(ERROR_SOURCE);
+        assertMessageValidity("F0:99:15:09:00:15:00:45:04:82:09:C8:72:C8").isEqualTo(ERROR_SOURCE);
         assertMessageValidity("04:97:1E:12:20:58:01:01:8B:5E:39:5A")
                 .isEqualTo(ERROR_PARAMETER_SHORT);
         // Out of range Day of Month
-        assertMessageValidity("04:99:24:0C:06:0A:19:3B:40:19:8B:44:03:11:04:FC")
+        assertMessageValidity("04:99:24:0C:06:10:25:59:40:19:8B:44:03:11:04:FC")
                 .isEqualTo(ERROR_PARAMETER);
         // Out of range Month of Year
-        assertMessageValidity("04:97:12:10:0C:2D:5A:19:08:91:04:00:B1").isEqualTo(ERROR_PARAMETER);
+        assertMessageValidity("04:97:12:10:12:45:90:25:08:91:04:00:B1").isEqualTo(ERROR_PARAMETER);
         // Out of range Start Time - Hour
-        assertMessageValidity("04:99:0C:08:20:05:04:1E:00:00:C4:C2:11:D8:75:30")
+        assertMessageValidity("04:99:0C:08:24:05:04:30:00:00:C4:C2:11:D8:75:30")
                 .isEqualTo(ERROR_PARAMETER);
         // Out of range Start Time - Minute
-        assertMessageValidity("04:97:15:09:00:4B:00:2D:04:82:09:C8:72:C8")
+        assertMessageValidity("04:97:15:09:00:60:00:45:04:82:09:C8:72:C8")
                 .isEqualTo(ERROR_PARAMETER);
         // Out of range Duration - Duration Hours
-        assertMessageValidity("04:99:1E:07:12:20:78:28:01:01:8B:5E:39:5A")
+        assertMessageValidity("04:99:1E:07:18:32:9A:40:01:01:8B:5E:39:5A")
                 .isEqualTo(ERROR_PARAMETER);
         // Out of range Duration - Minute
-        assertMessageValidity("04:97:05:0C:06:0A:19:48:40:19:8B:44:03:11:04:FC")
+        assertMessageValidity("04:97:05:0C:06:10:25:60:40:19:8B:44:03:11:04:FC")
                 .isEqualTo(ERROR_PARAMETER);
         // Invalid Recording Sequence
-        assertMessageValidity("04:99:12:06:0C:2D:5A:19:90:91:04:00:B1").isEqualTo(ERROR_PARAMETER);
+        assertMessageValidity("04:99:12:06:12:45:90:25:90:91:04:00:B1").isEqualTo(ERROR_PARAMETER);
         // Invalid Recording Sequence
-        assertMessageValidity("04:97:0C:08:15:05:04:1E:21:00:C4:C2:11:D8:75:30")
+        assertMessageValidity("04:97:0C:08:15:05:04:1E:A1:00:C4:C2:11:D8:75:30")
                 .isEqualTo(ERROR_PARAMETER);
 
         // Invalid Digital Broadcast System
-        assertMessageValidity("04:99:1E:07:12:20:50:28:01:04:8B:5E:39:5A")
+        assertMessageValidity("04:99:1E:07:18:32:80:40:01:04:8B:5E:39:5A")
                 .isEqualTo(ERROR_PARAMETER);
         // Invalid Digital Broadcast System
-        assertMessageValidity("04:97:05:0C:06:0A:19:3B:40:93:8B:44:03:11:04:FC")
+        assertMessageValidity("04:97:05:0C:06:10:25:59:40:93:8B:44:03:11:04:FC")
                 .isEqualTo(ERROR_PARAMETER);
         // Insufficient data for ARIB Broadcast system
-        assertMessageValidity("04:99:0C:08:15:05:04:1E:00:00:C4:C2:11:D8:75")
+        assertMessageValidity("04:99:0C:08:21:05:04:30:00:00:C4:C2:11:D8:75")
                 .isEqualTo(ERROR_PARAMETER);
         // Insufficient data for ATSC Broadcast system
-        assertMessageValidity("04:97:1E:07:12:20:50:28:01:01:8B:5E:39").isEqualTo(ERROR_PARAMETER);
+        assertMessageValidity("04:97:1E:07:18:32:80:40:01:01:8B:5E:39").isEqualTo(ERROR_PARAMETER);
         // Insufficient data for DVB Broadcast system
-        assertMessageValidity("04:99:05:0C:06:0A:19:3B:40:19:8B:44:03:11:04")
+        assertMessageValidity("04:99:05:0C:06:10:25:59:40:19:8B:44:03:11:04")
                 .isEqualTo(ERROR_PARAMETER);
         // Insufficient data for 2 part channel number
-        assertMessageValidity("04:97:15:09:00:0F:00:2D:04:82:09:C8:72").isEqualTo(ERROR_PARAMETER);
+        assertMessageValidity("04:97:15:09:00:15:00:45:04:82:09:C8:72").isEqualTo(ERROR_PARAMETER);
         // Invalid Channel Number format
-        assertMessageValidity("04:99:12:06:0C:2D:5A:19:08:91:0D:00:B1").isEqualTo(ERROR_PARAMETER);
+        assertMessageValidity("04:99:12:06:12:45:90:25:08:91:0D:00:B1").isEqualTo(ERROR_PARAMETER);
     }
 
     @Test
     public void isValid_setExternalTimer_clearExternalTimer() {
-        assertMessageValidity("40:A1:0C:08:15:05:04:1E:02:04:20").isEqualTo(OK);
-        assertMessageValidity("40:A2:14:09:12:28:4B:19:10:05:10:00").isEqualTo(OK);
+        assertMessageValidity("40:A1:0C:08:21:05:04:30:02:04:20").isEqualTo(OK);
+        assertMessageValidity("40:A2:14:09:18:40:75:25:10:05:10:00").isEqualTo(OK);
 
-        assertMessageValidity("4F:A1:0C:08:15:05:04:1E:02:04:20").isEqualTo(ERROR_DESTINATION);
-        assertMessageValidity("F4:A2:14:09:12:28:4B:19:10:05:10:00").isEqualTo(ERROR_SOURCE);
-        assertMessageValidity("40:A1:0C:08:15:05:04:1E:02:04").isEqualTo(ERROR_PARAMETER_SHORT);
+        assertMessageValidity("4F:A1:0C:08:21:05:04:30:02:04:20").isEqualTo(ERROR_DESTINATION);
+        assertMessageValidity("F4:A2:14:09:18:40:75:25:10:05:10:00").isEqualTo(ERROR_SOURCE);
+        assertMessageValidity("40:A1:0C:08:21:05:04:30:02:04").isEqualTo(ERROR_PARAMETER_SHORT);
         // Out of range Day of Month
-        assertMessageValidity("40:A2:28:09:12:28:4B:19:10:05:10:00").isEqualTo(ERROR_PARAMETER);
+        assertMessageValidity("40:A2:28:09:18:40:75:25:10:05:10:00").isEqualTo(ERROR_PARAMETER);
         // Out of range Month of Year
-        assertMessageValidity("40:A1:0C:0F:15:05:04:1E:02:04:20").isEqualTo(ERROR_PARAMETER);
+        assertMessageValidity("40:A1:0C:0F:21:05:04:30:02:04:20").isEqualTo(ERROR_PARAMETER);
         // Out of range Start Time - Hour
-        assertMessageValidity("40:A2:14:09:1A:28:4B:19:10:05:10:00").isEqualTo(ERROR_PARAMETER);
+        assertMessageValidity("40:A2:14:09:24:40:75:25:10:05:10:00").isEqualTo(ERROR_PARAMETER);
         // Out of range Start Time - Minute
-        assertMessageValidity("40:A1:0C:08:15:48:04:1E:02:04:20").isEqualTo(ERROR_PARAMETER);
+        assertMessageValidity("40:A1:0C:08:21:60:04:30:02:04:20").isEqualTo(ERROR_PARAMETER);
         // Out of range Duration - Duration Hours
-        assertMessageValidity("40:A2:14:09:12:28:66:19:10:05:10:00").isEqualTo(ERROR_PARAMETER);
+        assertMessageValidity("40:A2:14:09:18:40:9A:25:10:05:10:00").isEqualTo(ERROR_PARAMETER);
         // Out of range Duration - Minute
-        assertMessageValidity("40:A1:0C:08:15:05:04:3F:02:04:20").isEqualTo(ERROR_PARAMETER);
+        assertMessageValidity("40:A1:0C:08:21:05:04:60:02:04:20").isEqualTo(ERROR_PARAMETER);
         // Invalid Recording Sequence
-        assertMessageValidity("40:A2:14:09:12:28:4B:19:84:05:10:00").isEqualTo(ERROR_PARAMETER);
+        assertMessageValidity("40:A2:14:09:18:40:75:25:84:05:10:00").isEqualTo(ERROR_PARAMETER);
         // Invalid Recording Sequence
-        assertMessageValidity("40:A1:0C:08:15:05:04:1E:14:04:20").isEqualTo(ERROR_PARAMETER);
+        assertMessageValidity("40:A1:0C:08:15:05:04:1E:94:04:20").isEqualTo(ERROR_PARAMETER);
         // Invalid external source specifier
-        assertMessageValidity("40:A2:14:09:12:28:4B:19:10:08:10:00").isEqualTo(ERROR_PARAMETER);
+        assertMessageValidity("40:A2:14:09:18:40:75:25:10:08:10:00").isEqualTo(ERROR_PARAMETER);
         // Invalid External PLug
-        assertMessageValidity("04:A1:0C:08:15:05:04:1E:02:04:00").isEqualTo(ERROR_PARAMETER);
+        assertMessageValidity("04:A1:0C:08:21:05:04:30:02:04:00").isEqualTo(ERROR_PARAMETER);
         // Invalid Physical Address
-        assertMessageValidity("40:A2:14:09:12:28:4B:19:10:05:10:10").isEqualTo(ERROR_PARAMETER);
+        assertMessageValidity("40:A2:14:09:18:40:75:25:10:05:10:10").isEqualTo(ERROR_PARAMETER);
     }
 
     @Test
@@ -384,9 +396,17 @@ public class HdmiCecMessageValidatorTest {
         // Non programmed - Invalid not programmed error info
         assertMessageValidity("40:35:DE").isEqualTo(ERROR_PARAMETER);
         // Programmed - Might not be enough space available - Invalid duration hours
-        assertMessageValidity("40:35:BB:96:1C").isEqualTo(ERROR_PARAMETER);
+        assertMessageValidity("40:35:BB:9A:28").isEqualTo(ERROR_PARAMETER);
         // Not programmed - Duplicate - Invalid duration minutes
-        assertMessageValidity("40:35:EE:52:4A").isEqualTo(ERROR_PARAMETER);
+        assertMessageValidity("40:35:EE:82:60").isEqualTo(ERROR_PARAMETER);
+    }
+
+    @Test
+    public void isValid_giveFeatures() {
+        assertMessageValidity("40:A5").isEqualTo(OK);
+        assertMessageValidity("F0:A5").isEqualTo(OK);
+
+        assertMessageValidity("4F:A5").isEqualTo(ERROR_DESTINATION);
     }
 
     @Test
@@ -628,24 +648,19 @@ public class HdmiCecMessageValidatorTest {
         assertMessageValidity("4F:80:12:00:50:50").isEqualTo(ERROR_PARAMETER);
     }
 
-    private IntegerSubject assertMessageValidity(String message) {
-        return assertThat(mHdmiCecMessageValidator.isValid(buildMessage(message)));
+    @Test
+    public void isValid_activeSource() {
+        for (int i = 0; i < ADDR_BROADCAST; ++i) {
+            String message = Integer.toHexString(i) + "F:82:10:00";
+            if (i == ADDR_AUDIO_SYSTEM) {
+                assertMessageValidity(message).isEqualTo(ERROR_SOURCE);
+            } else {
+                assertMessageValidity(message).isEqualTo(OK);
+            }
+        }
     }
 
-    /**
-     * Build a CEC message from a hex byte string with bytes separated by {@code :}.
-     *
-     * <p>This format is used by both cec-client and www.cec-o-matic.com
-     */
-    private static HdmiCecMessage buildMessage(String message) {
-        String[] parts = message.split(":");
-        int src = Integer.parseInt(parts[0].substring(0, 1), 16);
-        int dest = Integer.parseInt(parts[0].substring(1, 2), 16);
-        int opcode = Integer.parseInt(parts[1], 16);
-        byte[] params = new byte[parts.length - 2];
-        for (int i = 0; i < params.length; i++) {
-            params[i] = (byte) Integer.parseInt(parts[i + 2], 16);
-        }
-        return new HdmiCecMessage(src, dest, opcode, params);
+    private IntegerSubject assertMessageValidity(String message) {
+        return assertThat(HdmiUtils.buildMessage(message).getValidationResult());
     }
 }

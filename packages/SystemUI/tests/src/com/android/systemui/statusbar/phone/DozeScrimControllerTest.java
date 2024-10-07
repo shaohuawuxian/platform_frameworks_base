@@ -20,14 +20,15 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 
-import android.testing.AndroidTestingRunner;
 import android.testing.TestableLooper;
 
+import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.filters.SmallTest;
 
 import com.android.systemui.SysuiTestCase;
 import com.android.systemui.doze.DozeHost;
 import com.android.systemui.doze.DozeLog;
+import com.android.systemui.plugins.statusbar.StatusBarStateController;
 
 import org.junit.Before;
 import org.junit.Test;
@@ -35,7 +36,7 @@ import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 
-@RunWith(AndroidTestingRunner.class)
+@RunWith(AndroidJUnit4.class)
 @TestableLooper.RunWithLooper
 @SmallTest
 public class DozeScrimControllerTest extends SysuiTestCase {
@@ -44,12 +45,15 @@ public class DozeScrimControllerTest extends SysuiTestCase {
     private DozeParameters mDozeParameters;
     @Mock
     private DozeLog mDozeLog;
+    @Mock
+    private StatusBarStateController mStatusBarStateController;
     private DozeScrimController mDozeScrimController;
 
     @Before
     public void setup() {
         MockitoAnnotations.initMocks(this);
-        mDozeScrimController = new DozeScrimController(mDozeParameters, mDozeLog);
+        mDozeScrimController = new DozeScrimController(mDozeParameters, mDozeLog,
+                mStatusBarStateController);
         mDozeScrimController.setDozing(true);
     }
 

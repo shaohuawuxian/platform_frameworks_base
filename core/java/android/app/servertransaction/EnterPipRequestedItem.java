@@ -16,6 +16,8 @@
 
 package android.app.servertransaction;
 
+import android.annotation.NonNull;
+import android.app.ActivityThread.ActivityClientRecord;
 import android.app.ClientTransactionHandler;
 import android.os.IBinder;
 import android.os.Parcel;
@@ -24,12 +26,12 @@ import android.os.Parcel;
  * Request an activity to enter picture-in-picture mode.
  * @hide
  */
-public final class EnterPipRequestedItem extends ClientTransactionItem {
+public final class EnterPipRequestedItem extends ActivityTransactionItem {
 
     @Override
-    public void execute(ClientTransactionHandler client, IBinder token,
-            PendingTransactionActions pendingActions) {
-        client.handlePictureInPictureRequested(token);
+    public void execute(@NonNull ClientTransactionHandler client, @NonNull ActivityClientRecord r,
+            @NonNull PendingTransactionActions pendingActions) {
+        client.handlePictureInPictureRequested(r);
     }
 
     // ObjectPoolItem implementation
@@ -37,28 +39,32 @@ public final class EnterPipRequestedItem extends ClientTransactionItem {
     private EnterPipRequestedItem() {}
 
     /** Obtain an instance initialized with provided params. */
-    public static EnterPipRequestedItem obtain() {
+    @NonNull
+    public static EnterPipRequestedItem obtain(@NonNull IBinder activityToken) {
         EnterPipRequestedItem instance = ObjectPool.obtain(EnterPipRequestedItem.class);
         if (instance == null) {
             instance = new EnterPipRequestedItem();
         }
+        instance.setActivityToken(activityToken);
         return instance;
     }
 
     @Override
     public void recycle() {
+        super.recycle();
         ObjectPool.recycle(this);
     }
 
     // Parcelable implementation
 
-    @Override
-    public void writeToParcel(Parcel dest, int flags) { }
+    private EnterPipRequestedItem(@NonNull Parcel in) {
+        super(in);
+    }
 
-    public static final @android.annotation.NonNull Creator<EnterPipRequestedItem> CREATOR =
-            new Creator<EnterPipRequestedItem>() {
-                public EnterPipRequestedItem createFromParcel(Parcel in) {
-                    return new EnterPipRequestedItem();
+    public static final @NonNull Creator<EnterPipRequestedItem> CREATOR =
+            new Creator<>() {
+                public EnterPipRequestedItem createFromParcel(@NonNull Parcel in) {
+                    return new EnterPipRequestedItem(in);
                 }
 
                 public EnterPipRequestedItem[] newArray(int size) {
@@ -67,12 +73,7 @@ public final class EnterPipRequestedItem extends ClientTransactionItem {
             };
 
     @Override
-    public boolean equals(Object o) {
-        return this == o;
-    }
-
-    @Override
     public String toString() {
-        return "EnterPipRequestedItem{}";
+        return "EnterPipRequestedItem{" + super.toString() + "}";
     }
 }

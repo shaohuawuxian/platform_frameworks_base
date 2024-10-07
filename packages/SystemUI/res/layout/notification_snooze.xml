@@ -17,10 +17,13 @@
 
 <com.android.systemui.statusbar.notification.row.NotificationSnooze
     xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:androidprv="http://schemas.android.com/apk/prv/res/android"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
     android:orientation="vertical"
-    android:background="@color/notification_material_background_color"
+    android:paddingTop="2dp"
+    android:paddingBottom="2dp"
+    android:background="?androidprv:attr/materialColorSurfaceContainerHigh"
     android:theme="@style/Theme.SystemUI">
 
     <RelativeLayout
@@ -34,8 +37,8 @@
             android:layout_height="wrap_content"
             android:layout_alignParentStart="true"
             android:layout_centerVertical="true"
-            android:paddingStart="@*android:dimen/notification_content_margin_start"
-            android:textColor="?android:attr/textColorPrimary"
+            android:paddingStart="@*android:dimen/notification_content_margin_end"
+            android:textColor="?androidprv:attr/materialColorOnSurface"
             android:paddingEnd="4dp"/>
 
         <ImageView
@@ -45,7 +48,8 @@
             android:layout_toEndOf="@+id/snooze_option_default"
             android:layout_centerVertical="true"
             android:paddingTop="1dp"
-            android:tint="#9E9E9E" />
+            android:importantForAccessibility="yes"
+            android:tint="?android:attr/textColorPrimary"/>
 
         <TextView
             android:id="@+id/undo"

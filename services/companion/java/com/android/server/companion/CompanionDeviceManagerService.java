@@ -17,515 +17,782 @@
 
 package com.android.server.companion;
 
-import static com.android.internal.util.CollectionUtils.size;
-import static com.android.internal.util.FunctionalUtils.uncheckExceptions;
-import static com.android.internal.util.Preconditions.checkArgument;
-import static com.android.internal.util.Preconditions.checkNotNull;
+import static android.Manifest.permission.ASSOCIATE_COMPANION_DEVICES;
+import static android.Manifest.permission.BLUETOOTH_CONNECT;
+import static android.Manifest.permission.DELIVER_COMPANION_MESSAGES;
+import static android.Manifest.permission.MANAGE_COMPANION_DEVICES;
+import static android.Manifest.permission.REQUEST_COMPANION_SELF_MANAGED;
+import static android.Manifest.permission.REQUEST_OBSERVE_COMPANION_DEVICE_PRESENCE;
+import static android.Manifest.permission.USE_COMPANION_TRANSPORTS;
+import static android.content.pm.PackageManager.CERT_INPUT_SHA256;
+import static android.content.pm.PackageManager.PERMISSION_GRANTED;
+import static android.os.Process.SYSTEM_UID;
+import static android.os.UserHandle.getCallingUserId;
+
+import static com.android.internal.util.CollectionUtils.any;
 import static com.android.internal.util.Preconditions.checkState;
 import static com.android.internal.util.function.pooled.PooledLambda.obtainMessage;
-import static com.android.internal.util.function.pooled.PooledLambda.obtainRunnable;
+import static com.android.server.companion.utils.PackageUtils.enforceUsesCompanionDeviceFeature;
+import static com.android.server.companion.utils.PackageUtils.getPackageInfo;
+import static com.android.server.companion.utils.PackageUtils.isRestrictedSettingsAllowed;
+import static com.android.server.companion.utils.PermissionsUtils.enforceCallerCanManageAssociationsForPackage;
+import static com.android.server.companion.utils.PermissionsUtils.enforceCallerIsSystemOr;
+import static com.android.server.companion.utils.PermissionsUtils.enforceCallerIsSystemOrCanInteractWithUserId;
 
+import static java.util.Objects.requireNonNull;
 import static java.util.concurrent.TimeUnit.MINUTES;
 
-import android.annotation.CheckResult;
+import android.annotation.EnforcePermission;
+import android.annotation.NonNull;
 import android.annotation.Nullable;
+import android.annotation.SuppressLint;
+import android.annotation.UserIdInt;
+import android.app.ActivityManager;
+import android.app.ActivityManagerInternal;
 import android.app.AppOpsManager;
+import android.app.NotificationManager;
 import android.app.PendingIntent;
+import android.app.ecm.EnhancedConfirmationManager;
 import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
-import android.companion.Association;
+import android.bluetooth.BluetoothManager;
+import android.companion.AssociationInfo;
 import android.companion.AssociationRequest;
-import android.companion.CompanionDeviceManager;
-import android.companion.ICompanionDeviceDiscoveryService;
+import android.companion.IAssociationRequestCallback;
 import android.companion.ICompanionDeviceManager;
-import android.companion.IFindDeviceCallback;
+import android.companion.IOnAssociationsChangedListener;
+import android.companion.IOnMessageReceivedListener;
+import android.companion.IOnTransportsChangedListener;
+import android.companion.ISystemDataTransferCallback;
+import android.companion.ObservingDevicePresenceRequest;
+import android.companion.datatransfer.PermissionSyncRequest;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
-import android.content.pm.FeatureInfo;
 import android.content.pm.PackageInfo;
-import android.content.pm.PackageItemInfo;
 import android.content.pm.PackageManager;
+import android.content.pm.PackageManagerInternal;
+import android.net.MacAddress;
 import android.net.NetworkPolicyManager;
 import android.os.Binder;
 import android.os.Environment;
-import android.os.Handler;
-import android.os.IBinder;
-import android.os.IDeviceIdleController;
-import android.os.IInterface;
 import android.os.Parcel;
-import android.os.Process;
+import android.os.ParcelFileDescriptor;
+import android.os.PowerExemptionManager;
+import android.os.PowerManagerInternal;
 import android.os.RemoteException;
-import android.os.ResultReceiver;
 import android.os.ServiceManager;
-import android.os.ShellCallback;
-import android.os.ShellCommand;
 import android.os.UserHandle;
-import android.os.UserManagerInternal;
-import android.provider.Settings;
-import android.provider.SettingsStringUtil.ComponentNameSet;
-import android.text.BidiFormatter;
+import android.os.UserManager;
+import android.permission.flags.Flags;
 import android.util.ArraySet;
-import android.util.AtomicFile;
 import android.util.ExceptionUtils;
-import android.util.Log;
 import android.util.Slog;
-import android.util.Xml;
 
 import com.android.internal.app.IAppOpsService;
 import com.android.internal.content.PackageMonitor;
-import com.android.internal.infra.AndroidFuture;
-import com.android.internal.infra.PerUser;
-import com.android.internal.infra.ServiceConnector;
 import com.android.internal.notification.NotificationAccessConfirmationActivityContract;
 import com.android.internal.os.BackgroundThread;
 import com.android.internal.util.ArrayUtils;
-import com.android.internal.util.CollectionUtils;
-import com.android.internal.util.function.pooled.PooledLambda;
+import com.android.internal.util.DumpUtils;
 import com.android.server.FgThread;
 import com.android.server.LocalServices;
 import com.android.server.SystemService;
+import com.android.server.companion.association.AssociationDiskStore;
+import com.android.server.companion.association.AssociationRequestsProcessor;
+import com.android.server.companion.association.AssociationStore;
+import com.android.server.companion.association.DisassociationProcessor;
+import com.android.server.companion.association.InactiveAssociationsRemovalService;
+import com.android.server.companion.datatransfer.SystemDataTransferProcessor;
+import com.android.server.companion.datatransfer.SystemDataTransferRequestStore;
+import com.android.server.companion.datatransfer.contextsync.CrossDeviceCall;
+import com.android.server.companion.datatransfer.contextsync.CrossDeviceSyncController;
+import com.android.server.companion.datatransfer.contextsync.CrossDeviceSyncControllerCallback;
+import com.android.server.companion.devicepresence.CompanionAppBinder;
+import com.android.server.companion.devicepresence.DevicePresenceProcessor;
+import com.android.server.companion.devicepresence.ObservableUuid;
+import com.android.server.companion.devicepresence.ObservableUuidStore;
+import com.android.server.companion.transport.CompanionTransportManager;
+import com.android.server.pm.UserManagerInternal;
 import com.android.server.wm.ActivityTaskManagerInternal;
-
-import org.xmlpull.v1.XmlPullParser;
-import org.xmlpull.v1.XmlPullParserException;
-import org.xmlpull.v1.XmlSerializer;
 
 import java.io.File;
 import java.io.FileDescriptor;
-import java.io.FileInputStream;
-import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
-import java.util.HashSet;
+import java.io.PrintWriter;
+import java.util.Collection;
 import java.util.List;
-import java.util.Objects;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
-import java.util.function.Function;
 
-//TODO onStop schedule unbind in 5 seconds
-//TODO make sure APIs are only callable from currently focused app
-//TODO schedule stopScan on activity destroy(except if configuration change)
-//TODO on associate called again after configuration change -> replace old callback with new
-//TODO avoid leaking calling activity in IFindDeviceCallback (see PrintManager#print for example)
-/** @hide */
-public class CompanionDeviceManagerService extends SystemService implements Binder.DeathRecipient {
+@SuppressLint("LongLogTag")
+public class CompanionDeviceManagerService extends SystemService {
+    private static final String TAG = "CDM_CompanionDeviceManagerService";
 
-    private static final ComponentName SERVICE_TO_BIND_TO = ComponentName.createRelative(
-            CompanionDeviceManager.COMPANION_DEVICE_DISCOVERY_PACKAGE_NAME,
-            ".DeviceDiscoveryService");
-
-    private static final boolean DEBUG = false;
-    private static final String LOG_TAG = "CompanionDeviceManagerService";
+    private static final long PAIR_WITHOUT_PROMPT_WINDOW_MS = 10 * 60 * 1000; // 10 min
 
     private static final String PREF_FILE_NAME = "companion_device_preferences.xml";
     private static final String PREF_KEY_AUTO_REVOKE_GRANTS_DONE = "auto_revoke_grants_done";
+    private static final int MAX_CN_LENGTH = 500;
 
-    private static final String XML_TAG_ASSOCIATIONS = "associations";
-    private static final String XML_TAG_ASSOCIATION = "association";
-    private static final String XML_ATTR_PACKAGE = "package";
-    private static final String XML_ATTR_DEVICE = "device";
-    private static final String XML_FILE_NAME = "companion_device_manager_associations.xml";
+    private final ActivityTaskManagerInternal mAtmInternal;
+    private final ActivityManagerInternal mAmInternal;
+    private final IAppOpsService mAppOpsManager;
+    private final PowerExemptionManager mPowerExemptionManager;
+    private final PackageManagerInternal mPackageManagerInternal;
 
-    private final CompanionDeviceManagerImpl mImpl;
-    private final ConcurrentMap<Integer, AtomicFile> mUidToStorage = new ConcurrentHashMap<>();
-    private IDeviceIdleController mIdleController;
-    private PerUser<ServiceConnector<ICompanionDeviceDiscoveryService>> mServiceConnectors;
-    private IAppOpsService mAppOpsManager;
-
-    private IFindDeviceCallback mFindDeviceCallback;
-    private AssociationRequest mRequest;
-    private String mCallingPackage;
-    private AndroidFuture<Association> mOngoingDeviceDiscovery;
-
-    private final Object mLock = new Object();
+    private final AssociationStore mAssociationStore;
+    private final SystemDataTransferRequestStore mSystemDataTransferRequestStore;
+    private final ObservableUuidStore mObservableUuidStore;
+    private final AssociationRequestsProcessor mAssociationRequestsProcessor;
+    private final SystemDataTransferProcessor mSystemDataTransferProcessor;
+    private final BackupRestoreProcessor mBackupRestoreProcessor;
+    private final DevicePresenceProcessor mDevicePresenceProcessor;
+    private final CompanionAppBinder mCompanionAppBinder;
+    private final CompanionTransportManager mTransportManager;
+    private final DisassociationProcessor mDisassociationProcessor;
+    private final CrossDeviceSyncController mCrossDeviceSyncController;
 
     public CompanionDeviceManagerService(Context context) {
         super(context);
-        mImpl = new CompanionDeviceManagerImpl();
-        mIdleController = IDeviceIdleController.Stub.asInterface(
-                ServiceManager.getService(Context.DEVICE_IDLE_CONTROLLER));
+
+        final ActivityManager activityManager = context.getSystemService(ActivityManager.class);
+        mPowerExemptionManager = context.getSystemService(PowerExemptionManager.class);
         mAppOpsManager = IAppOpsService.Stub.asInterface(
                 ServiceManager.getService(Context.APP_OPS_SERVICE));
+        mAtmInternal = LocalServices.getService(ActivityTaskManagerInternal.class);
+        mAmInternal = LocalServices.getService(ActivityManagerInternal.class);
+        mPackageManagerInternal = LocalServices.getService(PackageManagerInternal.class);
+        final UserManager userManager = context.getSystemService(UserManager.class);
+        final PowerManagerInternal powerManagerInternal = LocalServices.getService(
+                PowerManagerInternal.class);
 
-        Intent serviceIntent = new Intent().setComponent(SERVICE_TO_BIND_TO);
-        mServiceConnectors = new PerUser<ServiceConnector<ICompanionDeviceDiscoveryService>>() {
-            @Override
-            protected ServiceConnector<ICompanionDeviceDiscoveryService> create(int userId) {
-                return new ServiceConnector.Impl<>(
-                        getContext(),
-                        serviceIntent, 0/* bindingFlags */, userId,
-                        ICompanionDeviceDiscoveryService.Stub::asInterface);
-            }
-        };
+        final AssociationDiskStore associationDiskStore = new AssociationDiskStore();
+        mAssociationStore = new AssociationStore(context, userManager, associationDiskStore);
+        mSystemDataTransferRequestStore = new SystemDataTransferRequestStore();
+        mObservableUuidStore = new ObservableUuidStore();
 
-        registerPackageMonitor();
-    }
+        // Init processors
+        mAssociationRequestsProcessor = new AssociationRequestsProcessor(context,
+                mPackageManagerInternal, mAssociationStore);
+        mBackupRestoreProcessor = new BackupRestoreProcessor(context, mPackageManagerInternal,
+                mAssociationStore, associationDiskStore, mSystemDataTransferRequestStore,
+                mAssociationRequestsProcessor);
 
-    private void registerPackageMonitor() {
-        new PackageMonitor() {
-            @Override
-            public void onPackageRemoved(String packageName, int uid) {
-                updateAssociations(
-                        as -> CollectionUtils.filter(as,
-                                a -> !Objects.equals(a.companionAppPackage, packageName)),
-                        getChangingUserId());
-            }
+        mCompanionAppBinder = new CompanionAppBinder(context);
 
-            @Override
-            public void onPackageModified(String packageName) {
-                int userId = getChangingUserId();
-                if (!ArrayUtils.isEmpty(readAllAssociations(userId, packageName))) {
-                    updateSpecialAccessPermissionForAssociatedPackage(packageName, userId);
-                }
-            }
+        mDevicePresenceProcessor = new DevicePresenceProcessor(context,
+                mCompanionAppBinder, userManager, mAssociationStore, mObservableUuidStore,
+                powerManagerInternal);
 
-        }.register(getContext(), FgThread.get().getLooper(), UserHandle.ALL, true);
+        mTransportManager = new CompanionTransportManager(context, mAssociationStore);
+
+        mDisassociationProcessor = new DisassociationProcessor(context, activityManager,
+                mAssociationStore, mPackageManagerInternal, mDevicePresenceProcessor,
+                mCompanionAppBinder, mSystemDataTransferRequestStore, mTransportManager);
+
+        mSystemDataTransferProcessor = new SystemDataTransferProcessor(this,
+                mPackageManagerInternal, mAssociationStore,
+                mSystemDataTransferRequestStore, mTransportManager);
+
+        // TODO(b/279663946): move context sync to a dedicated system service
+        mCrossDeviceSyncController = new CrossDeviceSyncController(getContext(), mTransportManager);
     }
 
     @Override
     public void onStart() {
-        publishBinderService(Context.COMPANION_DEVICE_SERVICE, mImpl);
+        // Init association stores
+        mAssociationStore.refreshCache();
+        mAssociationStore.registerLocalListener(mAssociationStoreChangeListener);
+
+        // Init UUID store
+        mObservableUuidStore.getObservableUuidsForUser(getContext().getUserId());
+
+        // Publish "binder" service.
+        final CompanionDeviceManagerImpl impl = new CompanionDeviceManagerImpl();
+        publishBinderService(Context.COMPANION_DEVICE_SERVICE, impl);
+
+        // Publish "local" service.
+        LocalServices.addService(CompanionDeviceManagerServiceInternal.class, new LocalService());
     }
 
     @Override
-    public void onUnlockUser(int userHandle) {
-        Set<Association> associations = readAllAssociations(userHandle);
-        if (associations == null || associations.isEmpty()) {
-            return;
+    public void onBootPhase(int phase) {
+        final Context context = getContext();
+        if (phase == PHASE_SYSTEM_SERVICES_READY) {
+            // WARNING: moving PackageMonitor to another thread (Looper) may introduce significant
+            // delays (even in case of the Main Thread). It may be fine overall, but would require
+            // updating the tests (adding a delay there).
+            mPackageMonitor.register(context, FgThread.get().getLooper(), UserHandle.ALL, true);
+            mDevicePresenceProcessor.init(context);
+        } else if (phase == PHASE_BOOT_COMPLETED) {
+            // Run the Inactive Association Removal job service daily.
+            InactiveAssociationsRemovalService.schedule(getContext());
+            mCrossDeviceSyncController.onBootCompleted();
         }
-        Set<String> companionAppPackages = new HashSet<>();
-        for (Association association : associations) {
-            companionAppPackages.add(association.companionAppPackage);
-        }
-        ActivityTaskManagerInternal atmInternal = LocalServices.getService(
-                ActivityTaskManagerInternal.class);
-        if (atmInternal != null) {
-            atmInternal.setCompanionAppPackages(userHandle, companionAppPackages);
-        }
+    }
+
+    @Override
+    public void onUserUnlocking(@NonNull TargetUser user) {
+        Slog.d(TAG, "onUserUnlocking...");
+        final int userId = user.getUserIdentifier();
+        final List<AssociationInfo> associations = mAssociationStore.getActiveAssociationsByUser(
+                userId);
+
+        if (associations.isEmpty()) return;
+
+        updateAtm(userId, associations);
 
         BackgroundThread.getHandler().sendMessageDelayed(
                 obtainMessage(CompanionDeviceManagerService::maybeGrantAutoRevokeExemptions, this),
                 MINUTES.toMillis(10));
     }
 
-    void maybeGrantAutoRevokeExemptions() {
-        PackageManager pm = getContext().getPackageManager();
-        for (int userId : LocalServices.getService(UserManagerInternal.class).getUserIds()) {
-            SharedPreferences pref = getContext().getSharedPreferences(
-                    new File(Environment.getUserSystemDirectory(userId), PREF_FILE_NAME),
-                    Context.MODE_PRIVATE);
-            if (pref.getBoolean(PREF_KEY_AUTO_REVOKE_GRANTS_DONE, false)) {
-                continue;
-            }
-
-            try {
-                Set<Association> associations = readAllAssociations(userId);
-                if (associations == null) {
-                    continue;
-                }
-                for (Association a : associations) {
-                    try {
-                        int uid = pm.getPackageUidAsUser(a.companionAppPackage, userId);
-                        exemptFromAutoRevoke(a.companionAppPackage, uid);
-                    } catch (PackageManager.NameNotFoundException e) {
-                        Log.w(LOG_TAG, "Unknown companion package: " + a.companionAppPackage, e);
-                    }
-                }
-            } finally {
-                pref.edit().putBoolean(PREF_KEY_AUTO_REVOKE_GRANTS_DONE, true).apply();
-            }
-        }
-    }
-
     @Override
-    public void binderDied() {
-        Handler.getMain().post(this::cleanup);
+    public void onUserUnlocked(@NonNull TargetUser user) {
+        Slog.i(TAG, "onUserUnlocked() user=" + user);
+        // Notify and bind the app after the phone is unlocked.
+        mDevicePresenceProcessor.sendDevicePresenceEventOnUnlocked(user.getUserIdentifier());
     }
 
-    private void cleanup() {
-        synchronized (mLock) {
-            AndroidFuture<Association> ongoingDeviceDiscovery = mOngoingDeviceDiscovery;
-            if (ongoingDeviceDiscovery != null && !ongoingDeviceDiscovery.isDone()) {
-                ongoingDeviceDiscovery.cancel(true);
-            }
-            mFindDeviceCallback = unlinkToDeath(mFindDeviceCallback, this, 0);
-            mRequest = null;
-            mCallingPackage = null;
+    private void onPackageRemoveOrDataClearedInternal(
+            @UserIdInt int userId, @NonNull String packageName) {
+        // Clear all associations for the package.
+        final List<AssociationInfo> associationsForPackage =
+                mAssociationStore.getAssociationsByPackage(userId, packageName);
+        if (!associationsForPackage.isEmpty()) {
+            Slog.i(TAG, "Package removed or data cleared for user=[" + userId + "], package=["
+                    + packageName + "]. Cleaning up CDM data...");
         }
-    }
-
-    /**
-     * Usage: {@code a = unlinkToDeath(a, deathRecipient, flags); }
-     */
-    @Nullable
-    @CheckResult
-    private static <T extends IInterface> T unlinkToDeath(T iinterface,
-            IBinder.DeathRecipient deathRecipient, int flags) {
-        if (iinterface != null) {
-            iinterface.asBinder().unlinkToDeath(deathRecipient, flags);
+        for (AssociationInfo association : associationsForPackage) {
+            mDisassociationProcessor.disassociate(association.getId());
         }
-        return null;
+
+        // Clear observable UUIDs for the package.
+        final List<ObservableUuid> uuidsTobeObserved =
+                mObservableUuidStore.getObservableUuidsForPackage(userId, packageName);
+        for (ObservableUuid uuid : uuidsTobeObserved) {
+            mObservableUuidStore.removeObservableUuid(userId, uuid.getUuid(), packageName);
+        }
+
+        mCompanionAppBinder.onPackagesChanged(userId);
     }
 
-    class CompanionDeviceManagerImpl extends ICompanionDeviceManager.Stub {
+    private void onPackageModifiedInternal(@UserIdInt int userId, @NonNull String packageName) {
+        final List<AssociationInfo> associationsForPackage =
+                mAssociationStore.getAssociationsByPackage(userId, packageName);
+        for (AssociationInfo association : associationsForPackage) {
+            updateSpecialAccessPermissionForAssociatedPackage(association.getUserId(),
+                    association.getPackageName());
+        }
 
+        mCompanionAppBinder.onPackagesChanged(userId);
+    }
+
+    private void onPackageAddedInternal(@UserIdInt int userId, @NonNull String packageName) {
+        mBackupRestoreProcessor.restorePendingAssociations(userId, packageName);
+    }
+
+    void removeInactiveSelfManagedAssociations() {
+        mDisassociationProcessor.removeIdleSelfManagedAssociations();
+    }
+
+    public class CompanionDeviceManagerImpl extends ICompanionDeviceManager.Stub {
         @Override
         public boolean onTransact(int code, Parcel data, Parcel reply, int flags)
                 throws RemoteException {
             try {
                 return super.onTransact(code, data, reply, flags);
             } catch (Throwable e) {
-                Slog.e(LOG_TAG, "Error during IPC", e);
+                Slog.e(TAG, "Error during IPC", e);
                 throw ExceptionUtils.propagate(e, RemoteException.class);
             }
         }
 
         @Override
-        public void associate(
-                AssociationRequest request,
-                IFindDeviceCallback callback,
-                String callingPackage) throws RemoteException {
-            if (DEBUG) {
-                Slog.i(LOG_TAG, "associate(request = " + request + ", callback = " + callback
-                        + ", callingPackage = " + callingPackage + ")");
+        public void associate(AssociationRequest request, IAssociationRequestCallback callback,
+                String packageName, int userId) throws RemoteException {
+            Slog.i(TAG, "associate() "
+                    + "request=" + request + ", "
+                    + "package=u" + userId + "/" + packageName);
+            enforceCallerCanManageAssociationsForPackage(getContext(), userId, packageName,
+                    "create associations");
+
+            mAssociationRequestsProcessor.processNewAssociationRequest(
+                    request, packageName, userId, callback);
+        }
+
+        @Override
+        public PendingIntent buildAssociationCancellationIntent(String packageName,
+                int userId) throws RemoteException {
+            Slog.i(TAG, "buildAssociationCancellationIntent() "
+                    + "package=u" + userId + "/" + packageName);
+            enforceCallerCanManageAssociationsForPackage(getContext(), userId, packageName,
+                    "build association cancellation intent");
+
+            return mAssociationRequestsProcessor.buildAssociationCancellationIntent(
+                    packageName, userId);
+        }
+
+        @Override
+        public List<AssociationInfo> getAssociations(String packageName, int userId) {
+            enforceCallerCanManageAssociationsForPackage(getContext(), userId, packageName,
+                    "get associations");
+
+            return mAssociationStore.getActiveAssociationsByPackage(userId, packageName);
+        }
+
+        @Override
+        @EnforcePermission(MANAGE_COMPANION_DEVICES)
+        public List<AssociationInfo> getAllAssociationsForUser(int userId) throws RemoteException {
+            getAllAssociationsForUser_enforcePermission();
+
+            enforceCallerIsSystemOrCanInteractWithUserId(getContext(), userId);
+
+            if (userId == UserHandle.USER_ALL) {
+                return mAssociationStore.getActiveAssociations();
             }
-            checkNotNull(request, "Request cannot be null");
-            checkNotNull(callback, "Callback cannot be null");
-            checkCallerIsSystemOr(callingPackage);
-            int userId = getCallingUserId();
-            checkUsesFeature(callingPackage, userId);
+            return mAssociationStore.getActiveAssociationsByUser(userId);
+        }
 
-            mFindDeviceCallback = callback;
-            mRequest = request;
-            mCallingPackage = callingPackage;
-            request.setCallingPackage(callingPackage);
-            callback.asBinder().linkToDeath(CompanionDeviceManagerService.this /* recipient */, 0);
+        @Override
+        @EnforcePermission(MANAGE_COMPANION_DEVICES)
+        public void addOnAssociationsChangedListener(IOnAssociationsChangedListener listener,
+                int userId) {
+            addOnAssociationsChangedListener_enforcePermission();
 
-            final long callingIdentity = Binder.clearCallingIdentity();
-            try {
-                mOngoingDeviceDiscovery = mServiceConnectors.forUser(userId).postAsync(service -> {
-                    AndroidFuture<Association> future = new AndroidFuture<>();
-                    service.startDiscovery(request, callingPackage, callback, future);
-                    return future;
-                }).cancelTimeout().whenComplete(uncheckExceptions((association, err) -> {
-                    if (err == null) {
-                        addAssociation(association);
+            enforceCallerIsSystemOrCanInteractWithUserId(getContext(), userId);
+
+            mAssociationStore.registerRemoteListener(listener, userId);
+        }
+
+        @Override
+        @EnforcePermission(MANAGE_COMPANION_DEVICES)
+        public void removeOnAssociationsChangedListener(IOnAssociationsChangedListener listener,
+                int userId) {
+            removeOnAssociationsChangedListener_enforcePermission();
+
+            enforceCallerIsSystemOrCanInteractWithUserId(getContext(), userId);
+
+            mAssociationStore.unregisterRemoteListener(listener);
+        }
+
+        @Override
+        @EnforcePermission(USE_COMPANION_TRANSPORTS)
+        public void addOnTransportsChangedListener(IOnTransportsChangedListener listener) {
+            addOnTransportsChangedListener_enforcePermission();
+
+            mTransportManager.addListener(listener);
+        }
+
+        @Override
+        @EnforcePermission(USE_COMPANION_TRANSPORTS)
+        public void removeOnTransportsChangedListener(IOnTransportsChangedListener listener) {
+            removeOnTransportsChangedListener_enforcePermission();
+
+            mTransportManager.removeListener(listener);
+        }
+
+        @Override
+        @EnforcePermission(USE_COMPANION_TRANSPORTS)
+        public void sendMessage(int messageType, byte[] data, int[] associationIds) {
+            sendMessage_enforcePermission();
+
+            mTransportManager.sendMessage(messageType, data, associationIds);
+        }
+
+        @Override
+        @EnforcePermission(USE_COMPANION_TRANSPORTS)
+        public void addOnMessageReceivedListener(int messageType,
+                IOnMessageReceivedListener listener) {
+            addOnMessageReceivedListener_enforcePermission();
+
+            mTransportManager.addListener(messageType, listener);
+        }
+
+        @Override
+        @EnforcePermission(USE_COMPANION_TRANSPORTS)
+        public void removeOnMessageReceivedListener(int messageType,
+                IOnMessageReceivedListener listener) {
+            removeOnMessageReceivedListener_enforcePermission();
+
+            mTransportManager.removeListener(messageType, listener);
+        }
+
+        /**
+         * @deprecated use {@link #disassociate(int)} instead
+         */
+        @Deprecated
+        @Override
+        public void legacyDisassociate(String deviceMacAddress, String packageName, int userId) {
+            requireNonNull(deviceMacAddress);
+            requireNonNull(packageName);
+
+            mDisassociationProcessor.disassociate(userId, packageName, deviceMacAddress);
+        }
+
+        @Override
+        public void disassociate(int associationId) {
+            mDisassociationProcessor.disassociate(associationId);
+        }
+
+        @Override
+        public PendingIntent requestNotificationAccess(ComponentName component, int userId)
+                throws RemoteException {
+            int callingUid = getCallingUid();
+            final String callingPackage = component.getPackageName();
+
+            checkCanCallNotificationApi(callingPackage, userId);
+
+            if (component.flattenToString().length() > MAX_CN_LENGTH) {
+                throw new IllegalArgumentException("Component name is too long.");
+            }
+
+            return Binder.withCleanCallingIdentity(() -> {
+                final Intent intent;
+                if (!isRestrictedSettingsAllowed(getContext(), callingPackage, callingUid)) {
+                    Slog.e(TAG, "Side loaded app must enable restricted "
+                            + "setting before request the notification access");
+                    if (Flags.enhancedConfirmationModeApisEnabled()) {
+                        intent = getContext()
+                                .getSystemService(EnhancedConfirmationManager.class)
+                                .createRestrictedSettingDialogIntent(callingPackage,
+                                        AppOpsManager.OPSTR_ACCESS_NOTIFICATIONS);
                     } else {
-                        Log.e(LOG_TAG, "Failed to discover device(s)", err);
-                        callback.onFailure("No devices found: " + err.getMessage());
+                        return null;
                     }
-                    cleanup();
-                }));
-            } finally {
-                Binder.restoreCallingIdentity(callingIdentity);
-            }
-        }
+                } else {
+                    intent = NotificationAccessConfirmationActivityContract.launcherIntent(
+                            getContext(), userId, component);
+                }
 
-        @Override
-        public void stopScan(AssociationRequest request,
-                IFindDeviceCallback callback,
-                String callingPackage) {
-            if (Objects.equals(request, mRequest)
-                    && Objects.equals(callback, mFindDeviceCallback)
-                    && Objects.equals(callingPackage, mCallingPackage)) {
-                cleanup();
-            }
-        }
-
-        @Override
-        public List<String> getAssociations(String callingPackage, int userId)
-                throws RemoteException {
-            if (!callerCanManageCompanionDevices()) {
-                checkCallerIsSystemOr(callingPackage, userId);
-                checkUsesFeature(callingPackage, getCallingUserId());
-            }
-            return new ArrayList<>(CollectionUtils.map(
-                    readAllAssociations(userId, callingPackage),
-                    a -> a.deviceAddress));
-        }
-
-        //TODO also revoke notification access
-        @Override
-        public void disassociate(String deviceMacAddress, String callingPackage)
-                throws RemoteException {
-            checkNotNull(deviceMacAddress);
-            checkCallerIsSystemOr(callingPackage);
-            checkUsesFeature(callingPackage, getCallingUserId());
-            removeAssociation(getCallingUserId(), callingPackage, deviceMacAddress);
-        }
-
-        private boolean callerCanManageCompanionDevices() {
-            return getContext().checkCallingOrSelfPermission(
-                    android.Manifest.permission.MANAGE_COMPANION_DEVICES)
-                    == PackageManager.PERMISSION_GRANTED;
-        }
-
-        private void checkCallerIsSystemOr(String pkg) throws RemoteException {
-            checkCallerIsSystemOr(pkg, getCallingUserId());
-        }
-
-        private void checkCallerIsSystemOr(String pkg, int userId) throws RemoteException {
-            if (isCallerSystem()) {
-                return;
-            }
-
-            checkArgument(getCallingUserId() == userId,
-                    "Must be called by either same user or system");
-            int callingUid = Binder.getCallingUid();
-            if (mAppOpsManager.checkPackage(callingUid, pkg) != AppOpsManager.MODE_ALLOWED) {
-                throw new SecurityException(pkg + " doesn't belong to uid " + callingUid);
-            }
-        }
-
-        @Override
-        public PendingIntent requestNotificationAccess(ComponentName component)
-                throws RemoteException {
-            String callingPackage = component.getPackageName();
-            checkCanCallNotificationApi(callingPackage);
-            int userId = getCallingUserId();
-            String packageTitle = BidiFormatter.getInstance().unicodeWrap(
-                    getPackageInfo(callingPackage, userId)
-                            .applicationInfo
-                            .loadSafeLabel(getContext().getPackageManager(),
-                                    PackageItemInfo.DEFAULT_MAX_LABEL_SIZE_PX,
-                                    PackageItemInfo.SAFE_LABEL_FLAG_TRIM
-                                            | PackageItemInfo.SAFE_LABEL_FLAG_FIRST_LINE)
-                            .toString());
-            long identity = Binder.clearCallingIdentity();
-            try {
                 return PendingIntent.getActivityAsUser(getContext(),
                         0 /* request code */,
-                        NotificationAccessConfirmationActivityContract.launcherIntent(
-                                userId, component, packageTitle),
+                        intent,
                         PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_ONE_SHOT
                                 | PendingIntent.FLAG_CANCEL_CURRENT,
                         null /* options */,
                         new UserHandle(userId));
-            } finally {
-                Binder.restoreCallingIdentity(identity);
-            }
+            });
         }
 
+        /**
+         * @deprecated Use
+         * {@link NotificationManager#isNotificationListenerAccessGranted(ComponentName)} instead.
+         */
+        @Deprecated
         @Override
         public boolean hasNotificationAccess(ComponentName component) throws RemoteException {
-            checkCanCallNotificationApi(component.getPackageName());
-            String setting = Settings.Secure.getString(getContext().getContentResolver(),
-                    Settings.Secure.ENABLED_NOTIFICATION_LISTENERS);
-            return new ComponentNameSet(setting).contains(component);
+            checkCanCallNotificationApi(component.getPackageName(), getCallingUserId());
+            NotificationManager nm = getContext().getSystemService(NotificationManager.class);
+            return nm.isNotificationListenerAccessGranted(component);
         }
 
         @Override
+        @EnforcePermission(MANAGE_COMPANION_DEVICES)
         public boolean isDeviceAssociatedForWifiConnection(String packageName, String macAddress,
                 int userId) {
-            getContext().enforceCallingOrSelfPermission(
-                    android.Manifest.permission.MANAGE_COMPANION_DEVICES, "isDeviceAssociated");
+            isDeviceAssociatedForWifiConnection_enforcePermission();
 
             boolean bypassMacPermission = getContext().getPackageManager().checkPermission(
                     android.Manifest.permission.COMPANION_APPROVE_WIFI_CONNECTIONS, packageName)
-                    == PackageManager.PERMISSION_GRANTED;
+                    == PERMISSION_GRANTED;
             if (bypassMacPermission) {
                 return true;
             }
 
-            return CollectionUtils.any(
-                    readAllAssociations(userId, packageName),
-                    a -> Objects.equals(a.deviceAddress, macAddress));
-        }
-
-        private void checkCanCallNotificationApi(String callingPackage) throws RemoteException {
-            checkCallerIsSystemOr(callingPackage);
-            int userId = getCallingUserId();
-            checkState(!ArrayUtils.isEmpty(readAllAssociations(userId, callingPackage)),
-                    "App must have an association before calling this API");
-            checkUsesFeature(callingPackage, userId);
-        }
-
-        private void checkUsesFeature(String pkg, int userId) {
-            if (isCallerSystem()) {
-                // Drop the requirement for calls from system process
-                return;
-            }
-
-            FeatureInfo[] reqFeatures = getPackageInfo(pkg, userId).reqFeatures;
-            String requiredFeature = PackageManager.FEATURE_COMPANION_DEVICE_SETUP;
-            int numFeatures = ArrayUtils.size(reqFeatures);
-            for (int i = 0; i < numFeatures; i++) {
-                if (requiredFeature.equals(reqFeatures[i].name)) return;
-            }
-            throw new IllegalStateException("Must declare uses-feature "
-                    + requiredFeature
-                    + " in manifest to use this API");
+            return any(mAssociationStore.getActiveAssociationsByPackage(userId, packageName),
+                    a -> a.isLinkedTo(macAddress));
         }
 
         @Override
-        public void onShellCommand(FileDescriptor in, FileDescriptor out, FileDescriptor err,
-                String[] args, ShellCallback callback, ResultReceiver resultReceiver)
-                throws RemoteException {
-            new ShellCmd().exec(this, in, out, err, args, callback, resultReceiver);
+        @Deprecated
+        @EnforcePermission(REQUEST_OBSERVE_COMPANION_DEVICE_PRESENCE)
+        public void legacyStartObservingDevicePresence(String deviceAddress, String callingPackage,
+                int userId) throws RemoteException {
+            legacyStartObservingDevicePresence_enforcePermission();
+
+            mDevicePresenceProcessor.startObservingDevicePresence(userId, callingPackage,
+                    deviceAddress);
+        }
+
+        @Override
+        @Deprecated
+        @EnforcePermission(REQUEST_OBSERVE_COMPANION_DEVICE_PRESENCE)
+        public void legacyStopObservingDevicePresence(String deviceAddress, String callingPackage,
+                int userId) throws RemoteException {
+            legacyStopObservingDevicePresence_enforcePermission();
+
+            mDevicePresenceProcessor.stopObservingDevicePresence(userId, callingPackage,
+                    deviceAddress);
+        }
+
+        @Override
+        @EnforcePermission(REQUEST_OBSERVE_COMPANION_DEVICE_PRESENCE)
+        public void startObservingDevicePresence(ObservingDevicePresenceRequest request,
+                String packageName, int userId) {
+            startObservingDevicePresence_enforcePermission();
+
+            mDevicePresenceProcessor.startObservingDevicePresence(
+                    request, packageName, userId, /* enforcePermissions */ true);
+        }
+
+        @Override
+        @EnforcePermission(REQUEST_OBSERVE_COMPANION_DEVICE_PRESENCE)
+        public void stopObservingDevicePresence(ObservingDevicePresenceRequest request,
+                String packageName, int userId) {
+            stopObservingDevicePresence_enforcePermission();
+
+            mDevicePresenceProcessor.stopObservingDevicePresence(
+                    request, packageName, userId, /* enforcePermissions */ true);
+        }
+
+        @Override
+        @EnforcePermission(BLUETOOTH_CONNECT)
+        public boolean removeBond(int associationId, String packageName, int userId) {
+            removeBond_enforcePermission();
+
+            Slog.i(TAG, "removeBond() "
+                    + "associationId=" + associationId + ", "
+                    + "package=u" + userId + "/" + packageName);
+            enforceCallerCanManageAssociationsForPackage(getContext(), userId, packageName,
+                    "remove bonds");
+
+            AssociationInfo association = mAssociationStore
+                    .getAssociationWithCallerChecks(associationId);
+            MacAddress address = association.getDeviceMacAddress();
+            if (address == null) {
+                throw new IllegalArgumentException(
+                        "Association id=[" + associationId + "] doesn't have a device address.");
+            }
+
+            BluetoothAdapter btAdapter = getContext().getSystemService(BluetoothManager.class)
+                    .getAdapter();
+            BluetoothDevice btDevice = btAdapter.getRemoteDevice(address.toString().toUpperCase());
+            return btDevice.removeBond();
+        }
+
+        @Override
+        public PendingIntent buildPermissionTransferUserConsentIntent(String packageName,
+                int userId, int associationId) {
+            return mSystemDataTransferProcessor.buildPermissionTransferUserConsentIntent(
+                    packageName, userId, associationId);
+        }
+
+        @Override
+        public boolean isPermissionTransferUserConsented(String packageName, int userId,
+                int associationId) {
+            return mSystemDataTransferProcessor.isPermissionTransferUserConsented(associationId);
+        }
+
+        @Override
+        public void startSystemDataTransfer(String packageName, int userId, int associationId,
+                ISystemDataTransferCallback callback) {
+            mSystemDataTransferProcessor.startSystemDataTransfer(packageName, userId,
+                    associationId, callback);
+        }
+
+        @Override
+        @EnforcePermission(DELIVER_COMPANION_MESSAGES)
+        public void attachSystemDataTransport(String packageName, int userId, int associationId,
+                ParcelFileDescriptor fd) {
+            attachSystemDataTransport_enforcePermission();
+
+            mTransportManager.attachSystemDataTransport(associationId, fd);
+        }
+
+        @Override
+        @EnforcePermission(DELIVER_COMPANION_MESSAGES)
+        public void detachSystemDataTransport(String packageName, int userId, int associationId) {
+            detachSystemDataTransport_enforcePermission();
+
+            mTransportManager.detachSystemDataTransport(associationId);
+        }
+
+        @Override
+        @EnforcePermission(MANAGE_COMPANION_DEVICES)
+        public void enableSecureTransport(boolean enabled) {
+            enableSecureTransport_enforcePermission();
+
+            mTransportManager.enableSecureTransport(enabled);
+        }
+
+        @Override
+        public void enableSystemDataSync(int associationId, int flags) {
+            mAssociationRequestsProcessor.enableSystemDataSync(associationId, flags);
+        }
+
+        @Override
+        public void disableSystemDataSync(int associationId, int flags) {
+            mAssociationRequestsProcessor.disableSystemDataSync(associationId, flags);
+        }
+
+        @Override
+        public void enablePermissionsSync(int associationId) {
+            mSystemDataTransferProcessor.enablePermissionsSync(associationId);
+        }
+
+        @Override
+        public void disablePermissionsSync(int associationId) {
+            mSystemDataTransferProcessor.disablePermissionsSync(associationId);
+        }
+
+        @Override
+        public PermissionSyncRequest getPermissionSyncRequest(int associationId) {
+            return mSystemDataTransferProcessor.getPermissionSyncRequest(associationId);
+        }
+
+        @Override
+        @EnforcePermission(REQUEST_COMPANION_SELF_MANAGED)
+        public void notifySelfManagedDeviceAppeared(int associationId) {
+            notifySelfManagedDeviceAppeared_enforcePermission();
+
+            mDevicePresenceProcessor.notifySelfManagedDevicePresenceEvent(associationId, true);
+        }
+
+        @Override
+        @EnforcePermission(REQUEST_COMPANION_SELF_MANAGED)
+        public void notifySelfManagedDeviceDisappeared(int associationId) {
+            notifySelfManagedDeviceDisappeared_enforcePermission();
+
+            mDevicePresenceProcessor.notifySelfManagedDevicePresenceEvent(associationId, false);
+        }
+
+        @Override
+        public boolean isCompanionApplicationBound(String packageName, int userId) {
+            return mCompanionAppBinder.isCompanionApplicationBound(userId, packageName);
+        }
+
+        @Override
+        @EnforcePermission(ASSOCIATE_COMPANION_DEVICES)
+        public void createAssociation(String packageName, String macAddress, int userId,
+                byte[] certificate) {
+            createAssociation_enforcePermission();
+
+            if (!getContext().getPackageManager().hasSigningCertificate(
+                    packageName, certificate, CERT_INPUT_SHA256)) {
+                Slog.e(TAG, "Given certificate doesn't match the package certificate.");
+                return;
+            }
+
+            final MacAddress macAddressObj = MacAddress.fromString(macAddress);
+            mAssociationRequestsProcessor.createAssociation(userId, packageName, macAddressObj,
+                    null, null, null, false, null, null);
+        }
+
+        private void checkCanCallNotificationApi(String callingPackage, int userId) {
+            enforceCallerIsSystemOr(userId, callingPackage);
+
+            if (getCallingUid() == SYSTEM_UID) return;
+
+            enforceUsesCompanionDeviceFeature(getContext(), userId, callingPackage);
+            checkState(!ArrayUtils.isEmpty(
+                            mAssociationStore.getActiveAssociationsByPackage(userId,
+                                    callingPackage)),
+                    "App must have an association before calling this API");
+        }
+
+        @Override
+        public boolean canPairWithoutPrompt(String packageName, String macAddress, int userId) {
+            final AssociationInfo association =
+                    mAssociationStore.getFirstAssociationByAddress(
+                            userId, packageName, macAddress);
+            if (association == null) {
+                return false;
+            }
+            return System.currentTimeMillis() - association.getTimeApprovedMs()
+                    < PAIR_WITHOUT_PROMPT_WINDOW_MS;
+        }
+
+        @Override
+        public void setAssociationTag(int associationId, String tag) {
+            mAssociationRequestsProcessor.setAssociationTag(associationId, tag);
+        }
+
+        @Override
+        public void clearAssociationTag(int associationId) {
+            setAssociationTag(associationId, null);
+        }
+
+        @Override
+        public byte[] getBackupPayload(int userId) {
+            return mBackupRestoreProcessor.getBackupPayload(userId);
+        }
+
+        @Override
+        public void applyRestoredPayload(byte[] payload, int userId) {
+            mBackupRestoreProcessor.applyRestoredPayload(payload, userId);
+        }
+
+        @Override
+        public int handleShellCommand(@NonNull ParcelFileDescriptor in,
+                @NonNull ParcelFileDescriptor out, @NonNull ParcelFileDescriptor err,
+                @NonNull String[] args) {
+            return new CompanionDeviceShellCommand(CompanionDeviceManagerService.this,
+                    mAssociationStore, mDevicePresenceProcessor, mTransportManager,
+                    mSystemDataTransferProcessor, mAssociationRequestsProcessor,
+                    mBackupRestoreProcessor, mDisassociationProcessor)
+                    .exec(this, in.getFileDescriptor(), out.getFileDescriptor(),
+                            err.getFileDescriptor(), args);
+        }
+
+        @Override
+        public void dump(@NonNull FileDescriptor fd, @NonNull PrintWriter out,
+                @Nullable String[] args) {
+            if (!DumpUtils.checkDumpAndUsageStatsPermission(getContext(), TAG, out)) {
+                return;
+            }
+
+            mAssociationStore.dump(out);
+            mDevicePresenceProcessor.dump(out);
+            mCompanionAppBinder.dump(out);
+            mTransportManager.dump(out);
+            mSystemDataTransferRequestStore.dump(out);
         }
     }
 
-    private static int getCallingUserId() {
-        return UserHandle.getUserId(Binder.getCallingUid());
+    /**
+     * Update special access for the association's package
+     */
+    public void updateSpecialAccessPermissionForAssociatedPackage(int userId, String packageName) {
+        final PackageInfo packageInfo =
+                getPackageInfo(getContext(), userId, packageName);
+
+        Binder.withCleanCallingIdentity(() -> updateSpecialAccessPermissionAsSystem(packageInfo));
     }
 
-    private static boolean isCallerSystem() {
-        return Binder.getCallingUid() == Process.SYSTEM_UID;
-    }
-
-    void addAssociation(int userId, String packageName, String deviceAddress) {
-        addAssociation(new Association(userId, deviceAddress, packageName));
-    }
-
-    void addAssociation(Association association) {
-        updateSpecialAccessPermissionForAssociatedPackage(
-                association.companionAppPackage, association.userId);
-        recordAssociation(association);
-    }
-
-    void removeAssociation(int userId, String pkg, String deviceMacAddress) {
-        updateAssociations(associations -> CollectionUtils.remove(associations,
-                new Association(userId, deviceMacAddress, pkg)));
-    }
-
-    private void updateSpecialAccessPermissionForAssociatedPackage(String packageName, int userId) {
-        PackageInfo packageInfo = getPackageInfo(packageName, userId);
+    private void updateSpecialAccessPermissionAsSystem(PackageInfo packageInfo) {
         if (packageInfo == null) {
             return;
         }
 
-        Binder.withCleanCallingIdentity(obtainRunnable(CompanionDeviceManagerService::
-                updateSpecialAccessPermissionAsSystem, this, packageInfo).recycleOnUse());
-    }
-
-    private void updateSpecialAccessPermissionAsSystem(PackageInfo packageInfo) {
-        try {
-            if (containsEither(packageInfo.requestedPermissions,
-                    android.Manifest.permission.RUN_IN_BACKGROUND,
-                    android.Manifest.permission.REQUEST_COMPANION_RUN_IN_BACKGROUND)) {
-                mIdleController.addPowerSaveWhitelistApp(packageInfo.packageName);
-            } else {
-                mIdleController.removePowerSaveWhitelistApp(packageInfo.packageName);
+        if (containsEither(packageInfo.requestedPermissions,
+                android.Manifest.permission.RUN_IN_BACKGROUND,
+                android.Manifest.permission.REQUEST_COMPANION_RUN_IN_BACKGROUND)) {
+            mPowerExemptionManager.addToPermanentAllowList(packageInfo.packageName);
+        } else {
+            try {
+                mPowerExemptionManager.removeFromPermanentAllowList(packageInfo.packageName);
+            } catch (UnsupportedOperationException e) {
+                Slog.w(TAG, packageInfo.packageName + " can't be removed from power save"
+                        + " whitelist. It might due to the package is whitelisted by the system.");
             }
-        } catch (RemoteException e) {
-            /* ignore - local call */
         }
 
         NetworkPolicyManager networkPolicyManager = NetworkPolicyManager.from(getContext());
-        if (containsEither(packageInfo.requestedPermissions,
-                android.Manifest.permission.USE_DATA_IN_BACKGROUND,
-                android.Manifest.permission.REQUEST_COMPANION_USE_DATA_IN_BACKGROUND)) {
-            networkPolicyManager.addUidPolicy(
-                    packageInfo.applicationInfo.uid,
-                    NetworkPolicyManager.POLICY_ALLOW_METERED_BACKGROUND);
-        } else {
-            networkPolicyManager.removeUidPolicy(
-                    packageInfo.applicationInfo.uid,
-                    NetworkPolicyManager.POLICY_ALLOW_METERED_BACKGROUND);
+        try {
+            if (containsEither(packageInfo.requestedPermissions,
+                    android.Manifest.permission.USE_DATA_IN_BACKGROUND,
+                    android.Manifest.permission.REQUEST_COMPANION_USE_DATA_IN_BACKGROUND)) {
+                networkPolicyManager.addUidPolicy(
+                        packageInfo.applicationInfo.uid,
+                        NetworkPolicyManager.POLICY_ALLOW_METERED_BACKGROUND);
+            } else {
+                networkPolicyManager.removeUidPolicy(
+                        packageInfo.applicationInfo.uid,
+                        NetworkPolicyManager.POLICY_ALLOW_METERED_BACKGROUND);
+            }
+        } catch (IllegalArgumentException e) {
+            Slog.e(TAG, e.getMessage());
         }
 
         exemptFromAutoRevoke(packageInfo.packageName, packageInfo.applicationInfo.uid);
@@ -539,199 +806,163 @@ public class CompanionDeviceManagerService extends SystemService implements Bind
                     packageName,
                     AppOpsManager.MODE_IGNORED);
         } catch (RemoteException e) {
-            Log.w(LOG_TAG,
-                    "Error while granting auto revoke exemption for " + packageName, e);
+            Slog.w(TAG, "Error while granting auto revoke exemption for " + packageName, e);
         }
     }
+
+    private void updateAtm(int userId, List<AssociationInfo> associations) {
+        final Set<Integer> companionAppUids = new ArraySet<>();
+        for (AssociationInfo association : associations) {
+            final int uid = mPackageManagerInternal.getPackageUid(association.getPackageName(),
+                    0, userId);
+            if (uid >= 0) {
+                companionAppUids.add(uid);
+            }
+        }
+        if (mAtmInternal != null) {
+            mAtmInternal.setCompanionAppUids(userId, companionAppUids);
+        }
+        if (mAmInternal != null) {
+            // Make a copy of the set and send it to ActivityManager.
+            mAmInternal.setCompanionAppUids(userId, new ArraySet<>(companionAppUids));
+        }
+    }
+
+    private void maybeGrantAutoRevokeExemptions() {
+        Slog.d(TAG, "maybeGrantAutoRevokeExemptions()");
+
+        PackageManager pm = getContext().getPackageManager();
+        for (int userId : LocalServices.getService(UserManagerInternal.class).getUserIds()) {
+            SharedPreferences pref = getContext().getSharedPreferences(
+                    new File(Environment.getUserSystemDirectory(userId), PREF_FILE_NAME),
+                    Context.MODE_PRIVATE);
+            if (pref.getBoolean(PREF_KEY_AUTO_REVOKE_GRANTS_DONE, false)) {
+                continue;
+            }
+
+            try {
+                final List<AssociationInfo> associations =
+                        mAssociationStore.getActiveAssociationsByUser(userId);
+                for (AssociationInfo a : associations) {
+                    try {
+                        int uid = pm.getPackageUidAsUser(a.getPackageName(), userId);
+                        exemptFromAutoRevoke(a.getPackageName(), uid);
+                    } catch (PackageManager.NameNotFoundException e) {
+                        Slog.w(TAG, "Unknown companion package: " + a.getPackageName(), e);
+                    }
+                }
+            } finally {
+                pref.edit().putBoolean(PREF_KEY_AUTO_REVOKE_GRANTS_DONE, true).apply();
+            }
+        }
+    }
+
+    private final AssociationStore.OnChangeListener mAssociationStoreChangeListener =
+            new AssociationStore.OnChangeListener() {
+                @Override
+                public void onAssociationChanged(int changeType, AssociationInfo association) {
+                    Slog.d(TAG, "onAssociationChanged changeType=[" + changeType
+                            + "], association=[" + association);
+
+                    final int userId = association.getUserId();
+                    final List<AssociationInfo> updatedAssociations =
+                            mAssociationStore.getActiveAssociationsByUser(userId);
+
+                    updateAtm(userId, updatedAssociations);
+                    updateSpecialAccessPermissionForAssociatedPackage(association.getUserId(),
+                            association.getPackageName());
+                }
+            };
+
+    private final PackageMonitor mPackageMonitor = new PackageMonitor() {
+        @Override
+        public void onPackageRemoved(String packageName, int uid) {
+            onPackageRemoveOrDataClearedInternal(getChangingUserId(), packageName);
+        }
+
+        @Override
+        public void onPackageDataCleared(String packageName, int uid) {
+            onPackageRemoveOrDataClearedInternal(getChangingUserId(), packageName);
+        }
+
+        @Override
+        public void onPackageModified(@NonNull String packageName) {
+            onPackageModifiedInternal(getChangingUserId(), packageName);
+        }
+
+        @Override
+        public void onPackageAdded(String packageName, int uid) {
+            onPackageAddedInternal(getChangingUserId(), packageName);
+        }
+    };
 
     private static <T> boolean containsEither(T[] array, T a, T b) {
         return ArrayUtils.contains(array, a) || ArrayUtils.contains(array, b);
     }
 
-    @Nullable
-    private PackageInfo getPackageInfo(String packageName, int userId) {
-        return Binder.withCleanCallingIdentity(PooledLambda.obtainSupplier((context, pkg, id) -> {
-            try {
-                return context.getPackageManager().getPackageInfoAsUser(
-                        pkg,
-                        PackageManager.GET_PERMISSIONS | PackageManager.GET_CONFIGURATIONS,
-                        id);
-            } catch (PackageManager.NameNotFoundException e) {
-                Slog.e(LOG_TAG, "Failed to get PackageInfo for package " + pkg, e);
-                return null;
-            }
-        }, getContext(), packageName, userId).recycleOnUse());
-    }
+    private class LocalService implements CompanionDeviceManagerServiceInternal {
 
-    private void recordAssociation(Association association) {
-        if (DEBUG) {
-            Log.i(LOG_TAG, "recordAssociation(" + association + ")");
-        }
-        updateAssociations(associations -> CollectionUtils.add(associations, association),
-                        association.userId);
-    }
-
-    private void recordAssociation(String privilegedPackage, String deviceAddress) {
-        recordAssociation(new Association(getCallingUserId(), deviceAddress, privilegedPackage));
-    }
-
-    private void updateAssociations(Function<Set<Association>, Set<Association>> update) {
-        updateAssociations(update, getCallingUserId());
-    }
-
-    private void updateAssociations(Function<Set<Association>, Set<Association>> update,
-            int userId) {
-        final AtomicFile file = getStorageFileForUser(userId);
-        synchronized (file) {
-            Set<Association> associations = readAllAssociations(userId);
-            final Set<Association> old = CollectionUtils.copyOf(associations);
-            associations = update.apply(associations);
-            if (size(old) == size(associations)) return;
-
-            Set<Association> finalAssociations = associations;
-            Set<String> companionAppPackages = new HashSet<>();
-            for (Association association : finalAssociations) {
-                companionAppPackages.add(association.companionAppPackage);
-            }
-
-            file.write((out) -> {
-                XmlSerializer xml = Xml.newSerializer();
-                try {
-                    xml.setOutput(out, StandardCharsets.UTF_8.name());
-                    xml.setFeature("http://xmlpull.org/v1/doc/features.html#indent-output", true);
-                    xml.startDocument(null, true);
-                    xml.startTag(null, XML_TAG_ASSOCIATIONS);
-
-                    CollectionUtils.forEach(finalAssociations, association -> {
-                        xml.startTag(null, XML_TAG_ASSOCIATION)
-                                .attribute(null, XML_ATTR_PACKAGE, association.companionAppPackage)
-                                .attribute(null, XML_ATTR_DEVICE, association.deviceAddress)
-                                .endTag(null, XML_TAG_ASSOCIATION);
-                    });
-
-                    xml.endTag(null, XML_TAG_ASSOCIATIONS);
-                    xml.endDocument();
-                } catch (Exception e) {
-                    Slog.e(LOG_TAG, "Error while writing associations file", e);
-                    throw ExceptionUtils.propagate(e);
-                }
-
-            });
-            ActivityTaskManagerInternal atmInternal = LocalServices.getService(
-                    ActivityTaskManagerInternal.class);
-            atmInternal.setCompanionAppPackages(userId, companionAppPackages);
-        }
-    }
-
-    private AtomicFile getStorageFileForUser(int uid) {
-        return mUidToStorage.computeIfAbsent(uid, (u) ->
-                new AtomicFile(new File(
-                        //TODO deprecated method - what's the right replacement?
-                        Environment.getUserSystemDirectory(u),
-                        XML_FILE_NAME)));
-    }
-
-    @Nullable
-    private Set<Association> readAllAssociations(int userId) {
-        return readAllAssociations(userId, null);
-    }
-
-    @Nullable
-    private Set<Association> readAllAssociations(int userId, @Nullable String packageFilter) {
-        final AtomicFile file = getStorageFileForUser(userId);
-
-        if (!file.getBaseFile().exists()) return null;
-
-        ArraySet<Association> result = null;
-        final XmlPullParser parser = Xml.newPullParser();
-        synchronized (file) {
-            try (FileInputStream in = file.openRead()) {
-                parser.setInput(in, StandardCharsets.UTF_8.name());
-                int type;
-                while ((type = parser.next()) != XmlPullParser.END_DOCUMENT) {
-                    if (type != XmlPullParser.START_TAG
-                            && !XML_TAG_ASSOCIATIONS.equals(parser.getName())) continue;
-
-                    final String appPackage = parser.getAttributeValue(null, XML_ATTR_PACKAGE);
-                    final String deviceAddress = parser.getAttributeValue(null, XML_ATTR_DEVICE);
-
-                    if (appPackage == null || deviceAddress == null) continue;
-                    if (packageFilter != null && !packageFilter.equals(appPackage)) continue;
-
-                    result = ArrayUtils.add(result,
-                            new Association(userId, deviceAddress, appPackage));
-                }
-                return result;
-            } catch (XmlPullParserException | IOException e) {
-                Slog.e(LOG_TAG, "Error while reading associations file", e);
-                return null;
-            }
-        }
-    }
-
-    void onDeviceConnected(String address) {
-    }
-
-    void onDeviceDisconnected(String address) {
-    }
-
-    private class ShellCmd extends ShellCommand {
-        public static final String USAGE = "help\n"
-                + "list USER_ID\n"
-                + "associate USER_ID PACKAGE MAC_ADDRESS\n"
-                + "disassociate USER_ID PACKAGE MAC_ADDRESS";
-
-        ShellCmd() {
-            getContext().enforceCallingOrSelfPermission(
-                    android.Manifest.permission.MANAGE_COMPANION_DEVICES, "ShellCmd");
+        @Override
+        public void removeInactiveSelfManagedAssociations() {
+            mDisassociationProcessor.removeIdleSelfManagedAssociations();
         }
 
         @Override
-        public int onCommand(String cmd) {
-            switch (cmd) {
-                case "list": {
-                    CollectionUtils.forEach(
-                            readAllAssociations(getNextArgInt()),
-                            a -> getOutPrintWriter()
-                                    .println(a.companionAppPackage + " " + a.deviceAddress));
-                } break;
-
-                case "associate": {
-                    addAssociation(getNextArgInt(), getNextArgRequired(), getNextArgRequired());
-                } break;
-
-                case "disassociate": {
-                    removeAssociation(getNextArgInt(), getNextArgRequired(), getNextArgRequired());
-                } break;
-
-                default: return handleDefaultCommands(cmd);
+        public void registerCallMetadataSyncCallback(CrossDeviceSyncControllerCallback callback,
+                @CrossDeviceSyncControllerCallback.Type int type) {
+            if (CompanionDeviceConfig.isEnabled(
+                    CompanionDeviceConfig.ENABLE_CONTEXT_SYNC_TELECOM)) {
+                mCrossDeviceSyncController.registerCallMetadataSyncCallback(callback, type);
             }
-            return 0;
-        }
-
-        private int getNextArgInt() {
-            return Integer.parseInt(getNextArgRequired());
         }
 
         @Override
-        public void onHelp() {
-            getOutPrintWriter().println(USAGE);
-        }
-    }
-
-
-    private class BluetoothDeviceConnectedListener
-            extends BluetoothAdapter.BluetoothConnectionCallback {
-        @Override
-        public void onDeviceConnected(BluetoothDevice device) {
-            CompanionDeviceManagerService.this.onDeviceConnected(device.getAddress());
+        public void crossDeviceSync(int userId, Collection<CrossDeviceCall> calls) {
+            if (CompanionDeviceConfig.isEnabled(
+                    CompanionDeviceConfig.ENABLE_CONTEXT_SYNC_TELECOM)) {
+                mCrossDeviceSyncController.syncToAllDevicesForUserId(userId, calls);
+            }
         }
 
         @Override
-        public void onDeviceDisconnected(BluetoothDevice device, @DisconnectReason int reason) {
-            Slog.d(LOG_TAG, device.getAddress() + " disconnected w/ reason: (" + reason + ") "
-                    + BluetoothAdapter.BluetoothConnectionCallback.disconnectReasonText(reason));
-            CompanionDeviceManagerService.this.onDeviceDisconnected(device.getAddress());
+        public void crossDeviceSync(AssociationInfo associationInfo,
+                Collection<CrossDeviceCall> calls) {
+            if (CompanionDeviceConfig.isEnabled(
+                    CompanionDeviceConfig.ENABLE_CONTEXT_SYNC_TELECOM)) {
+                mCrossDeviceSyncController.syncToSingleDevice(associationInfo, calls);
+            }
+        }
+
+        @Override
+        public void sendCrossDeviceSyncMessage(int associationId, byte[] message) {
+            if (CompanionDeviceConfig.isEnabled(
+                    CompanionDeviceConfig.ENABLE_CONTEXT_SYNC_TELECOM)) {
+                mCrossDeviceSyncController.syncMessageToDevice(associationId, message);
+            }
+        }
+
+        @Override
+        public void sendCrossDeviceSyncMessageToAllDevices(int userId, byte[] message) {
+            if (CompanionDeviceConfig.isEnabled(
+                    CompanionDeviceConfig.ENABLE_CONTEXT_SYNC_TELECOM)) {
+                mCrossDeviceSyncController.syncMessageToAllDevicesForUserId(userId, message);
+            }
+        }
+
+        @Override
+        public void addSelfOwnedCallId(String callId) {
+            if (CompanionDeviceConfig.isEnabled(
+                    CompanionDeviceConfig.ENABLE_CONTEXT_SYNC_TELECOM)) {
+                mCrossDeviceSyncController.addSelfOwnedCallId(callId);
+            }
+        }
+
+        @Override
+        public void removeSelfOwnedCallId(String callId) {
+            if (CompanionDeviceConfig.isEnabled(
+                    CompanionDeviceConfig.ENABLE_CONTEXT_SYNC_TELECOM)) {
+                mCrossDeviceSyncController.removeSelfOwnedCallId(callId);
+            }
         }
     }
 }

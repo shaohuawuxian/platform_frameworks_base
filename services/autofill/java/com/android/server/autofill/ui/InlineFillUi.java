@@ -16,14 +16,17 @@
 
 package com.android.server.autofill.ui;
 
+import static android.service.autofill.FillResponse.FLAG_CREDENTIAL_MANAGER_RESPONSE;
+
 import static com.android.server.autofill.Helper.sVerbose;
 
 import android.annotation.NonNull;
 import android.annotation.Nullable;
-import android.content.Intent;
+import android.annotation.UserIdInt;
 import android.content.IntentSender;
 import android.service.autofill.Dataset;
 import android.service.autofill.FillResponse;
+import android.service.autofill.Flags;
 import android.service.autofill.InlinePresentation;
 import android.text.TextUtils;
 import android.util.Pair;
@@ -32,6 +35,7 @@ import android.util.SparseArray;
 import android.view.autofill.AutofillId;
 import android.view.autofill.AutofillValue;
 import android.view.inputmethod.InlineSuggestion;
+import android.view.inputmethod.InlineSuggestionInfo;
 import android.view.inputmethod.InlineSuggestionsRequest;
 import android.view.inputmethod.InlineSuggestionsResponse;
 
@@ -93,59 +97,85 @@ public final class InlineFillUi {
      */
     @NonNull
     public static InlineFillUi emptyUi(@NonNull AutofillId autofillId) {
-        return new InlineFillUi(autofillId, new SparseArray<>(), null);
+        return new InlineFillUi(autofillId);
     }
 
     /**
-     * Returns an inline autofill UI for a field based on an Autofilll response.
+     * If user enters more characters than this length, the autofill suggestion won't be shown.
      */
-    @NonNull
-    public static InlineFillUi forAutofill(@NonNull InlineSuggestionsRequest request,
-            @NonNull FillResponse response,
-            @NonNull AutofillId focusedViewId, @Nullable String filterText,
-            @NonNull AutoFillUI.AutoFillUiCallback uiCallback,
-            @NonNull Runnable onErrorCallback,
-            @Nullable RemoteInlineSuggestionRenderService remoteRenderService,
-            int userId, int sessionId) {
+    private int mMaxInputLengthForAutofill = Integer.MAX_VALUE;
 
-        if (InlineSuggestionFactory.responseNeedAuthentication(response)) {
-            InlineSuggestion inlineAuthentication =
-                    InlineSuggestionFactory.createInlineAuthentication(request, response,
-                            uiCallback, onErrorCallback, remoteRenderService, userId, sessionId);
-            return new InlineFillUi(focusedViewId, inlineAuthentication, filterText);
-        } else if (response.getDatasets() != null) {
-            SparseArray<Pair<Dataset, InlineSuggestion>> inlineSuggestions =
-                    InlineSuggestionFactory.createAutofillInlineSuggestions(request,
-                            response.getRequestId(),
-                            response.getDatasets(), focusedViewId, uiCallback, onErrorCallback,
-                            remoteRenderService, userId, sessionId);
-            return new InlineFillUi(focusedViewId, inlineSuggestions, filterText);
+    /**
+     * Encapsulates various arguments used by {@link #forAutofill} and {@link #forAugmentedAutofill}
+     */
+    public static class InlineFillUiInfo {
+
+        public int mUserId;
+        public int mSessionId;
+        public InlineSuggestionsRequest mInlineRequest;
+        public AutofillId mFocusedId;
+        public String mFilterText;
+        public RemoteInlineSuggestionRenderService mRemoteRenderService;
+
+        public InlineFillUiInfo(@NonNull InlineSuggestionsRequest inlineRequest,
+                @NonNull AutofillId focusedId, @NonNull String filterText,
+                @NonNull RemoteInlineSuggestionRenderService remoteRenderService,
+                @UserIdInt int userId, int sessionId) {
+            mUserId = userId;
+            mSessionId = sessionId;
+            mInlineRequest = inlineRequest;
+            mFocusedId = focusedId;
+            mFilterText = filterText;
+            mRemoteRenderService = remoteRenderService;
         }
-        return new InlineFillUi(focusedViewId, new SparseArray<>(), filterText);
     }
 
     /**
      * Returns an inline autofill UI for a field based on an Autofilll response.
      */
     @NonNull
-    public static InlineFillUi forAugmentedAutofill(@NonNull InlineSuggestionsRequest request,
-            @NonNull List<Dataset> datasets,
-            @NonNull AutofillId focusedViewId, @Nullable String filterText,
-            @NonNull InlineSuggestionUiCallback uiCallback,
-            @NonNull Runnable onErrorCallback,
-            @Nullable RemoteInlineSuggestionRenderService remoteRenderService,
-            int userId, int sessionId) {
-        SparseArray<Pair<Dataset, InlineSuggestion>> inlineSuggestions =
-                InlineSuggestionFactory.createAugmentedAutofillInlineSuggestions(request, datasets,
-                        focusedViewId,
-                        uiCallback, onErrorCallback, remoteRenderService, userId, sessionId);
-        return new InlineFillUi(focusedViewId, inlineSuggestions, filterText);
+    public static InlineFillUi forAutofill(@NonNull InlineFillUiInfo inlineFillUiInfo,
+            @NonNull FillResponse response,
+            @NonNull InlineSuggestionUiCallback uiCallback, int maxInputLengthForAutofill) {
+        if (response.getAuthentication() != null && response.getInlinePresentation() != null) {
+            InlineSuggestion inlineAuthentication =
+                    InlineSuggestionFactory.createInlineAuthentication(inlineFillUiInfo, response,
+                            uiCallback);
+            return new InlineFillUi(inlineFillUiInfo, inlineAuthentication,
+                    maxInputLengthForAutofill);
+        } else if (response.getDatasets() != null) {
+            boolean ignoreHostSpec = Flags.autofillCredmanIntegration() && (
+                    (response.getFlags() & FLAG_CREDENTIAL_MANAGER_RESPONSE) != 0);
+            SparseArray<Pair<Dataset, InlineSuggestion>> inlineSuggestions =
+                    InlineSuggestionFactory.createInlineSuggestions(inlineFillUiInfo,
+                            InlineSuggestionInfo.SOURCE_AUTOFILL, response.getDatasets(),
+                            uiCallback, ignoreHostSpec);
+            return new InlineFillUi(inlineFillUiInfo, inlineSuggestions,
+                    maxInputLengthForAutofill);
+        }
+        return new InlineFillUi(inlineFillUiInfo, new SparseArray<>(), maxInputLengthForAutofill);
     }
 
-    InlineFillUi(@NonNull AutofillId autofillId,
-            @NonNull SparseArray<Pair<Dataset, InlineSuggestion>> inlineSuggestions,
-            @Nullable String filterText) {
-        mAutofillId = autofillId;
+    /**
+     * Returns an inline autofill UI for a field based on an Autofilll response.
+     */
+    @NonNull
+    public static InlineFillUi forAugmentedAutofill(@NonNull InlineFillUiInfo inlineFillUiInfo,
+            @NonNull List<Dataset> datasets,
+            @NonNull InlineSuggestionUiCallback uiCallback) {
+        SparseArray<Pair<Dataset, InlineSuggestion>> inlineSuggestions =
+                InlineSuggestionFactory.createInlineSuggestions(inlineFillUiInfo,
+                        InlineSuggestionInfo.SOURCE_PLATFORM, datasets,
+                        uiCallback, /* ignoreHostSpec= */ false);
+        return new InlineFillUi(inlineFillUiInfo, inlineSuggestions);
+    }
+
+    /**
+     * Used by augmented autofill
+     */
+    private InlineFillUi(@Nullable InlineFillUiInfo inlineFillUiInfo,
+            @NonNull SparseArray<Pair<Dataset, InlineSuggestion>> inlineSuggestions) {
+        mAutofillId = inlineFillUiInfo.mFocusedId;
         int size = inlineSuggestions.size();
         mDatasets = new ArrayList<>(size);
         mInlineSuggestions = new ArrayList<>(size);
@@ -154,16 +184,49 @@ public final class InlineFillUi {
             mDatasets.add(value.first);
             mInlineSuggestions.add(value.second);
         }
-        mFilterText = filterText;
+        mFilterText = inlineFillUiInfo.mFilterText;
     }
 
-    InlineFillUi(@NonNull AutofillId autofillId, InlineSuggestion inlineSuggestion,
-            @Nullable String filterText) {
-        mAutofillId = autofillId;
+    /**
+     * Used by normal autofill
+     */
+    private InlineFillUi(@Nullable InlineFillUiInfo inlineFillUiInfo,
+            @NonNull SparseArray<Pair<Dataset, InlineSuggestion>> inlineSuggestions,
+            int maxInputLengthForAutofill) {
+        mAutofillId = inlineFillUiInfo.mFocusedId;
+        int size = inlineSuggestions.size();
+        mDatasets = new ArrayList<>(size);
+        mInlineSuggestions = new ArrayList<>(size);
+        for (int i = 0; i < size; i++) {
+            Pair<Dataset, InlineSuggestion> value = inlineSuggestions.valueAt(i);
+            mDatasets.add(value.first);
+            mInlineSuggestions.add(value.second);
+        }
+        mFilterText = inlineFillUiInfo.mFilterText;
+        mMaxInputLengthForAutofill = maxInputLengthForAutofill;
+    }
+
+    /**
+     * Used by normal autofill
+     */
+    private InlineFillUi(@NonNull InlineFillUiInfo inlineFillUiInfo,
+            @NonNull InlineSuggestion inlineSuggestion, int maxInputLengthForAutofill) {
+        mAutofillId = inlineFillUiInfo.mFocusedId;
         mDatasets = null;
         mInlineSuggestions = new ArrayList<>();
         mInlineSuggestions.add(inlineSuggestion);
-        mFilterText = filterText;
+        mFilterText = inlineFillUiInfo.mFilterText;
+        mMaxInputLengthForAutofill = maxInputLengthForAutofill;
+    }
+
+    /**
+     * Only used for constructing an empty InlineFillUi with {@link #emptyUi}
+     */
+    private InlineFillUi(@NonNull AutofillId focusedId) {
+        mAutofillId = focusedId;
+        mDatasets = new ArrayList<>(0);
+        mInlineSuggestions = new ArrayList<>(0);
+        mFilterText = null;
     }
 
     @NonNull
@@ -192,6 +255,16 @@ public final class InlineFillUi {
             }
             return new InlineSuggestionsResponse(inlineSuggestions);
         }
+
+        // Do not show inline suggestion if user entered more than a certain number of characters.
+        if (!TextUtils.isEmpty(mFilterText) && mFilterText.length() > mMaxInputLengthForAutofill) {
+            if (sVerbose) {
+                Slog.v(TAG, "Not showing inline suggestion when user entered more than "
+                        + mMaxInputLengthForAutofill + " characters");
+            }
+            return new InlineSuggestionsResponse(inlineSuggestions);
+        }
+
         for (int i = 0; i < size; i++) {
             final Dataset dataset = mDatasets.get(i);
             final int fieldIndex = dataset.getFieldIds().indexOf(mAutofillId);
@@ -295,9 +368,32 @@ public final class InlineFillUi {
         void autofill(@NonNull Dataset dataset, int datasetIndex);
 
         /**
+         * Callback to authenticate a dataset.
+         *
+         * <p>Only implemented by regular autofill for now.</p>
+         */
+        void authenticate(int requestId, int datasetIndex);
+
+        /**
          * Callback to start Intent in client app.
          */
-        void startIntentSender(@NonNull IntentSender intentSender, @NonNull Intent intent);
+        void startIntentSender(@NonNull IntentSender intentSender);
+
+        /**
+         * Callback on errors.
+         */
+        void onError();
+
+        /**
+         * Callback when the when the IME inflates the suggestion
+         *
+         * This goes through the following path:
+         * 1. IME Chip inflation inflate() ->
+         * 2. RemoteInlineSuggestionUi::handleInlineSuggestionUiReady() ->
+         * 3. RemoteInlineSuggestionViewConnector::onRender() ->
+         * 4. InlineSuggestionUiCallback::onInflate()
+         */
+        void onInflate();
     }
 
     /**

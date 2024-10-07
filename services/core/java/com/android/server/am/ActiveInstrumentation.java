@@ -40,6 +40,9 @@ class ActiveInstrumentation {
     // The application being instrumented
     ApplicationInfo mTargetInfo;
 
+    // Whether the application is instrumented as an sdk running in the sdk_sandbox.
+    boolean mIsSdkInSandbox;
+
     // Where to save profiling
     String mProfileFile;
 
@@ -51,6 +54,9 @@ class ActiveInstrumentation {
 
     // Whether the caller holds START_ACTIVITIES_FROM_BACKGROUND permission
     boolean mHasBackgroundActivityStartsPermission;
+
+    // Whether the caller holds START_FOREGROUND_SERVICES_FROM_BACKGROUND permission
+    boolean mHasBackgroundForegroundServiceStartsPermission;
 
     // As given to us
     Bundle mArguments;
@@ -69,6 +75,9 @@ class ActiveInstrumentation {
 
     // The uid of the process who started this instrumentation.
     int mSourceUid;
+
+    // True if instrumentation should take place without restarting the target process.
+    boolean mNoRestart;
 
     ActiveInstrumentation(ActivityManagerService service) {
         mService = service;
@@ -125,6 +134,8 @@ class ActiveInstrumentation {
         }
         pw.print("mHasBackgroundActivityStartsPermission=");
         pw.println(mHasBackgroundActivityStartsPermission);
+        pw.print("mHasBackgroundForegroundServiceStartsPermission=");
+        pw.println(mHasBackgroundForegroundServiceStartsPermission);
         pw.print(prefix); pw.print("mArguments=");
         pw.println(mArguments);
     }

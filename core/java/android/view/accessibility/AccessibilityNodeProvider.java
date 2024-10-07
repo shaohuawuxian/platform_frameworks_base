@@ -17,6 +17,7 @@
 package android.view.accessibility;
 
 import android.accessibilityservice.AccessibilityService;
+import android.annotation.Nullable;
 import android.os.Bundle;
 import android.view.View;
 
@@ -44,6 +45,10 @@ import java.util.List;
  * View itself. Similarly the returned instance is responsible for performing accessibility
  * actions on any virtual view or the root view itself. For example:
  * </p>
+ * <aside class="note">
+ * <b>Note:</b> Consider using a {@link androidx.customview.widget.ExploreByTouchHelper}, a utility
+ * extension of AccessibilityNodeProvider, to simplify many aspects of providing information to
+ * accessibility services and managing accessibility focus. </aside>
  * <div>
  * <div class="ds-selector-tabs"><section><h3 id="kotlin">Kotlin</h3>
  * <pre class="prettyprint lang-kotlin">
@@ -195,7 +200,7 @@ public abstract class AccessibilityNodeProvider {
      * @see View#createAccessibilityNodeInfo()
      * @see AccessibilityNodeInfo
      */
-    public AccessibilityNodeInfo createAccessibilityNodeInfo(int virtualViewId) {
+    public @Nullable AccessibilityNodeInfo createAccessibilityNodeInfo(int virtualViewId) {
         return null;
     }
 
@@ -234,7 +239,7 @@ public abstract class AccessibilityNodeProvider {
      * @see #createAccessibilityNodeInfo(int)
      * @see AccessibilityNodeInfo
      */
-    public boolean performAction(int virtualViewId, int action, Bundle arguments) {
+    public boolean performAction(int virtualViewId, int action, @Nullable Bundle arguments) {
         return false;
     }
 
@@ -252,7 +257,7 @@ public abstract class AccessibilityNodeProvider {
      * @see #createAccessibilityNodeInfo(int)
      * @see AccessibilityNodeInfo
      */
-    public List<AccessibilityNodeInfo> findAccessibilityNodeInfosByText(String text,
+    public @Nullable List<AccessibilityNodeInfo> findAccessibilityNodeInfosByText(String text,
             int virtualViewId) {
         return null;
     }
@@ -268,7 +273,7 @@ public abstract class AccessibilityNodeProvider {
      * @see AccessibilityNodeInfo#FOCUS_INPUT
      * @see AccessibilityNodeInfo#FOCUS_ACCESSIBILITY
      */
-    public AccessibilityNodeInfo findFocus(int focus) {
+    public @Nullable AccessibilityNodeInfo findFocus(int focus) {
         return null;
     }
 }

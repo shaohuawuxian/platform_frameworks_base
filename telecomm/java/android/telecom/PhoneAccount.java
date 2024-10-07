@@ -18,6 +18,7 @@ package android.telecom;
 
 import static android.Manifest.permission.MODIFY_PHONE_STATE;
 
+import android.annotation.FlaggedApi;
 import android.annotation.NonNull;
 import android.annotation.RequiresPermission;
 import android.annotation.SystemApi;
@@ -30,11 +31,15 @@ import android.os.Parcelable;
 import android.telephony.CarrierConfigManager;
 import android.telephony.TelephonyManager;
 import android.text.TextUtils;
+import android.util.ArraySet;
+
+import com.android.internal.telephony.flags.Flags;
 
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 
 /**
  * Represents a distinct method to place or receive a phone call. Apps which can place calls and
@@ -185,6 +190,8 @@ public final class PhoneAccount implements Parcelable {
      * this may be used to skip call filtering when it has already been performed on another device.
      * @hide
      */
+    @SystemApi
+    @FlaggedApi(com.android.server.telecom.flags.Flags.FLAG_TELECOM_RESOLVE_HIDDEN_DEPENDENCIES)
     public static final String EXTRA_SKIP_CALL_FILTERING =
         "android.telecom.extra.SKIP_CALL_FILTERING";
 
@@ -380,7 +387,72 @@ public final class PhoneAccount implements Parcelable {
      */
     public static final int CAPABILITY_CALL_COMPOSER = 0x8000;
 
-    /* NEXT CAPABILITY: 0x10000 */
+    /**
+     * Flag indicating that this {@link PhoneAccount} provides SIM-based voice calls, potentially as
+     * an over-the-top solution such as wi-fi calling.
+     *
+     * <p>Similar to {@link #CAPABILITY_SUPPORTS_VIDEO_CALLING}, this capability indicates this
+     * {@link PhoneAccount} has the ability to make voice calls (but not necessarily at this time).
+     * Whether this {@link PhoneAccount} can make a voice call is ultimately controlled by {@link
+     * #CAPABILITY_VOICE_CALLING_AVAILABLE}, which indicates whether this {@link PhoneAccount} is
+     * currently capable of making a voice call. Consider a case where, for example, a {@link
+     * PhoneAccount} supports making voice calls (e.g. {@link
+     * #CAPABILITY_SUPPORTS_VOICE_CALLING_INDICATIONS}), but a current lack of network connectivity
+     * prevents voice calls from being made (e.g. {@link #CAPABILITY_VOICE_CALLING_AVAILABLE}).
+     *
+     * <p>In order to declare this capability, this {@link PhoneAccount} must also declare {@link
+     * #CAPABILITY_SIM_SUBSCRIPTION} or {@link #CAPABILITY_CONNECTION_MANAGER} and satisfy the
+     * associated requirements.
+     *
+     * @see #CAPABILITY_VOICE_CALLING_AVAILABLE
+     * @see #getCapabilities
+     */
+    public static final int CAPABILITY_SUPPORTS_VOICE_CALLING_INDICATIONS = 0x10000;
+
+    /**
+     * Flag indicating that this {@link PhoneAccount} is <em>currently</em> able to place SIM-based
+     * voice calls, similar to {@link #CAPABILITY_VIDEO_CALLING}.
+     *
+     * <p>See also {@link #CAPABILITY_SUPPORTS_VOICE_CALLING_INDICATIONS}, which indicates whether
+     * the {@code PhoneAccount} supports placing SIM-based voice calls or not.
+     *
+     * <p>In order to declare this capability, this {@link PhoneAccount} must also declare {@link
+     * #CAPABILITY_SIM_SUBSCRIPTION} or {@link #CAPABILITY_CONNECTION_MANAGER} and satisfy the
+     * associated requirements.
+     *
+     * @see #CAPABILITY_SUPPORTS_VOICE_CALLING_INDICATIONS
+     * @see #getCapabilities
+     */
+    public static final int CAPABILITY_VOICE_CALLING_AVAILABLE = 0x20000;
+
+
+    /**
+     * Flag indicating that this {@link PhoneAccount} supports the use TelecomManager APIs that
+     * utilize {@link android.os.OutcomeReceiver}s or {@link java.util.function.Consumer}s.
+     * Be aware, if this capability is set, {@link #CAPABILITY_SELF_MANAGED} will be amended by
+     * Telecom when this {@link PhoneAccount} is registered via
+     * {@link TelecomManager#registerPhoneAccount(PhoneAccount)}.
+     *
+     * <p>
+     * {@link android.os.OutcomeReceiver}s and {@link java.util.function.Consumer}s represent
+     * transactional operations because the operation can succeed or fail.  An app wishing to use
+     * transactional operations should define behavior for a successful and failed TelecomManager
+     * API call.
+     *
+     * @see #CAPABILITY_SELF_MANAGED
+     * @see #getCapabilities
+     */
+    public static final int CAPABILITY_SUPPORTS_TRANSACTIONAL_OPERATIONS = 0x40000;
+
+    /**
+     * Flag indicating that this voip app {@link PhoneAccount} supports the call streaming session
+     * to stream call audio to another remote device via streaming app.
+     *
+     * @see #getCapabilities
+     */
+    public static final int CAPABILITY_SUPPORTS_CALL_STREAMING = 0x80000;
+
+    /* NEXT CAPABILITY: [0x100000, 0x200000, 0x400000] */
 
     /**
      * URI scheme for telephone number URIs.
@@ -426,6 +498,7 @@ public final class PhoneAccount implements Parcelable {
     private final Bundle mExtras;
     private boolean mIsEnabled;
     private String mGroupId;
+    private final Set<PhoneAccountHandle> mSimultaneousCallingRestriction;
 
     @Override
     public boolean equals(Object o) {
@@ -443,7 +516,9 @@ public final class PhoneAccount implements Parcelable {
                 Objects.equals(mShortDescription, that.mShortDescription) &&
                 Objects.equals(mSupportedUriSchemes, that.mSupportedUriSchemes) &&
                 areBundlesEqual(mExtras, that.mExtras) &&
-                Objects.equals(mGroupId, that.mGroupId);
+                Objects.equals(mGroupId, that.mGroupId)
+                && Objects.equals(mSimultaneousCallingRestriction,
+                        that.mSimultaneousCallingRestriction);
     }
 
     @Override
@@ -451,7 +526,7 @@ public final class PhoneAccount implements Parcelable {
         return Objects.hash(mAccountHandle, mAddress, mSubscriptionAddress, mCapabilities,
                 mHighlightColor, mLabel, mShortDescription, mSupportedUriSchemes,
                 mSupportedAudioRoutes,
-                mExtras, mIsEnabled, mGroupId);
+                mExtras, mIsEnabled, mGroupId, mSimultaneousCallingRestriction);
     }
 
     /**
@@ -472,9 +547,15 @@ public final class PhoneAccount implements Parcelable {
         private Bundle mExtras;
         private boolean mIsEnabled = false;
         private String mGroupId = "";
+        private Set<PhoneAccountHandle> mSimultaneousCallingRestriction = null;
 
         /**
          * Creates a builder with the specified {@link PhoneAccountHandle} and label.
+         * <p>
+         * Note: each CharSequence or String field is limited to 256 characters. This check is
+         * enforced when registering the PhoneAccount via
+         * {@link TelecomManager#registerPhoneAccount(PhoneAccount)} and will cause an
+         * {@link IllegalArgumentException} to be thrown if the character field limit is over 256.
          */
         public Builder(PhoneAccountHandle accountHandle, CharSequence label) {
             this.mAccountHandle = accountHandle;
@@ -501,10 +582,18 @@ public final class PhoneAccount implements Parcelable {
             mExtras = phoneAccount.getExtras();
             mGroupId = phoneAccount.getGroupId();
             mSupportedAudioRoutes = phoneAccount.getSupportedAudioRoutes();
+            if (phoneAccount.hasSimultaneousCallingRestriction()) {
+                mSimultaneousCallingRestriction = phoneAccount.getSimultaneousCallingRestriction();
+            }
         }
 
         /**
          * Sets the label. See {@link PhoneAccount#getLabel()}.
+         * <p>
+         * Note: Each CharSequence or String field is limited to 256 characters. This check is
+         * enforced when registering the PhoneAccount via
+         * {@link TelecomManager#registerPhoneAccount(PhoneAccount)} and will cause an
+         * {@link IllegalArgumentException} to be thrown if the character field limit is over 256.
          *
          * @param label The label of the phone account.
          * @return The builder.
@@ -517,6 +606,11 @@ public final class PhoneAccount implements Parcelable {
 
         /**
          * Sets the address. See {@link PhoneAccount#getAddress}.
+         * <p>
+         * Note: The entire URI value is limited to 256 characters. This check is
+         * enforced when registering the PhoneAccount via
+         * {@link TelecomManager#registerPhoneAccount(PhoneAccount)} and will cause an
+         * {@link IllegalArgumentException} to be thrown if URI is over 256.
          *
          * @param value The address of the phone account.
          * @return The builder.
@@ -550,6 +644,10 @@ public final class PhoneAccount implements Parcelable {
 
         /**
          * Sets the icon. See {@link PhoneAccount#getIcon}.
+         * <p>
+         * Note: An {@link IllegalArgumentException} if the Icon cannot be written to memory.
+         * This check is enforced when registering the PhoneAccount via
+         * {@link TelecomManager#registerPhoneAccount(PhoneAccount)}
          *
          * @param icon The icon to set.
          */
@@ -571,6 +669,11 @@ public final class PhoneAccount implements Parcelable {
 
         /**
          * Sets the short description. See {@link PhoneAccount#getShortDescription}.
+         * <p>
+         * Note: Each CharSequence or String field is limited to 256 characters. This check is
+         * enforced when registering the PhoneAccount via
+         * {@link TelecomManager#registerPhoneAccount(PhoneAccount)} and will cause an
+         * {@link IllegalArgumentException} to be thrown if the character field limit is over 256.
          *
          * @param value The short description.
          * @return The builder.
@@ -582,6 +685,10 @@ public final class PhoneAccount implements Parcelable {
 
         /**
          * Specifies an additional URI scheme supported by the {@link PhoneAccount}.
+         *
+         * <p>
+         * Each URI scheme is limited to 256 characters.  Adding a scheme over 256 characters will
+         * cause an {@link IllegalArgumentException} to be thrown when the account is registered.
          *
          * @param uriScheme The URI scheme.
          * @return The builder.
@@ -595,6 +702,12 @@ public final class PhoneAccount implements Parcelable {
 
         /**
          * Specifies the URI schemes supported by the {@link PhoneAccount}.
+         *
+         * <p>
+         * A max of 10 URI schemes can be added per account.  Additionally, each URI scheme is
+         * limited to 256 characters. Adding more than 10 URI schemes or 256 characters on any
+         * scheme will cause an {@link IllegalArgumentException} to be thrown when the account
+         * is registered.
          *
          * @param uriSchemes The URI schemes.
          * @return The builder.
@@ -615,6 +728,13 @@ public final class PhoneAccount implements Parcelable {
          * <p>
          * {@code PhoneAccount}s only support extra values of type: {@link String}, {@link Integer},
          * and {@link Boolean}.  Extras which are not of these types are ignored.
+         * <p>
+         * Note: Each Bundle (Key, Value) String field is limited to 256 characters. Additionally,
+         * the bundle is limited to 100 (Key, Value) pairs total.  This check is
+         * enforced when registering the PhoneAccount via
+         * {@link TelecomManager#registerPhoneAccount(PhoneAccount)} and will cause an
+         * {@link IllegalArgumentException} to be thrown if the character field limit is over 256
+         * or more than 100 (Key, Value) pairs are in the Bundle.
          *
          * @param extras
          * @return
@@ -646,6 +766,11 @@ public final class PhoneAccount implements Parcelable {
          * <p>
          * Note: This is an API specific to the Telephony stack; the group Id will be ignored for
          * callers not holding the correct permission.
+         * <p>
+         * Additionally, each CharSequence or String field is limited to 256 characters.
+         * This check is enforced when registering the PhoneAccount via
+         * {@link TelecomManager#registerPhoneAccount(PhoneAccount)} and will cause an
+         * {@link IllegalArgumentException} to be thrown if the character field limit is over 256.
          *
          * @param groupId The group Id of the {@link PhoneAccount} that will replace any other
          * registered {@link PhoneAccount} in Telecom with the same Group Id.
@@ -676,6 +801,60 @@ public final class PhoneAccount implements Parcelable {
         }
 
         /**
+         * Restricts the ability of this {@link PhoneAccount} to ONLY support simultaneous calling
+         * with the other {@link PhoneAccountHandle}s in this Set.
+         * <p>
+         * If two or more {@link PhoneAccount}s support calling simultaneously, it means that
+         * Telecom allows the user to place additional outgoing calls and receive additional
+         * incoming calls using other {@link PhoneAccount}s while this PhoneAccount also has one or
+         * more active calls.
+         * <p>
+         * If this setter method is never called or cleared using
+         * {@link #clearSimultaneousCallingRestriction()}, there is no restriction and all
+         * {@link PhoneAccount}s registered to Telecom by this package support simultaneous calling.
+         * If this setter is called and set as an empty Set, then this {@link PhoneAccount} does
+         * not support simultaneous calling with any other {@link PhoneAccount}s registered by the
+         * same application.
+         * <p>
+         * Note: Simultaneous calling restrictions can only be placed on {@link PhoneAccount}s that
+         * were registered by the same application. Simultaneous calling across applications is
+         * always possible as long as the {@link Connection} supports hold. If a
+         * {@link PhoneAccountHandle} is included here and the package name doesn't match this
+         * application's package name, {@link TelecomManager#registerPhoneAccount(PhoneAccount)}
+         * will throw a {@link SecurityException}.
+         *
+         * @param handles The other {@link PhoneAccountHandle}s that support calling simultaneously
+         * with this one. Use {@link #clearSimultaneousCallingRestriction()} to remove the
+         * restriction and allow simultaneous calling to be supported across all
+         * {@link PhoneAccount}s registered by this package.
+         * @return The Builder used to set up the new PhoneAccount.
+         */
+        @FlaggedApi(Flags.FLAG_SIMULTANEOUS_CALLING_INDICATIONS)
+        public @NonNull Builder setSimultaneousCallingRestriction(
+                @NonNull Set<PhoneAccountHandle> handles) {
+            if (handles == null) {
+                throw new IllegalArgumentException("the Set of PhoneAccountHandles must not be "
+                        + "null");
+            }
+            mSimultaneousCallingRestriction = handles;
+            return this;
+        }
+
+        /**
+         * Clears a previously set simultaneous calling restriction set when
+         * {@link PhoneAccount.Builder#Builder(PhoneAccount)} is used to create a new PhoneAccount
+         * from an existing one.
+         *
+         * @return The Builder used to set up the new PhoneAccount.
+         * @see #setSimultaneousCallingRestriction(Set)
+         */
+        @FlaggedApi(Flags.FLAG_SIMULTANEOUS_CALLING_INDICATIONS)
+        public @NonNull Builder clearSimultaneousCallingRestriction() {
+            mSimultaneousCallingRestriction = null;
+            return this;
+        }
+
+        /**
          * Creates an instance of a {@link PhoneAccount} based on the current builder settings.
          *
          * @return The {@link PhoneAccount}.
@@ -699,7 +878,8 @@ public final class PhoneAccount implements Parcelable {
                     mExtras,
                     mSupportedAudioRoutes,
                     mIsEnabled,
-                    mGroupId);
+                    mGroupId,
+                    mSimultaneousCallingRestriction);
         }
     }
 
@@ -716,7 +896,8 @@ public final class PhoneAccount implements Parcelable {
             Bundle extras,
             int supportedAudioRoutes,
             boolean isEnabled,
-            String groupId) {
+            String groupId,
+            Set<PhoneAccountHandle> simultaneousCallingRestriction) {
         mAccountHandle = account;
         mAddress = address;
         mSubscriptionAddress = subscriptionAddress;
@@ -730,6 +911,7 @@ public final class PhoneAccount implements Parcelable {
         mSupportedAudioRoutes = supportedAudioRoutes;
         mIsEnabled = isEnabled;
         mGroupId = groupId;
+        mSimultaneousCallingRestriction = simultaneousCallingRestriction;
     }
 
     public static Builder builder(
@@ -939,6 +1121,49 @@ public final class PhoneAccount implements Parcelable {
         return (mCapabilities & CAPABILITY_SELF_MANAGED) == CAPABILITY_SELF_MANAGED;
     }
 
+    /**
+     * If a restriction is set (see {@link #hasSimultaneousCallingRestriction()}), this method
+     * returns the Set of {@link PhoneAccountHandle}s that are allowed to support calls
+     * simultaneously with this {@link PhoneAccount}.
+     * <p>
+     * If this {@link PhoneAccount} is busy with one or more ongoing calls, a restriction is set on
+     * this PhoneAccount (see {@link #hasSimultaneousCallingRestriction()} to check),  and a new
+     * incoming or outgoing call is received or placed on a PhoneAccount that is not in this Set,
+     * Telecom will reject or cancel the pending call in favor of keeping the ongoing call alive.
+     * <p>
+     * Note: Simultaneous calling restrictions can only be placed on {@link PhoneAccount}s that
+     * were registered by the same application. Simultaneous calling across applications is
+     * always possible as long as the {@link Connection} supports hold.
+     *
+     * @return the Set of {@link PhoneAccountHandle}s that this {@link PhoneAccount} supports
+     * simultaneous calls with.
+     * @throws IllegalStateException If there is no restriction set on this {@link PhoneAccount}
+     * and this method is called. Whether or not there is a restriction can be checked using
+     * {@link #hasSimultaneousCallingRestriction()}.
+     */
+    @FlaggedApi(Flags.FLAG_SIMULTANEOUS_CALLING_INDICATIONS)
+    public @NonNull Set<PhoneAccountHandle> getSimultaneousCallingRestriction() {
+        if (mSimultaneousCallingRestriction == null) {
+            throw new IllegalStateException("This method can not be called if there is no "
+                    + "simultaneous calling restriction. See #hasSimultaneousCallingRestriction");
+        }
+        return mSimultaneousCallingRestriction;
+    }
+
+    /**
+     * Whether or not this {@link PhoneAccount} contains a simultaneous calling restriction on it.
+     *
+     * @return {@code true} if this PhoneAccount contains a simultaneous calling restriction,
+     * {@code false} if it does not. Use {@link #getSimultaneousCallingRestriction()} to query which
+     * other {@link PhoneAccount}s support simultaneous calling with this one.
+     * @see #getSimultaneousCallingRestriction() for more information on how the sinultaneous
+     * calling restriction works.
+     */
+    @FlaggedApi(Flags.FLAG_SIMULTANEOUS_CALLING_INDICATIONS)
+    public boolean hasSimultaneousCallingRestriction() {
+        return mSimultaneousCallingRestriction != null;
+    }
+
     //
     // Parcelable implementation
     //
@@ -984,6 +1209,12 @@ public final class PhoneAccount implements Parcelable {
         out.writeBundle(mExtras);
         out.writeString(mGroupId);
         out.writeInt(mSupportedAudioRoutes);
+        if (mSimultaneousCallingRestriction == null) {
+            out.writeBoolean(false);
+        } else {
+            out.writeBoolean(true);
+            out.writeTypedList(mSimultaneousCallingRestriction.stream().toList());
+        }
     }
 
     public static final @android.annotation.NonNull Creator<PhoneAccount> CREATOR
@@ -1029,6 +1260,13 @@ public final class PhoneAccount implements Parcelable {
         mExtras = in.readBundle();
         mGroupId = in.readString();
         mSupportedAudioRoutes = in.readInt();
+        if (in.readBoolean()) {
+            List<PhoneAccountHandle> list = new ArrayList<>();
+            in.readTypedList(list, PhoneAccountHandle.CREATOR);
+            mSimultaneousCallingRestriction = new ArraySet<>(list);
+        } else {
+            mSimultaneousCallingRestriction = null;
+        }
     }
 
     @Override
@@ -1050,6 +1288,17 @@ public final class PhoneAccount implements Parcelable {
         sb.append(mExtras);
         sb.append(" GroupId: ");
         sb.append(Log.pii(mGroupId));
+        sb.append(" SC Restrictions: ");
+        if (hasSimultaneousCallingRestriction()) {
+            sb.append("[ ");
+            for (PhoneAccountHandle handle : mSimultaneousCallingRestriction) {
+                sb.append(handle);
+                sb.append(" ");
+            }
+            sb.append("]");
+        } else {
+            sb.append("[NONE]");
+        }
         sb.append("]");
         return sb.toString();
     }
@@ -1102,13 +1351,25 @@ public final class PhoneAccount implements Parcelable {
             sb.append("SimSub ");
         }
         if (hasCapabilities(CAPABILITY_RTT)) {
-            sb.append("Rtt");
+            sb.append("Rtt ");
         }
         if (hasCapabilities(CAPABILITY_ADHOC_CONFERENCE_CALLING)) {
-            sb.append("AdhocConf");
+            sb.append("AdhocConf ");
         }
         if (hasCapabilities(CAPABILITY_CALL_COMPOSER)) {
             sb.append("CallComposer ");
+        }
+        if (hasCapabilities(CAPABILITY_SUPPORTS_VOICE_CALLING_INDICATIONS)) {
+            sb.append("SuppVoice ");
+        }
+        if (hasCapabilities(CAPABILITY_VOICE_CALLING_AVAILABLE)) {
+            sb.append("Voice ");
+        }
+        if (hasCapabilities(CAPABILITY_SUPPORTS_TRANSACTIONAL_OPERATIONS)) {
+            sb.append("TransactOps ");
+        }
+        if (hasCapabilities(CAPABILITY_SUPPORTS_CALL_STREAMING)) {
+            sb.append("Stream ");
         }
         return sb.toString();
     }

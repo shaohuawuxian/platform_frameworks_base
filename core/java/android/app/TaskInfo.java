@@ -16,19 +16,28 @@
 
 package android.app;
 
+import static android.app.ActivityTaskManager.INVALID_TASK_ID;
+import static android.window.DisplayAreaOrganizer.FEATURE_UNDEFINED;
+
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.annotation.TestApi;
 import android.compat.annotation.UnsupportedAppUsage;
 import android.content.ComponentName;
 import android.content.Intent;
+import android.content.LocusId;
 import android.content.pm.ActivityInfo;
 import android.content.res.Configuration;
+import android.graphics.Point;
+import android.graphics.Rect;
 import android.os.Build;
+import android.os.IBinder;
 import android.os.Parcel;
-import android.os.RemoteException;
-import android.util.Log;
+import android.view.DisplayCutout;
 import android.window.WindowContainerToken;
+
+import java.util.ArrayList;
+import java.util.Objects;
 
 /**
  * Stores information about a particular Task.
@@ -37,18 +46,18 @@ public class TaskInfo {
     private static final String TAG = "TaskInfo";
 
     /**
-     * The id of the user the task was running as.
+     * The value to use when the property has not a specific value.
+     * @hide
+     */
+    public static final int PROPERTY_VALUE_UNSET = -1;
+
+    /**
+     * The id of the user the task was running as if this is a leaf task. The id of the current
+     * running user of the system otherwise.
      * @hide
      */
     @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public int userId;
-
-    /**
-     * The id of the ActivityStack that currently contains this task.
-     * @hide
-     */
-    @UnsupportedAppUsage
-    public int stackId;
 
     /**
      * The identifier for this task.
@@ -114,6 +123,12 @@ public class TaskInfo {
     public int displayId;
 
     /**
+     * The feature id of {@link com.android.server.wm.TaskDisplayArea} this task is associated with.
+     * @hide
+     */
+    public int displayAreaFeatureId = FEATURE_UNDEFINED;
+
+    /**
      * The recent activity values for the highest activity in the stack to have set the values.
      * {@link Activity#setTaskDescription(android.app.ActivityManager.TaskDescription)}.
      */
@@ -121,11 +136,18 @@ public class TaskInfo {
     public ActivityManager.TaskDescription taskDescription;
 
     /**
-     * True if the task can go in the split-screen primary stack.
+     * The locusId of the task.
      * @hide
      */
-    @UnsupportedAppUsage
-    public boolean supportsSplitScreenMultiWindow;
+    @Nullable
+    public LocusId mTopActivityLocusId;
+
+    /**
+     * Whether this task supports multi windowing modes based on the device settings and the
+     * root activity resizability and configuration.
+     * @hide
+     */
+    public boolean supportsMultiWindow;
 
     /**
      * The resize mode of the task. See {@link ActivityInfo#resizeMode}.
@@ -157,6 +179,35 @@ public class TaskInfo {
     public PictureInPictureParams pictureInPictureParams;
 
     /**
+     * @hide
+     */
+    public boolean shouldDockBigOverlays;
+
+    /**
+     * The task id of the host Task of the launch-into-pip Activity, i.e., it points to the Task
+     * the launch-into-pip Activity is originated from.
+     * @hide
+     */
+    public int launchIntoPipHostTaskId;
+
+    /**
+     * The task id of the parent Task of the launch-into-pip Activity, i.e., if task have more than
+     * one activity it will create new task for this activity, this id is the origin task id and
+     * the pip activity will be reparent to origin task when it exit pip mode.
+     * @hide
+     */
+    public int lastParentTaskIdBeforePip;
+
+    /**
+     * The {@link Rect} copied from {@link DisplayCutout#getSafeInsets()} if the cutout is not of
+     * (LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES, LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS),
+     * {@code null} otherwise.
+     * @hide
+     */
+    @Nullable
+    public Rect displayCutoutInsets;
+
+    /**
      * The activity type of the top activity in this task.
      * @hide
      */
@@ -178,11 +229,78 @@ public class TaskInfo {
     public boolean isResizeable;
 
     /**
-     * Screen orientation set by {@link #baseActivity} via
-     * {@link Activity#setRequestedOrientation(int)}.
+     * Minimal width of the task when it's resizeable.
      * @hide
      */
-    public @ActivityInfo.ScreenOrientation int requestedOrientation;
+    public int minWidth;
+
+    /**
+     * Minimal height of the task when it's resizeable.
+     * @hide
+     */
+    public int minHeight;
+
+    /**
+     * The default minimal size of the task used when a minWidth or minHeight is not specified.
+     * @hide
+     */
+    public int defaultMinSize;
+
+    /**
+     * Relative position of the task's top left corner in the parent container.
+     * @hide
+     */
+    public Point positionInParent;
+
+    /**
+     * The launch cookies associated with activities in this task if any.
+     * @see ActivityOptions#setLaunchCookie(IBinder)
+     * @hide
+     */
+    public ArrayList<IBinder> launchCookies = new ArrayList<>();
+
+    /**
+     * The identifier of the parent task that is created by organizer, otherwise
+     * {@link ActivityTaskManager#INVALID_TASK_ID}.
+     * @hide
+     */
+    public int parentTaskId;
+
+    /**
+     * Whether this task is focused.
+     * @hide
+     */
+    public boolean isFocused;
+
+    /**
+     * Whether this task is visible.
+     * @hide
+     */
+    public boolean isVisible;
+
+    /**
+     * Whether this task is request visible.
+     * @hide
+     */
+    public boolean isVisibleRequested;
+
+    /**
+     * Whether this task is sleeping due to sleeping display.
+     * @hide
+     */
+    public boolean isSleeping;
+
+    /**
+     * Whether the top activity fillsParent() is false
+     * @hide
+     */
+    public boolean isTopActivityTransparent;
+
+    /**
+     * Encapsulate specific App Compat information.
+     * @hide
+     */
+    public AppCompatTaskInfo appCompatTaskInfo = AppCompatTaskInfo.create();
 
     TaskInfo() {
         // Do nothing
@@ -193,17 +311,10 @@ public class TaskInfo {
     }
 
     /**
-     * @param isLowResolution
-     * @return
-     * @hide
+     * Whether this task is visible.
      */
-    public ActivityManager.TaskSnapshot getTaskSnapshot(boolean isLowResolution) {
-        try {
-            return ActivityManager.getService().getTaskSnapshot(taskId, isLowResolution);
-        } catch (RemoteException e) {
-            Log.e(TAG, "Failed to get task snapshot, taskId=" + taskId, e);
-            return null;
-        }
+    public boolean isVisible() {
+        return isVisible;
     }
 
     /** @hide */
@@ -220,18 +331,139 @@ public class TaskInfo {
         return configuration;
     }
 
+    /** @hide */
+    @Nullable
+    @TestApi
+    public PictureInPictureParams getPictureInPictureParams() {
+        return pictureInPictureParams;
+    }
+
+    /** @hide */
+    @TestApi
+    public boolean shouldDockBigOverlays() {
+        return shouldDockBigOverlays;
+    }
+
+    /** @hide */
+    @WindowConfiguration.WindowingMode
+    public int getWindowingMode() {
+        return configuration.windowConfiguration.getWindowingMode();
+    }
+
+    /** @hide */
+    public boolean isFreeform() {
+        return configuration.windowConfiguration.getWindowingMode()
+                == WindowConfiguration.WINDOWING_MODE_FREEFORM;
+    }
+
+    /** @hide */
+    @WindowConfiguration.ActivityType
+    public int getActivityType() {
+        return configuration.windowConfiguration.getActivityType();
+    }
+
+    /** @hide */
+    public void addLaunchCookie(IBinder cookie) {
+        if (cookie == null || launchCookies.contains(cookie)) return;
+        launchCookies.add(cookie);
+    }
+
+    /**
+     * @return {@code true} if this task contains the launch cookie.
+     * @hide
+     */
+    @TestApi
+    public boolean containsLaunchCookie(@NonNull IBinder cookie) {
+        return launchCookies.contains(cookie);
+    }
+
+    /**
+     * @return The parent task id of this task.
+     * @hide
+     */
+    @TestApi
+    public int getParentTaskId() {
+        return parentTaskId;
+    }
+
+    /** @hide */
+    @TestApi
+    public boolean hasParentTask() {
+        return parentTaskId != INVALID_TASK_ID;
+    }
+
+    /**
+     * @return The id of the display this task is associated with.
+     * @hide
+     */
+    @TestApi
+    public int getDisplayId() {
+        return displayId;
+    }
+
+    /**
+     * Returns {@code true} if the parameters that are important for task organizers are equal
+     * between this {@link TaskInfo} and {@param that}.
+     * @hide
+     */
+    public boolean equalsForTaskOrganizer(@Nullable TaskInfo that) {
+        if (that == null) {
+            return false;
+        }
+        return topActivityType == that.topActivityType
+                && isResizeable == that.isResizeable
+                && supportsMultiWindow == that.supportsMultiWindow
+                && displayAreaFeatureId == that.displayAreaFeatureId
+                && Objects.equals(positionInParent, that.positionInParent)
+                && Objects.equals(pictureInPictureParams, that.pictureInPictureParams)
+                && Objects.equals(shouldDockBigOverlays, that.shouldDockBigOverlays)
+                && Objects.equals(displayCutoutInsets, that.displayCutoutInsets)
+                && getWindowingMode() == that.getWindowingMode()
+                && configuration.uiMode == that.configuration.uiMode
+                && Objects.equals(taskDescription, that.taskDescription)
+                && isFocused == that.isFocused
+                && isVisible == that.isVisible
+                && isVisibleRequested == that.isVisibleRequested
+                && isSleeping == that.isSleeping
+                && Objects.equals(mTopActivityLocusId, that.mTopActivityLocusId)
+                && parentTaskId == that.parentTaskId
+                && Objects.equals(topActivity, that.topActivity)
+                && isTopActivityTransparent == that.isTopActivityTransparent
+                && appCompatTaskInfo.equalsForTaskOrganizer(that.appCompatTaskInfo);
+    }
+
+    /**
+     * @return {@code true} if parameters that are important for size compat have changed.
+     * @hide
+     */
+    public boolean equalsForCompatUi(@Nullable TaskInfo that) {
+        if (that == null) {
+            return false;
+        }
+        final boolean hasCompatUI = appCompatTaskInfo.hasCompatUI();
+        return displayId == that.displayId
+                && taskId == that.taskId
+                && isFocused == that.isFocused
+                && isTopActivityTransparent == that.isTopActivityTransparent
+                && appCompatTaskInfo.equalsForCompatUi(that.appCompatTaskInfo)
+                // Bounds are important if top activity has compat controls.
+                && (!hasCompatUI || configuration.windowConfiguration.getBounds()
+                    .equals(that.configuration.windowConfiguration.getBounds()))
+                && (!hasCompatUI || configuration.getLayoutDirection()
+                    == that.configuration.getLayoutDirection())
+                && (!hasCompatUI || configuration.uiMode == that.configuration.uiMode)
+                && (!hasCompatUI || isVisible == that.isVisible);
+    }
+
     /**
      * Reads the TaskInfo from a parcel.
      */
     void readFromParcel(Parcel source) {
         userId = source.readInt();
-        stackId = source.readInt();
         taskId = source.readInt();
         displayId = source.readInt();
         isRunning = source.readBoolean();
-        baseIntent = source.readInt() != 0
-                ? Intent.CREATOR.createFromParcel(source)
-                : null;
+        baseIntent = source.readTypedObject(Intent.CREATOR);
         baseActivity = ComponentName.readFromParcel(source);
         topActivity = ComponentName.readFromParcel(source);
         origActivity = ComponentName.readFromParcel(source);
@@ -240,22 +472,33 @@ public class TaskInfo {
         numActivities = source.readInt();
         lastActiveTime = source.readLong();
 
-        taskDescription = source.readInt() != 0
-                ? ActivityManager.TaskDescription.CREATOR.createFromParcel(source)
-                : null;
-        supportsSplitScreenMultiWindow = source.readBoolean();
+        taskDescription = source.readTypedObject(ActivityManager.TaskDescription.CREATOR);
+        supportsMultiWindow = source.readBoolean();
         resizeMode = source.readInt();
         configuration.readFromParcel(source);
         token = WindowContainerToken.CREATOR.createFromParcel(source);
         topActivityType = source.readInt();
-        pictureInPictureParams = source.readInt() != 0
-                ? PictureInPictureParams.CREATOR.createFromParcel(source)
-                : null;
-        topActivityInfo = source.readInt() != 0
-                ? ActivityInfo.CREATOR.createFromParcel(source)
-                : null;
+        pictureInPictureParams = source.readTypedObject(PictureInPictureParams.CREATOR);
+        shouldDockBigOverlays = source.readBoolean();
+        launchIntoPipHostTaskId = source.readInt();
+        lastParentTaskIdBeforePip = source.readInt();
+        displayCutoutInsets = source.readTypedObject(Rect.CREATOR);
+        topActivityInfo = source.readTypedObject(ActivityInfo.CREATOR);
         isResizeable = source.readBoolean();
-        requestedOrientation = source.readInt();
+        minWidth = source.readInt();
+        minHeight = source.readInt();
+        defaultMinSize = source.readInt();
+        source.readBinderList(launchCookies);
+        positionInParent = source.readTypedObject(Point.CREATOR);
+        parentTaskId = source.readInt();
+        isFocused = source.readBoolean();
+        isVisible = source.readBoolean();
+        isVisibleRequested = source.readBoolean();
+        isSleeping = source.readBoolean();
+        mTopActivityLocusId = source.readTypedObject(LocusId.CREATOR);
+        displayAreaFeatureId = source.readInt();
+        isTopActivityTransparent = source.readBoolean();
+        appCompatTaskInfo = source.readTypedObject(AppCompatTaskInfo.CREATOR);
     }
 
     /**
@@ -263,17 +506,11 @@ public class TaskInfo {
      */
     void writeToParcel(Parcel dest, int flags) {
         dest.writeInt(userId);
-        dest.writeInt(stackId);
         dest.writeInt(taskId);
         dest.writeInt(displayId);
         dest.writeBoolean(isRunning);
+        dest.writeTypedObject(baseIntent, 0);
 
-        if (baseIntent != null) {
-            dest.writeInt(1);
-            baseIntent.writeToParcel(dest, 0);
-        } else {
-            dest.writeInt(0);
-        }
         ComponentName.writeToParcel(baseActivity, dest);
         ComponentName.writeToParcel(topActivity, dest);
         ComponentName.writeToParcel(origActivity, dest);
@@ -282,36 +519,38 @@ public class TaskInfo {
         dest.writeInt(numActivities);
         dest.writeLong(lastActiveTime);
 
-        if (taskDescription != null) {
-            dest.writeInt(1);
-            taskDescription.writeToParcel(dest, flags);
-        } else {
-            dest.writeInt(0);
-        }
-        dest.writeBoolean(supportsSplitScreenMultiWindow);
+        dest.writeTypedObject(taskDescription, flags);
+        dest.writeBoolean(supportsMultiWindow);
         dest.writeInt(resizeMode);
         configuration.writeToParcel(dest, flags);
         token.writeToParcel(dest, flags);
         dest.writeInt(topActivityType);
-        if (pictureInPictureParams == null) {
-            dest.writeInt(0);
-        } else {
-            dest.writeInt(1);
-            pictureInPictureParams.writeToParcel(dest, flags);
-        }
-        if (topActivityInfo == null) {
-            dest.writeInt(0);
-        } else {
-            dest.writeInt(1);
-            topActivityInfo.writeToParcel(dest, flags);
-        }
+        dest.writeTypedObject(pictureInPictureParams, flags);
+        dest.writeBoolean(shouldDockBigOverlays);
+        dest.writeInt(launchIntoPipHostTaskId);
+        dest.writeInt(lastParentTaskIdBeforePip);
+        dest.writeTypedObject(displayCutoutInsets, flags);
+        dest.writeTypedObject(topActivityInfo, flags);
         dest.writeBoolean(isResizeable);
-        dest.writeInt(requestedOrientation);
+        dest.writeInt(minWidth);
+        dest.writeInt(minHeight);
+        dest.writeInt(defaultMinSize);
+        dest.writeBinderList(launchCookies);
+        dest.writeTypedObject(positionInParent, flags);
+        dest.writeInt(parentTaskId);
+        dest.writeBoolean(isFocused);
+        dest.writeBoolean(isVisible);
+        dest.writeBoolean(isVisibleRequested);
+        dest.writeBoolean(isSleeping);
+        dest.writeTypedObject(mTopActivityLocusId, flags);
+        dest.writeInt(displayAreaFeatureId);
+        dest.writeBoolean(isTopActivityTransparent);
+        dest.writeTypedObject(appCompatTaskInfo, flags);
     }
 
     @Override
     public String toString() {
-        return "TaskInfo{userId=" + userId + " stackId=" + stackId + " taskId=" + taskId
+        return "TaskInfo{userId=" + userId + " taskId=" + taskId
                 + " displayId=" + displayId
                 + " isRunning=" + isRunning
                 + " baseIntent=" + baseIntent + " baseActivity=" + baseActivity
@@ -319,13 +558,31 @@ public class TaskInfo {
                 + " realActivity=" + realActivity
                 + " numActivities=" + numActivities
                 + " lastActiveTime=" + lastActiveTime
-                + " supportsSplitScreenMultiWindow=" + supportsSplitScreenMultiWindow
+                + " supportsMultiWindow=" + supportsMultiWindow
                 + " resizeMode=" + resizeMode
                 + " isResizeable=" + isResizeable
+                + " minWidth=" + minWidth
+                + " minHeight=" + minHeight
+                + " defaultMinSize=" + defaultMinSize
                 + " token=" + token
                 + " topActivityType=" + topActivityType
                 + " pictureInPictureParams=" + pictureInPictureParams
+                + " shouldDockBigOverlays=" + shouldDockBigOverlays
+                + " launchIntoPipHostTaskId=" + launchIntoPipHostTaskId
+                + " lastParentTaskIdBeforePip=" + lastParentTaskIdBeforePip
+                + " displayCutoutSafeInsets=" + displayCutoutInsets
                 + " topActivityInfo=" + topActivityInfo
-                + " requestedOrientation=" + requestedOrientation;
+                + " launchCookies=" + launchCookies
+                + " positionInParent=" + positionInParent
+                + " parentTaskId=" + parentTaskId
+                + " isFocused=" + isFocused
+                + " isVisible=" + isVisible
+                + " isVisibleRequested=" + isVisibleRequested
+                + " isSleeping=" + isSleeping
+                + " locusId=" + mTopActivityLocusId
+                + " displayAreaFeatureId=" + displayAreaFeatureId
+                + " isTopActivityTransparent=" + isTopActivityTransparent
+                + " appCompatTaskInfo=" + appCompatTaskInfo
+                + "}";
     }
 }

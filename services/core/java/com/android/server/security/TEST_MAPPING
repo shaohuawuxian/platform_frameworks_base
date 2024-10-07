@@ -1,8 +1,8 @@
 {
-  "presubmit": [
-    {
-      "name": "ApkVerityTest",
-      "file_patterns": ["VerityUtils\\.java"]
-    }
-  ]
+    "presubmit": [
+        {
+            "name": "CtsSecurityTestCases_cts_fileintegritymanagertest",
+            "file_patterns": ["FileIntegrity[^/]*\\.java"]
+        }
+    ]
 }

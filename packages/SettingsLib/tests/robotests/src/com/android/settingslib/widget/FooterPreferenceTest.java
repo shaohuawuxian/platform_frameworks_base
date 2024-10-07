@@ -18,14 +18,17 @@ package com.android.settingslib.widget;
 
 import static com.google.common.truth.Truth.assertThat;
 
+import static org.mockito.Mockito.spy;
+import static org.mockito.Mockito.when;
+
 import android.content.Context;
-import android.text.method.LinkMovementMethod;
 import android.view.LayoutInflater;
+import android.view.View;
 import android.widget.TextView;
 
 import androidx.preference.PreferenceViewHolder;
 
-import com.android.settingslib.R;
+import com.android.settingslib.widget.preference.footer.R;
 
 import org.junit.Before;
 import org.junit.Test;
@@ -46,20 +49,92 @@ public class FooterPreferenceTest {
     }
 
     @Test
-    public void bindPreference_shouldLinkifyContent() {
-        final PreferenceViewHolder holder = PreferenceViewHolder.createInstanceForTests(
-                LayoutInflater.from(mContext).inflate(R.layout.preference_footer, null));
-
-        mFooterPreference.onBindViewHolder(holder);
-
-        assertThat(((TextView) holder.findViewById(android.R.id.title)).getMovementMethod())
-                .isInstanceOf(LinkMovementMethod.class);
-    }
-
-    @Test
     public void setSummary_summarySet_shouldSetAsTitle() {
         mFooterPreference.setSummary("summary");
 
         assertThat(mFooterPreference.getTitle()).isEqualTo("summary");
+    }
+
+    @Test
+    public void setLearnMoreText_shouldSetAsTextInLearnMore() {
+        final PreferenceViewHolder holder = PreferenceViewHolder.createInstanceForTests(
+                LayoutInflater.from(mContext).inflate(R.layout.preference_footer, null));
+        mFooterPreference.setLearnMoreText("Custom learn more");
+        mFooterPreference.setLearnMoreAction(view -> { /* do nothing */ } /* listener */);
+
+        mFooterPreference.onBindViewHolder(holder);
+
+        TextView learnMoreView = (TextView) holder.findViewById(R.id.settingslib_learn_more);
+        assertThat(learnMoreView.getText().toString()).isEqualTo("Custom learn more");
+    }
+
+    @Test
+    public void setContentDescription_contentSet_shouldGetSameContentDescription() {
+        mFooterPreference.setContentDescription("test");
+
+        assertThat(mFooterPreference.getContentDescription()).isEqualTo("test");
+    }
+
+    @Test
+    public void setLearnMoreAction_actionSet_shouldGetAction() {
+        mFooterPreference.setLearnMoreAction(v -> {
+        });
+
+        assertThat(mFooterPreference.mLearnMoreListener).isNotNull();
+    }
+
+    @Test
+    public void setIconVisibility_shouldReturnSameVisibilityType() {
+        mFooterPreference.setIconVisibility(View.GONE);
+
+        assertThat(mFooterPreference.mIconVisibility).isEqualTo(View.GONE);
+    }
+
+    @Test
+    public void onBindViewHolder_whenTitleIsNull_shouldNotRaiseNpe() {
+        PreferenceViewHolder viewHolder = spy(PreferenceViewHolder.createInstanceForTests(
+                LayoutInflater.from(mContext).inflate(R.layout.preference_footer, null)));
+        when(viewHolder.findViewById(androidx.core.R.id.title)).thenReturn(null);
+
+        Throwable actualThrowable = null;
+        try {
+            mFooterPreference.onBindViewHolder(viewHolder);
+        } catch (Throwable throwable) {
+            actualThrowable = throwable;
+        }
+
+        assertThat(actualThrowable).isNull();
+    }
+
+    @Test
+    public void onBindViewHolder_whenLearnMoreIsNull_shouldNotRaiseNpe() {
+        PreferenceViewHolder viewHolder = spy(PreferenceViewHolder.createInstanceForTests(
+                LayoutInflater.from(mContext).inflate(R.layout.preference_footer, null)));
+        when(viewHolder.findViewById(R.id.settingslib_learn_more)).thenReturn(null);
+
+        Throwable actualThrowable = null;
+        try {
+            mFooterPreference.onBindViewHolder(viewHolder);
+        } catch (Throwable throwable) {
+            actualThrowable = throwable;
+        }
+
+        assertThat(actualThrowable).isNull();
+    }
+
+    @Test
+    public void onBindViewHolder_whenIconFrameIsNull_shouldNotRaiseNpe() {
+        PreferenceViewHolder viewHolder = spy(PreferenceViewHolder.createInstanceForTests(
+                LayoutInflater.from(mContext).inflate(R.layout.preference_footer, null)));
+        when(viewHolder.findViewById(R.id.icon_frame)).thenReturn(null);
+
+        Throwable actualThrowable = null;
+        try {
+            mFooterPreference.onBindViewHolder(viewHolder);
+        } catch (Throwable throwable) {
+            actualThrowable = throwable;
+        }
+
+        assertThat(actualThrowable).isNull();
     }
 }

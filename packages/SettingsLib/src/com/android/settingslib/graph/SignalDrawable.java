@@ -14,10 +14,10 @@
 
 package com.android.settingslib.graph;
 
+import static com.android.settingslib.flags.Flags.newStatusBarIcons;
+
 import android.animation.ArgbEvaluator;
 import android.annotation.IntRange;
-import android.annotation.NonNull;
-import android.annotation.Nullable;
 import android.content.Context;
 import android.content.res.ColorStateList;
 import android.graphics.Canvas;
@@ -35,6 +35,9 @@ import android.os.Handler;
 import android.telephony.CellSignalStrength;
 import android.util.LayoutDirection;
 import android.util.PathParser;
+
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
 
 import com.android.settingslib.R;
 import com.android.settingslib.Utils;
@@ -66,15 +69,18 @@ public class SignalDrawable extends DrawableWrapper {
 
     private static final long DOT_DELAY = 1000;
 
+    // Check the config for which icon we want to use
+    private static final int ICON_RES = SignalDrawable.getIconRes();
+
     private final Paint mForegroundPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint mTransparentPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final int mDarkModeFillColor;
     private final int mLightModeFillColor;
     private final Path mCutoutPath = new Path();
     private final Path mForegroundPath = new Path();
-    private final Path mXPath = new Path();
-    private final Matrix mXScaleMatrix = new Matrix();
-    private final Path mScaledXPath = new Path();
+    private final Path mAttributionPath = new Path();
+    private final Matrix mAttributionScaleMatrix = new Matrix();
+    private final Path mScaledAttributionPath = new Path();
     private final Handler mHandler;
     private final float mCutoutWidthFraction;
     private final float mCutoutHeightFraction;
@@ -84,11 +90,11 @@ public class SignalDrawable extends DrawableWrapper {
     private int mCurrentDot;
 
     public SignalDrawable(Context context) {
-        super(context.getDrawable(com.android.internal.R.drawable.ic_signal_cellular));
-        final String xPathString = context.getString(
-                com.android.internal.R.string.config_signalXPath);
-        mXPath.set(PathParser.createPathFromPathData(xPathString));
-        updateScaledXPath();
+        super(context.getDrawable(ICON_RES));
+        final String attributionPathString = context.getString(
+                com.android.internal.R.string.config_signalAttributionPath);
+        mAttributionPath.set(PathParser.createPathFromPathData(attributionPathString));
+        updateScaledAttributionPath();
         mCutoutWidthFraction = context.getResources().getFloat(
                 com.android.internal.R.dimen.config_signalCutoutWidthFraction);
         mCutoutHeightFraction = context.getResources().getFloat(
@@ -104,13 +110,14 @@ public class SignalDrawable extends DrawableWrapper {
         setDarkIntensity(0);
     }
 
-    private void updateScaledXPath() {
+    private void updateScaledAttributionPath() {
         if (getBounds().isEmpty()) {
-            mXScaleMatrix.setScale(1f, 1f);
+            mAttributionScaleMatrix.setScale(1f, 1f);
         } else {
-            mXScaleMatrix.setScale(getBounds().width() / VIEWPORT, getBounds().height() / VIEWPORT);
+            mAttributionScaleMatrix.setScale(
+                    getBounds().width() / VIEWPORT, getBounds().height() / VIEWPORT);
         }
-        mXPath.transform(mXScaleMatrix, mScaledXPath);
+        mAttributionPath.transform(mAttributionScaleMatrix, mScaledAttributionPath);
     }
 
     @Override
@@ -145,9 +152,17 @@ public class SignalDrawable extends DrawableWrapper {
 
     private int unpackLevel(int packedState) {
         int numBins = (packedState & NUM_LEVEL_MASK) >> NUM_LEVEL_SHIFT;
+        int cutOutOffset = 0;
         int levelOffset = numBins == (CellSignalStrength.getNumSignalStrengthLevels() + 1) ? 10 : 0;
         int level = (packedState & LEVEL_MASK);
-        return level + levelOffset;
+
+        if (newStatusBarIcons()) {
+            if (isInState(STATE_CUT)) {
+                cutOutOffset = 20;
+            }
+        }
+
+        return level + levelOffset + cutOutOffset;
     }
 
     public void setDarkIntensity(float darkIntensity) {
@@ -177,7 +192,7 @@ public class SignalDrawable extends DrawableWrapper {
     @Override
     protected void onBoundsChange(Rect bounds) {
         super.onBoundsChange(bounds);
-        updateScaledXPath();
+        updateScaledAttributionPath();
         invalidateSelf();
     }
 
@@ -212,7 +227,7 @@ public class SignalDrawable extends DrawableWrapper {
             drawDotAndPadding(x - dotSpacing * 2, y, dotPadding, dotSize, 0);
             canvas.drawPath(mCutoutPath, mTransparentPaint);
             canvas.drawPath(mForegroundPath, mForegroundPaint);
-        } else if (isInState(STATE_CUT)) {
+        } else if (!newStatusBarIcons() && isInState(STATE_CUT)) {
             float cutX = (mCutoutWidthFraction * width / VIEWPORT);
             float cutY = (mCutoutHeightFraction * height / VIEWPORT);
             mCutoutPath.moveTo(width, height);
@@ -221,7 +236,7 @@ public class SignalDrawable extends DrawableWrapper {
             mCutoutPath.rLineTo(cutX, 0);
             mCutoutPath.rLineTo(0, cutY);
             canvas.drawPath(mCutoutPath, mTransparentPaint);
-            canvas.drawPath(mScaledXPath, mForegroundPaint);
+            canvas.drawPath(mScaledAttributionPath, mForegroundPaint);
         }
         if (isRtl) {
             canvas.restore();
@@ -297,5 +312,13 @@ public class SignalDrawable extends DrawableWrapper {
     /** Returns the state representing carrier change with the given number of levels. */
     public static int getCarrierChangeState(int numLevels) {
         return (STATE_CARRIER_CHANGE << STATE_SHIFT) | (numLevels << NUM_LEVEL_SHIFT);
+    }
+
+    private static int getIconRes() {
+        if (newStatusBarIcons()) {
+            return R.drawable.ic_mobile_level_list;
+        } else {
+            return com.android.internal.R.drawable.ic_signal_cellular;
+        }
     }
 }

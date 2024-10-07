@@ -18,8 +18,6 @@ package com.android.systemui.statusbar.notification.row;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotEquals;
-import static org.junit.Assert.assertNotSame;
-import static org.junit.Assert.assertSame;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.spy;
@@ -36,8 +34,6 @@ import com.android.systemui.SysuiTestCase;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
-
-import java.io.IOException;
 
 @SmallTest
 @RunWith(AndroidJUnit4.class)
@@ -68,33 +64,5 @@ public class NotificationInlineImageResolverTest extends SysuiTestCase {
 
         assertEquals("Height matches new config", mResolver.mMaxImageHeight, 20);
         assertEquals("Width matches new config", mResolver.mMaxImageWidth, 15);
-    }
-
-    @Test
-    public void resolveImage_sizeTooBig() throws IOException {
-        doReturn(mBitmapDrawable).when(mResolver).resolveImageInternal(mUri);
-        mResolver.mMaxImageHeight = 5;
-        mResolver.mMaxImageWidth = 5;
-
-        // original bitmap size is 10x10
-        BitmapDrawable resolved = (BitmapDrawable) mResolver.resolveImage(mUri);
-        Bitmap resolvedBitmap = resolved.getBitmap();
-        assertEquals("Bitmap width reduced", 5, resolvedBitmap.getWidth());
-        assertEquals("Bitmap height reduced", 5, resolvedBitmap.getHeight());
-        assertNotSame("Bitmap replaced", resolvedBitmap, mBitmap);
-    }
-
-    @Test
-    public void resolveImage_sizeOK() throws IOException {
-        doReturn(mBitmapDrawable).when(mResolver).resolveImageInternal(mUri);
-        mResolver.mMaxImageWidth = 15;
-        mResolver.mMaxImageHeight = 15;
-
-        // original bitmap size is 10x10
-        BitmapDrawable resolved = (BitmapDrawable) mResolver.resolveImage(mUri);
-        Bitmap resolvedBitmap = resolved.getBitmap();
-        assertEquals("Bitmap width unchanged", 10, resolvedBitmap.getWidth());
-        assertEquals("Bitmap height unchanged", 10, resolvedBitmap.getHeight());
-        assertSame("Bitmap not replaced", resolvedBitmap, mBitmap);
     }
 }

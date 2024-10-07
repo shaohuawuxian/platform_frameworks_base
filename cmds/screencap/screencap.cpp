@@ -20,30 +20,28 @@
 #include <fcntl.h>
 #include <stdlib.h>
 #include <string.h>
+#include <getopt.h>
 
 #include <linux/fb.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/wait.h>
 
+#include <android/bitmap.h>
+
 #include <binder/ProcessState.h>
 
-#include <gui/SurfaceComposerClient.h>
+#include <ftl/concat.h>
+#include <ftl/optional.h>
+#include <gui/DisplayCaptureArgs.h>
 #include <gui/ISurfaceComposer.h>
+#include <gui/SurfaceComposerClient.h>
+#include <gui/SyncScreenCaptureListener.h>
 
-#include <ui/DisplayInfo.h>
 #include <ui/GraphicTypes.h>
 #include <ui/PixelFormat.h>
 
 #include <system/graphics.h>
-
-// TODO: Fix Skia.
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wunused-parameter"
-#include <SkImageEncoder.h>
-#include <SkData.h>
-#include <SkColorSpace.h>
-#pragma GCC diagnostic pop
 
 using namespace android;
 
@@ -51,39 +49,53 @@ using namespace android;
 #define COLORSPACE_SRGB       1
 #define COLORSPACE_DISPLAY_P3 2
 
-static void usage(const char* pname, PhysicalDisplayId displayId)
-{
-    fprintf(stderr,
-            "usage: %s [-hp] [-d display-id] [FILENAME]\n"
-            "   -h: this message\n"
-            "   -p: save the file as a png.\n"
-            "   -d: specify the physical display ID to capture (default: %"
-                    ANDROID_PHYSICAL_DISPLAY_ID_FORMAT ")\n"
-            "       see \"dumpsys SurfaceFlinger --display-id\" for valid display IDs.\n"
-            "If FILENAME ends with .png it will be saved as a png.\n"
-            "If FILENAME is not given, the results will be printed to stdout.\n",
-            pname, displayId);
+void usage(const char* pname, ftl::Optional<DisplayId> displayIdOpt) {
+    fprintf(stderr, R"(
+usage: %s [-ahp] [-d display-id] [FILENAME]
+   -h: this message
+   -a: captures all the active displays. This appends an integer postfix to the FILENAME.
+       e.g., FILENAME_0.png, FILENAME_1.png. If both -a and -d are given, it ignores -d.
+   -d: specify the display ID to capture%s
+       see "dumpsys SurfaceFlinger --display-id" for valid display IDs.
+   -p: outputs in png format.
+   --hint-for-seamless If set will use the hintForSeamless path in SF
+
+If FILENAME ends with .png it will be saved as a png.
+If FILENAME is not given, the results will be printed to stdout.
+)",
+            pname,
+            displayIdOpt
+                .transform([](DisplayId id) {
+                    return std::string(ftl::Concat(
+                    " (If the id is not given, it defaults to ", id.value,')'
+                    ).str());
+                })
+                .value_or(std::string())
+                .c_str());
 }
 
-static SkColorType flinger2skia(PixelFormat f)
+// For options that only exist in long-form. Anything in the
+// 0-255 range is reserved for short options (which just use their ASCII value)
+namespace LongOpts {
+enum {
+    Reserved = 255,
+    HintForSeamless,
+};
+}
+
+static const struct option LONG_OPTIONS[] = {
+        {"png", no_argument, nullptr, 'p'},
+        {"help", no_argument, nullptr, 'h'},
+        {"hint-for-seamless", no_argument, nullptr, LongOpts::HintForSeamless},
+        {0, 0, 0, 0}};
+
+static int32_t flinger2bitmapFormat(PixelFormat f)
 {
     switch (f) {
         case PIXEL_FORMAT_RGB_565:
-            return kRGB_565_SkColorType;
+            return ANDROID_BITMAP_FORMAT_RGB_565;
         default:
-            return kN32_SkColorType;
-    }
-}
-
-static sk_sp<SkColorSpace> dataSpaceToColorSpace(ui::Dataspace d)
-{
-    switch (d) {
-        case ui::Dataspace::V0_SRGB:
-            return SkColorSpace::MakeSRGB();
-        case ui::Dataspace::DISPLAY_P3:
-            return SkColorSpace::MakeRGB(SkNamedTransferFn::kSRGB, SkNamedGamut::kDCIP3);
-        default:
-            return nullptr;
+            return ANDROID_BITMAP_FORMAT_RGBA_8888;
     }
 }
 
@@ -115,8 +127,8 @@ static status_t notifyMediaScanner(const char* fileName) {
     int status;
     int pid = fork();
     if (pid < 0){
-       fprintf(stderr, "Unable to fork in order to send intent for media scanner.\n");
-       return UNKNOWN_ERROR;
+        fprintf(stderr, "Unable to fork in order to send intent for media scanner.\n");
+        return UNKNOWN_ERROR;
     }
     if (pid == 0){
         int fd = open("/dev/null", O_WRONLY);
@@ -138,80 +150,30 @@ static status_t notifyMediaScanner(const char* fileName) {
     return NO_ERROR;
 }
 
-int main(int argc, char** argv)
-{
-    std::optional<PhysicalDisplayId> displayId = SurfaceComposerClient::getInternalDisplayId();
-    if (!displayId) {
-        fprintf(stderr, "Failed to get token for internal display\n");
+status_t capture(const DisplayId displayId,
+            const gui::CaptureArgs& captureArgs,
+            ScreenCaptureResults& outResult) {
+    sp<SyncScreenCaptureListener> captureListener = new SyncScreenCaptureListener();
+    ScreenshotClient::captureDisplay(displayId, captureArgs, captureListener);
+
+    ScreenCaptureResults captureResults = captureListener->waitForResults();
+    if (!captureResults.fenceResult.ok()) {
+        fprintf(stderr, "Failed to take screenshot. Status: %d\n",
+                fenceStatus(captureResults.fenceResult));
         return 1;
     }
 
-    const char* pname = argv[0];
-    bool png = false;
-    int c;
-    while ((c = getopt(argc, argv, "phd:")) != -1) {
-        switch (c) {
-            case 'p':
-                png = true;
-                break;
-            case 'd':
-                displayId = atoll(optarg);
-                break;
-            case '?':
-            case 'h':
-                usage(pname, *displayId);
-                return 1;
-        }
-    }
-    argc -= optind;
-    argv += optind;
+    outResult = captureResults;
 
-    int fd = -1;
-    const char* fn = NULL;
-    if (argc == 0) {
-        fd = dup(STDOUT_FILENO);
-    } else if (argc == 1) {
-        fn = argv[0];
-        fd = open(fn, O_WRONLY | O_CREAT | O_TRUNC, 0664);
-        if (fd == -1) {
-            fprintf(stderr, "Error opening file: %s (%s)\n", fn, strerror(errno));
-            return 1;
-        }
-        const int len = strlen(fn);
-        if (len >= 4 && 0 == strcmp(fn+len-4, ".png")) {
-            png = true;
-        }
-    }
+    return 0;
+}
 
-    if (fd == -1) {
-        usage(pname, *displayId);
-        return 1;
-    }
+status_t saveImage(const char* fn, bool png, const ScreenCaptureResults& captureResults) {
+    void* base = nullptr;
+    ui::Dataspace dataspace = captureResults.capturedDataspace;
+    sp<GraphicBuffer> buffer = captureResults.buffer;
 
-    void const* mapbase = MAP_FAILED;
-    ssize_t mapsize = -1;
-
-    void* base = NULL;
-    uint32_t w, s, h, f;
-    size_t size = 0;
-
-    // setThreadPoolMaxThreadCount(0) actually tells the kernel it's
-    // not allowed to spawn any additional threads, but we still spawn
-    // a binder thread from userspace when we call startThreadPool().
-    // See b/36066697 for rationale
-    ProcessState::self()->setThreadPoolMaxThreadCount(0);
-    ProcessState::self()->startThreadPool();
-
-    ui::Dataspace outDataspace;
-    sp<GraphicBuffer> outBuffer;
-
-    status_t result = ScreenshotClient::capture(*displayId, &outDataspace, &outBuffer);
-    if (result != NO_ERROR) {
-        close(fd);
-        return 1;
-    }
-
-    result = outBuffer->lock(GraphicBuffer::USAGE_SW_READ_OFTEN, &base);
+    status_t result = buffer->lock(GraphicBuffer::USAGE_SW_READ_OFTEN, &base);
 
     if (base == nullptr || result != NO_ERROR) {
         String8 reason;
@@ -221,37 +183,54 @@ int main(int argc, char** argv)
             reason = "Failed to write to buffer";
         }
         fprintf(stderr, "Failed to take screenshot (%s)\n", reason.c_str());
-        close(fd);
         return 1;
     }
 
-    w = outBuffer->getWidth();
-    h = outBuffer->getHeight();
-    s = outBuffer->getStride();
-    f = outBuffer->getPixelFormat();
-    size = s * h * bytesPerPixel(f);
+    int fd = -1;
+    if (fn == nullptr) {
+        fd = dup(STDOUT_FILENO);
+        if (fd == -1) {
+            fprintf(stderr, "Error writing to stdout. (%s)\n", strerror(errno));
+            return 1;
+        }
+    } else {
+        fd = open(fn, O_WRONLY | O_CREAT | O_TRUNC, 0664);
+        if (fd == -1) {
+            fprintf(stderr, "Error opening file: %s (%s)\n", fn, strerror(errno));
+            return 1;
+        }
+    }
 
     if (png) {
-        const SkImageInfo info =
-            SkImageInfo::Make(w, h, flinger2skia(f), kPremul_SkAlphaType,
-                              dataSpaceToColorSpace(outDataspace));
-        SkPixmap pixmap(info, base, s * bytesPerPixel(f));
-        struct FDWStream final : public SkWStream {
-          size_t fBytesWritten = 0;
-          int fFd;
-          FDWStream(int f) : fFd(f) {}
-          size_t bytesWritten() const override { return fBytesWritten; }
-          bool write(const void* buffer, size_t size) override {
-            fBytesWritten += size;
-            return size == 0 || ::write(fFd, buffer, size) > 0;
-          }
-        } fdStream(fd);
-        (void)SkEncodeImage(&fdStream, pixmap, SkEncodedImageFormat::kPNG, 100);
+        AndroidBitmapInfo info;
+        info.format = flinger2bitmapFormat(buffer->getPixelFormat());
+        info.flags = ANDROID_BITMAP_FLAGS_ALPHA_PREMUL;
+        info.width = buffer->getWidth();
+        info.height = buffer->getHeight();
+        info.stride = buffer->getStride() * bytesPerPixel(buffer->getPixelFormat());
+
+        int result = AndroidBitmap_compress(&info, static_cast<int32_t>(dataspace), base,
+                                            ANDROID_BITMAP_COMPRESS_FORMAT_PNG, 100, &fd,
+                                            [](void* fdPtr, const void* data, size_t size) -> bool {
+                                                int bytesWritten = write(*static_cast<int*>(fdPtr),
+                                                                         data, size);
+                                                return bytesWritten == size;
+                                            });
+
+        if (result != ANDROID_BITMAP_RESULT_SUCCESS) {
+            fprintf(stderr, "Failed to compress PNG (error code: %d)\n", result);
+        }
+
         if (fn != NULL) {
             notifyMediaScanner(fn);
         }
     } else {
-        uint32_t c = dataSpaceToInt(outDataspace);
+        uint32_t w = buffer->getWidth();
+        uint32_t h = buffer->getHeight();
+        uint32_t s = buffer->getStride();
+        uint32_t f = buffer->getPixelFormat();
+        uint32_t c = dataSpaceToInt(dataspace);
+
         write(fd, &w, 4);
         write(fd, &h, 4);
         write(fd, &f, 4);
@@ -263,8 +242,151 @@ int main(int argc, char** argv)
         }
     }
     close(fd);
-    if (mapbase != MAP_FAILED) {
-        munmap((void *)mapbase, mapsize);
+
+    return 0;
+}
+
+int main(int argc, char** argv)
+{
+    const std::vector<PhysicalDisplayId> physicalDisplays =
+        SurfaceComposerClient::getPhysicalDisplayIds();
+
+    if (physicalDisplays.empty()) {
+        fprintf(stderr, "Failed to get ID for any displays.\n");
+        return 1;
+    }
+    std::optional<DisplayId> displayIdOpt;
+    std::vector<DisplayId> displaysToCapture;
+    gui::CaptureArgs captureArgs;
+    const char* pname = argv[0];
+    bool png = false;
+    bool all = false;
+    int c;
+    while ((c = getopt_long(argc, argv, "aphd:", LONG_OPTIONS, nullptr)) != -1) {
+        switch (c) {
+            case 'p':
+                png = true;
+                break;
+            case 'd': {
+                errno = 0;
+                char* end = nullptr;
+                const uint64_t id = strtoull(optarg, &end, 10);
+                if (!end || *end != '\0' || errno == ERANGE) {
+                    fprintf(stderr, "Invalid display ID: Out of range [0, 2^64).\n");
+                    return 1;
+                }
+
+                displayIdOpt = DisplayId::fromValue(id);
+                if (!displayIdOpt) {
+                    fprintf(stderr, "Invalid display ID: Incorrect encoding.\n");
+                    return 1;
+                }
+                displaysToCapture.push_back(displayIdOpt.value());
+                break;
+            }
+            case 'a': {
+                all = true;
+                break;
+            }
+            case '?':
+            case 'h':
+                if (physicalDisplays.size() >= 1) {
+                    displayIdOpt = physicalDisplays.front();
+                }
+                usage(pname, displayIdOpt);
+                return 1;
+            case LongOpts::HintForSeamless:
+                captureArgs.hintForSeamlessTransition = true;
+                break;
+        }
+    }
+
+    argc -= optind;
+    argv += optind;
+
+    // We don't expect more than 2 arguments.
+    if (argc >= 2) {
+        if (physicalDisplays.size() >= 1) {
+            usage(pname, physicalDisplays.front());
+        } else {
+            usage(pname, std::nullopt);
+        }
+        return 1;
+    }
+
+    std::string baseName;
+    std::string suffix;
+
+    if (argc == 1) {
+        std::string_view filename = { argv[0] };
+        if (filename.ends_with(".png")) {
+            baseName = filename.substr(0, filename.size()-4);
+            suffix = ".png";
+            png = true;
+        } else {
+            baseName = filename;
+        }
+    }
+
+    if (all) {
+        // Ignores -d if -a is given.
+        displaysToCapture.clear();
+        for (int i = 0; i < physicalDisplays.size(); i++) {
+            displaysToCapture.push_back(physicalDisplays[i]);
+        }
+    }
+
+    if (displaysToCapture.empty()) {
+        displaysToCapture.push_back(physicalDisplays.front());
+        if (physicalDisplays.size() > 1) {
+            fprintf(stderr,
+                    "[Warning] Multiple displays were found, but no display id was specified! "
+                    "Defaulting to the first display found, however this default is not guaranteed "
+                    "to be consistent across captures. A display id should be specified.\n");
+            fprintf(stderr, "A display ID can be specified with the [-d display-id] option.\n");
+            fprintf(stderr, "See \"dumpsys SurfaceFlinger --display-id\" for valid display IDs.\n");
+        }
+    }
+
+    // setThreadPoolMaxThreadCount(0) actually tells the kernel it's
+    // not allowed to spawn any additional threads, but we still spawn
+    // a binder thread from userspace when we call startThreadPool().
+    // See b/36066697 for rationale
+    ProcessState::self()->setThreadPoolMaxThreadCount(0);
+    ProcessState::self()->startThreadPool();
+
+    std::vector<ScreenCaptureResults> results;
+    const size_t numDisplays = displaysToCapture.size();
+    for (int i=0; i<numDisplays; i++) {
+        ScreenCaptureResults result;
+
+        // 1. Capture the screen
+        if (const status_t captureStatus =
+            capture(displaysToCapture[i], captureArgs, result) != 0) {
+
+            fprintf(stderr, "Capturing failed.\n");
+            return captureStatus;
+        }
+
+        // 2. Save the capture result as an image.
+        // When there's more than one file to capture, add the index as postfix.
+        std::string filename;
+        if (!baseName.empty()) {
+            filename = baseName;
+            if (numDisplays > 1) {
+                filename += "_";
+                filename += std::to_string(i);
+            }
+            filename += suffix;
+        }
+        const char* fn = nullptr;
+        if (!filename.empty()) {
+            fn = filename.c_str();
+        }
+        if (const status_t saveImageStatus = saveImage(fn, png, result) != 0) {
+            fprintf(stderr, "Saving image failed.\n");
+            return saveImageStatus;
+        }
     }
 
     return 0;

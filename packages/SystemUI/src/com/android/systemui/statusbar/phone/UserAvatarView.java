@@ -25,7 +25,7 @@ import android.util.AttributeSet;
 import android.view.View;
 
 import com.android.settingslib.drawable.UserIconDrawable;
-import com.android.systemui.R;
+import com.android.systemui.res.R;
 
 /**
  * A view that displays a user image cropped to a circle with an optional frame.
@@ -136,5 +136,9 @@ public class UserAvatarView extends View {
         }
         mDrawable.setIconDrawable(d);
         mDrawable.setBadgeIfManagedUser(getContext(), userId);
+    }
+
+    public boolean isEmpty() {
+        return mDrawable.isEmpty();
     }
 }

@@ -16,8 +16,6 @@
 
 package com.android.server.wm;
 
-import com.android.internal.R;
-
 import android.app.AlertDialog;
 import android.content.Context;
 import android.content.pm.ApplicationInfo;
@@ -27,13 +25,13 @@ import android.view.Window;
 import android.view.WindowManager;
 import android.widget.CheckBox;
 
-public class UnsupportedDisplaySizeDialog {
-    private final AlertDialog mDialog;
-    private final String mPackageName;
+import com.android.internal.R;
 
-    public UnsupportedDisplaySizeDialog(final AppWarnings manager, Context context,
-            ApplicationInfo appInfo) {
-        mPackageName = appInfo.packageName;
+class UnsupportedDisplaySizeDialog extends AppWarnings.BaseDialog {
+
+    UnsupportedDisplaySizeDialog(final AppWarnings manager, Context context,
+            ApplicationInfo appInfo, int userId) {
+        super(manager, context, appInfo.packageName, userId);
 
         final PackageManager pm = context.getPackageManager();
         final CharSequence label = appInfo.loadSafeLabel(pm,
@@ -61,18 +59,6 @@ public class UnsupportedDisplaySizeDialog {
         final CheckBox alwaysShow = mDialog.findViewById(R.id.ask_checkbox);
         alwaysShow.setChecked(true);
         alwaysShow.setOnCheckedChangeListener((buttonView, isChecked) -> manager.setPackageFlag(
-                mPackageName, AppWarnings.FLAG_HIDE_DISPLAY_SIZE, !isChecked));
-    }
-
-    public String getPackageName() {
-        return mPackageName;
-    }
-
-    public void show() {
-        mDialog.show();
-    }
-
-    public void dismiss() {
-        mDialog.dismiss();
+                mUserId, mPackageName, AppWarnings.FLAG_HIDE_DISPLAY_SIZE, !isChecked));
     }
 }

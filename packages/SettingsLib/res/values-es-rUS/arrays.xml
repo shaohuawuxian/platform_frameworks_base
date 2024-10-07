@@ -40,7 +40,7 @@
     <item msgid="8339720953594087771">"Conectando a <xliff:g id="NETWORK_NAME">%1$s</xliff:g>…"</item>
     <item msgid="3028983857109369308">"Autenticando con <xliff:g id="NETWORK_NAME">%1$s</xliff:g>…"</item>
     <item msgid="4287401332778341890">"Obteniendo dirección IP de <xliff:g id="NETWORK_NAME">%1$s</xliff:g>…"</item>
-    <item msgid="1043944043827424501">"Conectado a <xliff:g id="NETWORK_NAME">%1$s</xliff:g>"</item>
+    <item msgid="1043944043827424501">"Se estableció conexión con <xliff:g id="NETWORK_NAME">%1$s</xliff:g>"</item>
     <item msgid="7445993821842009653">"Suspendido"</item>
     <item msgid="1175040558087735707">"Desconectando de <xliff:g id="NETWORK_NAME">%1$s</xliff:g>…"</item>
     <item msgid="699832486578171722">"Desconectado"</item>
@@ -62,6 +62,17 @@
     <item msgid="695678520785580527">"Inhabilitado"</item>
     <item msgid="6336372935919715515">"Filtrado habilitado"</item>
     <item msgid="2779123106632690576">"Habilitado"</item>
+  </string-array>
+  <string-array name="bt_hci_snoop_log_filters_entries">
+    <item msgid="195768089203590086">"Dejar solo los encabezados de LCA"</item>
+    <item msgid="2776218217644557831">"Filtrar los paquetes multimedia A2DP"</item>
+    <item msgid="8163235976612675092">"Filtrar el canal RFCOMM"</item>
+  </string-array>
+  <string-array name="bt_hci_snoop_log_profile_filter_entries">
+    <item msgid="3961868665260627524">"Inhabilitar"</item>
+    <item msgid="2505973306504851132">"Completar con una cadena de caracteres"</item>
+    <item msgid="5883011000629613855">"Dejar solo el encabezado"</item>
+    <item msgid="1051534112762023603">"Quitar por completo"</item>
   </string-array>
   <string-array name="bluetooth_avrcp_versions">
     <item msgid="6603880723315236832">"AVRCP 1.5 (predeterminado)"</item>
@@ -92,6 +103,8 @@
     <item msgid="1049450003868150455">"Audio <xliff:g id="QUALCOMM">Qualcomm®</xliff:g> <xliff:g id="APTX">aptX™</xliff:g>"</item>
     <item msgid="2908219194098827570">"Audio <xliff:g id="QUALCOMM">Qualcomm®</xliff:g> <xliff:g id="APTX_HD">aptX™ HD</xliff:g>"</item>
     <item msgid="3825367753087348007">"LDAC"</item>
+    <item msgid="328951785723550863">"LC3"</item>
+    <item msgid="506175145534048710">"Opus"</item>
   </string-array>
   <string-array name="bluetooth_a2dp_codec_summaries">
     <item msgid="8868109554557331312">"Usar selección del sistema (predeterminado)"</item>
@@ -100,6 +113,8 @@
     <item msgid="8627333814413492563">"Audio <xliff:g id="QUALCOMM">Qualcomm®</xliff:g> <xliff:g id="APTX">aptX™</xliff:g>"</item>
     <item msgid="3517061573669307965">"Audio <xliff:g id="QUALCOMM">Qualcomm®</xliff:g> <xliff:g id="APTX_HD">aptX™ HD</xliff:g>"</item>
     <item msgid="2553206901068987657">"LDAC"</item>
+    <item msgid="3940992993241040716">"LC3"</item>
+    <item msgid="7940970833006181407">"Opus"</item>
   </string-array>
   <string-array name="bluetooth_a2dp_codec_sample_rate_titles">
     <item msgid="926809261293414607">"Usar selección del sistema (predeterminado)"</item>
@@ -171,10 +186,10 @@
   </string-array>
   <string-array name="select_logd_size_summaries">
     <item msgid="409235464399258501">"Desactivado"</item>
-    <item msgid="4195153527464162486">"64 K/búfer registro"</item>
-    <item msgid="7464037639415220106">"256 K/búfer registro"</item>
-    <item msgid="8539423820514360724">"1 M/búfer registro"</item>
-    <item msgid="1984761927103140651">"4 M/búfer registro"</item>
+    <item msgid="4195153527464162486">"64 K/búfer de registro"</item>
+    <item msgid="7464037639415220106">"256 K/búfer de registro"</item>
+    <item msgid="8539423820514360724">"1 M/búfer de registro"</item>
+    <item msgid="1984761927103140651">"4 M/búfer de registro"</item>
     <item msgid="2983219471251787208">"8 M/búfer de registro"</item>
   </string-array>
   <string-array name="select_logpersist_titles">
@@ -224,11 +239,11 @@
     <item msgid="7051983425968643928">"720 píxeles (seguro)"</item>
     <item msgid="7765795608738980305">"1080 píxeles"</item>
     <item msgid="8084293856795803592">"1080 píxeles (seguro)"</item>
-    <item msgid="938784192903353277">"4 K"</item>
+    <item msgid="938784192903353277">"4K"</item>
     <item msgid="8612549335720461635">"4 K (seguro)"</item>
     <item msgid="7322156123728520872">"4 K (mejorado)"</item>
     <item msgid="7735692090314849188">"4 K (mejorado, seguro)"</item>
-    <item msgid="7346816300608639624">"720 píxeles y 1080 píxeles (pantalla doble)"</item>
+    <item msgid="7346816300608639624">"720 y 1080 píxeles (Dual Screen)"</item>
   </string-array>
   <string-array name="enable_opengl_traces_entries">
     <item msgid="4433736508877934305">"Ninguna"</item>
@@ -266,5 +281,11 @@
     <item msgid="3825132913289380004">"RNDIS (USB Ethernet)"</item>
     <item msgid="8828567335701536560">"Fuente de audio"</item>
     <item msgid="8688681727755534982">"MIDI"</item>
+  </string-array>
+  <string-array name="grammatical_gender_values">
+    <item msgid="4976102487934077239">"0"</item>
+    <item msgid="2646486108212979598">"1"</item>
+    <item msgid="3753634915787796632">"2"</item>
+    <item msgid="4779928470672877922">"3"</item>
   </string-array>
 </resources>

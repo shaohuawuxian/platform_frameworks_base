@@ -1,11 +1,11 @@
 #include "CreateJavaOutputStreamAdaptor.h"
 #include "SkData.h"
-#include "SkMalloc.h"
 #include "SkRefCnt.h"
 #include "SkStream.h"
 #include "SkTypes.h"
 #include "Utils.h"
 
+#include <cstdlib>
 #include <nativehelper/JNIHelp.h>
 #include <log/log.h>
 #include <memory>
@@ -107,7 +107,7 @@ private:
             jint n = env->CallIntMethod(fJavaInputStream,
                                         gInputStream_readMethodID, fJavaByteArray, 0, requested);
             if (checkException(env)) {
-                SkDebugf("---- read threw an exception\n");
+                ALOGD("---- read threw an exception\n");
                 return bytesRead;
             }
 
@@ -119,7 +119,7 @@ private:
             env->GetByteArrayRegion(fJavaByteArray, 0, n,
                                     reinterpret_cast<jbyte*>(buffer));
             if (checkException(env)) {
-                SkDebugf("---- read:GetByteArrayRegion threw an exception\n");
+                ALOGD("---- read:GetByteArrayRegion threw an exception\n");
                 return bytesRead;
             }
 
@@ -136,7 +136,7 @@ private:
         jlong skipped = env->CallLongMethod(fJavaInputStream,
                                             gInputStream_skipMethodID, (jlong)size);
         if (checkException(env)) {
-            SkDebugf("------- skip threw an exception\n");
+            ALOGD("------- skip threw an exception\n");
             return 0;
         }
         if (skipped < 0) {
@@ -177,35 +177,44 @@ SkStream* CreateJavaInputStreamAdaptor(JNIEnv* env, jobject stream, jbyteArray s
     return JavaInputStreamAdaptor::Create(env, stream, storage, swallowExceptions);
 }
 
-static SkMemoryStream* adaptor_to_mem_stream(SkStream* stream) {
-    SkASSERT(stream != NULL);
+static void free_pointer_skproc(const void* ptr, void*) {
+    free((void*)ptr);
+}
+
+sk_sp<SkData> CopyJavaInputStream(JNIEnv* env, jobject inputStream, jbyteArray storage) {
+    std::unique_ptr<SkStream> stream(CreateJavaInputStreamAdaptor(env, inputStream, storage));
+    if (!stream) {
+        return nullptr;
+    }
+
     size_t bufferSize = 4096;
     size_t streamLen = 0;
     size_t len;
-    char* data = (char*)sk_malloc_throw(bufferSize);
+    char* data = (char*)malloc(bufferSize);
+    LOG_ALWAYS_FATAL_IF(!data);
 
     while ((len = stream->read(data + streamLen,
                                bufferSize - streamLen)) != 0) {
         streamLen += len;
         if (streamLen == bufferSize) {
             bufferSize *= 2;
-            data = (char*)sk_realloc_throw(data, bufferSize);
+            data = (char*)realloc(data, bufferSize);
+            LOG_ALWAYS_FATAL_IF(!data);
         }
     }
-    data = (char*)sk_realloc_throw(data, streamLen);
-
-    SkMemoryStream* streamMem = new SkMemoryStream();
-    streamMem->setMemoryOwned(data, streamLen);
-    return streamMem;
-}
-
-SkStreamRewindable* CopyJavaInputStream(JNIEnv* env, jobject stream,
-                                        jbyteArray storage) {
-    std::unique_ptr<SkStream> adaptor(CreateJavaInputStreamAdaptor(env, stream, storage));
-    if (NULL == adaptor.get()) {
-        return NULL;
+    if (streamLen == 0) {
+        // realloc with size 0 is unspecified behavior in C++11
+        free(data);
+        data = nullptr;
+    } else {
+        // Trim down the buffer to the actual size of the data.
+        LOG_FATAL_IF(streamLen > bufferSize);
+        data = (char*)realloc(data, streamLen);
+        LOG_ALWAYS_FATAL_IF(!data);
     }
-    return adaptor_to_mem_stream(adaptor.get());
+    // Just in case sk_free differs from free, we ask Skia to use
+    // free to cleanup the buffer that SkData wraps.
+    return SkData::MakeWithProc(data, streamLen, free_pointer_skproc, nullptr);
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -243,7 +252,7 @@ public:
             if (env->ExceptionCheck()) {
                 env->ExceptionDescribe();
                 env->ExceptionClear();
-                SkDebugf("--- write:SetByteArrayElements threw an exception\n");
+                ALOGD("--- write:SetByteArrayElements threw an exception\n");
                 return false;
             }
 
@@ -252,7 +261,7 @@ public:
             if (env->ExceptionCheck()) {
                 env->ExceptionDescribe();
                 env->ExceptionClear();
-                SkDebugf("------- write threw an exception\n");
+                ALOGD("------- write threw an exception\n");
                 return false;
             }
 

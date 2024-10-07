@@ -63,7 +63,7 @@ public class LinearGradient extends Shader {
      * @param colors       The sRGB colors to be distributed along the gradient line
      * @param positions    May be null. The relative positions [0..1] of
      *                     each corresponding color in the colors array. If this is null,
-     *                     the the colors are distributed evenly along the gradient line.
+     *                     the colors are distributed evenly along the gradient line.
      * @param tile         The Shader tiling mode
      */
     public LinearGradient(float x0, float y0, float x1, float y1, @NonNull @ColorInt int[] colors,
@@ -82,7 +82,7 @@ public class LinearGradient extends Shader {
      * @param colors       The colors to be distributed along the gradient line
      * @param positions    May be null. The relative positions [0..1] of
      *                     each corresponding color in the colors array. If this is null,
-     *                     the the colors are distributed evenly along the gradient line.
+     *                     the colors are distributed evenly along the gradient line.
      * @param tile         The Shader tiling mode
      *
      * @throws IllegalArgumentException if there are less than two colors, the colors do
@@ -152,8 +152,9 @@ public class LinearGradient extends Shader {
         this(x0, y0, x1, y1, new long[] {color0, color1}, null, tile);
     }
 
+    /** @hide */
     @Override
-    long createNativeInstance(long nativeMatrix) {
+    protected long createNativeInstance(long nativeMatrix, boolean filterFromPaint) {
         return nativeCreate(nativeMatrix, mX0, mY0, mX1, mY1,
                 mColorLongs, mPositions, mTileMode.nativeInt,
                 colorSpace().getNativeInstance());

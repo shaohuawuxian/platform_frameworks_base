@@ -21,7 +21,6 @@
 #include <gui/DisplayEventReceiver.h>
 #include <input/DisplayViewport.h>
 #include <input/Input.h>
-#include <ui/DisplayInfo.h>
 #include <utils/BitSet.h>
 #include <utils/Looper.h>
 #include <utils/RefBase.h>
@@ -73,13 +72,16 @@ protected:
     virtual ~PointerControllerPolicyInterface() {}
 
 public:
-    virtual void loadPointerIcon(SpriteIcon* icon, int32_t displayId) = 0;
-    virtual void loadPointerResources(PointerResources* outResources, int32_t displayId) = 0;
+    virtual void loadPointerIcon(SpriteIcon* icon, ui::LogicalDisplayId displayId) = 0;
+    virtual void loadPointerResources(PointerResources* outResources,
+                                      ui::LogicalDisplayId displayId) = 0;
     virtual void loadAdditionalMouseResources(
-            std::map<int32_t, SpriteIcon>* outResources,
-            std::map<int32_t, PointerAnimation>* outAnimationResources, int32_t displayId) = 0;
-    virtual int32_t getDefaultPointerIconId() = 0;
-    virtual int32_t getCustomPointerIconId() = 0;
+            std::map<PointerIconStyle, SpriteIcon>* outResources,
+            std::map<PointerIconStyle, PointerAnimation>* outAnimationResources,
+            ui::LogicalDisplayId displayId) = 0;
+    virtual PointerIconStyle getDefaultPointerIconId() = 0;
+    virtual PointerIconStyle getDefaultStylusIconId() = 0;
+    virtual PointerIconStyle getCustomPointerIconId() = 0;
 };
 
 /*
@@ -90,7 +92,7 @@ public:
 class PointerControllerContext {
 public:
     PointerControllerContext(const sp<PointerControllerPolicyInterface>& policy,
-                             const sp<Looper>& looper, const sp<SpriteController>& spriteController,
+                             const sp<Looper>& looper, SpriteController& spriteController,
                              PointerController& controller);
     ~PointerControllerContext();
 
@@ -101,18 +103,19 @@ public:
 
     nsecs_t getAnimationTime();
 
-    void clearSpotsByDisplay(int32_t displayId);
+    void clearSpotsByDisplay(ui::LogicalDisplayId displayId);
 
     void setHandlerController(std::shared_ptr<PointerController> controller);
     void setCallbackController(std::shared_ptr<PointerController> controller);
 
     sp<PointerControllerPolicyInterface> getPolicy();
-    sp<SpriteController> getSpriteController();
+    SpriteController& getSpriteController();
 
     void handleDisplayEvents();
 
-    void addAnimationCallback(int32_t displayId, std::function<bool(nsecs_t)> callback);
-    void removeAnimationCallback(int32_t displayId);
+    void addAnimationCallback(ui::LogicalDisplayId displayId,
+                              std::function<bool(nsecs_t)> callback);
+    void removeAnimationCallback(ui::LogicalDisplayId displayId);
 
     class MessageHandler : public virtual android::MessageHandler {
     public:
@@ -135,8 +138,8 @@ private:
     public:
         PointerAnimator(PointerControllerContext& context);
 
-        void addCallback(int32_t displayId, std::function<bool(nsecs_t)> callback);
-        void removeCallback(int32_t displayId);
+        void addCallback(ui::LogicalDisplayId displayId, std::function<bool(nsecs_t)> callback);
+        void removeCallback(ui::LogicalDisplayId displayId);
         void handleVsyncEvents();
         nsecs_t getAnimationTimeLocked();
 
@@ -147,7 +150,7 @@ private:
             bool animationPending{false};
             nsecs_t animationTime{systemTime(SYSTEM_TIME_MONOTONIC)};
 
-            std::unordered_map<int32_t, std::function<bool(nsecs_t)>> callbacks;
+            std::unordered_map<ui::LogicalDisplayId, std::function<bool(nsecs_t)>> callbacks;
         } mLocked GUARDED_BY(mLock);
 
         DisplayEventReceiver mDisplayEventReceiver;
@@ -161,7 +164,7 @@ private:
 
     sp<PointerControllerPolicyInterface> mPolicy;
     sp<Looper> mLooper;
-    sp<SpriteController> mSpriteController;
+    SpriteController& mSpriteController;
     sp<MessageHandler> mHandler;
     sp<LooperCallback> mCallback;
 

@@ -24,6 +24,7 @@ import android.os.Parcelable;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
+import java.util.Objects;
 
 /**
  * A representation of an app target event.
@@ -60,6 +61,11 @@ public final class AppTargetEvent implements Parcelable {
      */
     public static final int ACTION_UNPIN = 4;
 
+    /**
+     * Event type constant indicating an app target has been un-dismissed.
+     */
+    public static final int ACTION_UNDISMISS = 5;
+
     private final AppTarget mTarget;
     private final String mLocation;
     private final int mAction;
@@ -72,7 +78,7 @@ public final class AppTargetEvent implements Parcelable {
     }
 
     private AppTargetEvent(Parcel parcel) {
-        mTarget = parcel.readParcelable(null);
+        mTarget = parcel.readParcelable(null, android.app.prediction.AppTarget.class);
         mLocation = parcel.readString();
         mAction = parcel.readInt();
     }
@@ -108,6 +114,13 @@ public final class AppTargetEvent implements Parcelable {
         return mTarget.equals(other.mTarget)
                 && mLocation.equals(other.mLocation)
                 && mAction == other.mAction;
+    }
+
+    @Override
+    public int hashCode() {
+        int hashCode = Objects.hash(mTarget, mLocation);
+        hashCode = 31 * hashCode + mAction;
+        return hashCode;
     }
 
     @Override

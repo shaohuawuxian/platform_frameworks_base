@@ -31,6 +31,7 @@ import static android.app.usage.UsageEvents.Event.KEYGUARD_SHOWN;
 import static android.app.usage.UsageEvents.Event.LOCUS_ID_SET;
 import static android.app.usage.UsageEvents.Event.NOTIFICATION_INTERRUPTION;
 import static android.app.usage.UsageEvents.Event.ROLLOVER_FOREGROUND_SERVICE;
+import static android.app.usage.UsageEvents.Event.USER_INTERACTION;
 import static android.app.usage.UsageEvents.Event.SCREEN_INTERACTIVE;
 import static android.app.usage.UsageEvents.Event.SCREEN_NON_INTERACTIVE;
 import static android.app.usage.UsageEvents.Event.SHORTCUT_INVOCATION;
@@ -42,7 +43,9 @@ import android.app.usage.EventList;
 import android.app.usage.EventStats;
 import android.app.usage.UsageEvents.Event;
 import android.app.usage.UsageStats;
+import android.app.usage.UsageStatsManager;
 import android.content.res.Configuration;
+import android.os.PersistableBundle;
 import android.text.TextUtils;
 import android.util.ArrayMap;
 import android.util.ArraySet;
@@ -54,6 +57,7 @@ import android.util.proto.ProtoInputStream;
 import com.android.internal.annotations.VisibleForTesting;
 
 import java.io.IOException;
+import java.util.Arrays;
 import java.util.List;
 
 public class IntervalStats {
@@ -459,13 +463,14 @@ public class IntervalStats {
      */
     private boolean deobfuscateUsageStats(PackagesTokenData packagesTokenData) {
         boolean dataOmitted = false;
+        final ArraySet<Integer> omittedTokens = new ArraySet<>();
         final int usageStatsSize = packageStatsObfuscated.size();
         for (int statsIndex = 0; statsIndex < usageStatsSize; statsIndex++) {
             final int packageToken = packageStatsObfuscated.keyAt(statsIndex);
             final UsageStats usageStats = packageStatsObfuscated.valueAt(statsIndex);
             usageStats.mPackageName = packagesTokenData.getPackageString(packageToken);
             if (usageStats.mPackageName == null) {
-                Slog.e(TAG, "Unable to parse usage stats package " + packageToken);
+                omittedTokens.add(packageToken);
                 dataOmitted = true;
                 continue;
             }
@@ -477,8 +482,6 @@ public class IntervalStats {
                 final int actionToken = usageStats.mChooserCountsObfuscated.keyAt(actionIndex);
                 final String action = packagesTokenData.getString(packageToken, actionToken);
                 if (action == null) {
-                    Slog.i(TAG, "Unable to parse chooser action " + actionToken
-                            + " for package " + packageToken);
                     continue;
                 }
                 final SparseIntArray categoryCounts =
@@ -489,8 +492,6 @@ public class IntervalStats {
                     final String category = packagesTokenData.getString(packageToken,
                             categoryToken);
                     if (category == null) {
-                        Slog.i(TAG, "Unable to parse chooser category " + categoryToken
-                                + " for package " + packageToken);
                         continue;
                     }
                     categoryCountsMap.put(category, categoryCounts.valueAt(categoryIndex));
@@ -498,6 +499,10 @@ public class IntervalStats {
                 usageStats.mChooserCounts.put(action, categoryCountsMap);
             }
             packageStats.put(usageStats.mPackageName, usageStats);
+        }
+        if (dataOmitted) {
+            Slog.d(TAG, "Unable to parse usage stats packages: "
+                    + Arrays.toString(omittedTokens.toArray()));
         }
         return dataOmitted;
     }
@@ -511,12 +516,13 @@ public class IntervalStats {
      */
     private boolean deobfuscateEvents(PackagesTokenData packagesTokenData) {
         boolean dataOmitted = false;
+        final ArraySet<Integer> omittedTokens = new ArraySet<>();
         for (int i = this.events.size() - 1; i >= 0; i--) {
             final Event event = this.events.get(i);
             final int packageToken = event.mPackageToken;
             event.mPackage = packagesTokenData.getPackageString(packageToken);
             if (event.mPackage == null) {
-                Slog.e(TAG, "Unable to parse event package " + packageToken);
+                omittedTokens.add(packageToken);
                 this.events.remove(i);
                 dataOmitted = true;
                 continue;
@@ -524,26 +530,14 @@ public class IntervalStats {
 
             if (event.mClassToken != PackagesTokenData.UNASSIGNED_TOKEN) {
                 event.mClass = packagesTokenData.getString(packageToken, event.mClassToken);
-                if (event.mClass == null) {
-                    Slog.i(TAG, "Unable to parse class " + event.mClassToken
-                            + " for package " + packageToken);
-                }
             }
             if (event.mTaskRootPackageToken != PackagesTokenData.UNASSIGNED_TOKEN) {
                 event.mTaskRootPackage = packagesTokenData.getString(packageToken,
                         event.mTaskRootPackageToken);
-                if (event.mTaskRootPackage == null) {
-                    Slog.i(TAG, "Unable to parse task root package " + event.mTaskRootPackageToken
-                            + " for package " + packageToken);
-                }
             }
             if (event.mTaskRootClassToken != PackagesTokenData.UNASSIGNED_TOKEN) {
                 event.mTaskRootClass = packagesTokenData.getString(packageToken,
                         event.mTaskRootClassToken);
-                if (event.mTaskRootClass == null) {
-                    Slog.i(TAG, "Unable to parse task root class " + event.mTaskRootClassToken
-                            + " for package " + packageToken);
-                }
             }
             switch (event.mEventType) {
                 case CONFIGURATION_CHANGE:
@@ -555,7 +549,7 @@ public class IntervalStats {
                     event.mShortcutId = packagesTokenData.getString(packageToken,
                             event.mShortcutIdToken);
                     if (event.mShortcutId == null) {
-                        Slog.e(TAG, "Unable to parse shortcut " + event.mShortcutIdToken
+                        Slog.v(TAG, "Unable to parse shortcut " + event.mShortcutIdToken
                                 + " for package " + packageToken);
                         this.events.remove(i);
                         dataOmitted = true;
@@ -566,7 +560,7 @@ public class IntervalStats {
                     event.mNotificationChannelId = packagesTokenData.getString(packageToken,
                             event.mNotificationChannelIdToken);
                     if (event.mNotificationChannelId == null) {
-                        Slog.e(TAG, "Unable to parse notification channel "
+                        Slog.v(TAG, "Unable to parse notification channel "
                                 + event.mNotificationChannelIdToken + " for package "
                                 + packageToken);
                         this.events.remove(i);
@@ -577,14 +571,35 @@ public class IntervalStats {
                 case LOCUS_ID_SET:
                     event.mLocusId = packagesTokenData.getString(packageToken, event.mLocusIdToken);
                     if (event.mLocusId == null) {
-                        Slog.e(TAG, "Unable to parse locus " + event.mLocusIdToken
+                        Slog.v(TAG, "Unable to parse locus " + event.mLocusIdToken
                                 + " for package " + packageToken);
                         this.events.remove(i);
                         dataOmitted = true;
                         continue;
                     }
                     break;
+                case USER_INTERACTION:
+                    if (event.mUserInteractionExtrasToken != null) {
+                        String category = packagesTokenData.getString(packageToken,
+                                event.mUserInteractionExtrasToken.mCategoryToken);
+                        String action = packagesTokenData.getString(packageToken,
+                                event.mUserInteractionExtrasToken.mActionToken);
+                        if (TextUtils.isEmpty(category) || TextUtils.isEmpty(action)) {
+                            this.events.remove(i);
+                            dataOmitted = true;
+                            continue;
+                        }
+                        event.mExtras = new PersistableBundle();
+                        event.mExtras.putString(UsageStatsManager.EXTRA_EVENT_CATEGORY, category);
+                        event.mExtras.putString(UsageStatsManager.EXTRA_EVENT_ACTION, action);
+                        event.mUserInteractionExtrasToken = null;
+                    }
+                    break;
             }
+        }
+        if (dataOmitted) {
+            Slog.d(TAG, "Unable to parse event packages: "
+                    + Arrays.toString(omittedTokens.toArray()));
         }
         return dataOmitted;
     }
@@ -697,13 +712,30 @@ public class IntervalStats {
                                 event.mPackage, event.mLocusId);
                     }
                     break;
+                case USER_INTERACTION:
+                    if (event.mExtras != null && event.mExtras.size() != 0) {
+                        final String category = event.mExtras.getString(
+                                UsageStatsManager.EXTRA_EVENT_CATEGORY);
+                        final String action = event.mExtras.getString(
+                                UsageStatsManager.EXTRA_EVENT_ACTION);
+                        if (!TextUtils.isEmpty(category) && !TextUtils.isEmpty(action)) {
+                            event.mUserInteractionExtrasToken =
+                                    new Event.UserInteractionEventExtrasToken();
+                            event.mUserInteractionExtrasToken.mCategoryToken =
+                                    packagesTokenData.getTokenOrAdd(packageToken, event.mPackage,
+                                            category);
+                            event.mUserInteractionExtrasToken.mActionToken =
+                                    packagesTokenData.getTokenOrAdd(packageToken, event.mPackage,
+                                            action);
+                        }
+                    }
+                    break;
             }
         }
     }
 
     /**
      * Obfuscates the data in this instance of interval stats.
-     *
      * @hide
      */
     public void obfuscateData(PackagesTokenData packagesTokenData) {

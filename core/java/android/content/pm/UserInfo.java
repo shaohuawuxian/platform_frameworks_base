@@ -16,10 +16,14 @@
 
 package android.content.pm;
 
+import android.annotation.FlaggedApi;
 import android.annotation.IntDef;
 import android.annotation.NonNull;
+import android.annotation.Nullable;
+import android.annotation.TestApi;
 import android.annotation.UserIdInt;
 import android.compat.annotation.UnsupportedAppUsage;
+import android.content.res.Resources;
 import android.os.Parcel;
 import android.os.Parcelable;
 import android.os.UserHandle;
@@ -47,6 +51,8 @@ import java.lang.annotation.RetentionPolicy;
  *
  * @hide
  */
+@TestApi
+@android.ravenwood.annotation.RavenwoodKeepWholeClass
 public class UserInfo implements Parcelable {
 
     /**
@@ -56,10 +62,17 @@ public class UserInfo implements Parcelable {
      */
 
     /**
-     * Primary user. Only one user can have this flag set. It identifies the first human user
-     * on a device. This flag is not supported in headless system user mode.
+     * Primary user. In practice, this is just synonymous with {@link #FLAG_SYSTEM}.
+     *
+     * <p>On many devices, this will also be the first human user.
+     * However, in {@link UserManager#isHeadlessSystemUserMode() headless system user mode}, this
+     * should be regarded as unsupported since the system user may not be a human.
+     *
+     * @deprecated For checking for user 0, use {@link #FLAG_SYSTEM}.
+     *             For checking for the designated "main human user", use {@link #FLAG_MAIN}.
      */
     @UnsupportedAppUsage
+    @Deprecated
     public static final int FLAG_PRIMARY = 0x00000001;
 
     /**
@@ -98,6 +111,12 @@ public class UserInfo implements Parcelable {
 
     /**
      * Indicates that this user is disabled.
+     *
+     * <p> This is currently used to indicate that a Managed Profile, when created via
+     * DevicePolicyManager, has not yet been provisioned; once the DPC provisions it, a DPM call
+     * will manually set it to enabled.
+     *
+     * <p>Users that are slated for deletion are also generally set to disabled.
      *
      * <p>Note: If an ephemeral user is disabled, it shouldn't be later re-enabled. Ephemeral users
      * are disabled as their removal is in progress to indicate that they shouldn't be re-entered.
@@ -140,6 +159,44 @@ public class UserInfo implements Parcelable {
     public static final int FLAG_PROFILE = 0x00001000;
 
     /**
+     * Indicates that this user is created in ephemeral mode via
+     * {@link IUserManager} create user.
+     *
+     * When a user is created with {@link #FLAG_EPHEMERAL}, {@link #FLAG_EPHEMERAL_ON_CREATE}
+     * is set internally within the user manager.
+     *
+     * When {@link #FLAG_EPHEMERAL_ON_CREATE} is set {@link IUserManager.setUserEphemeral}
+     * has no effect because a user that was created ephemeral can never be made non-ephemeral.
+     *
+     * {@link #FLAG_EPHEMERAL_ON_CREATE} should NOT be set by client's of user manager
+     *
+     * @hide
+     */
+    public static final int FLAG_EPHEMERAL_ON_CREATE = 0x00002000;
+
+    /**
+     * Indicates that this user is the designated main user on the device. This user may have access
+     * to certain features which are limited to at most one user.
+     *
+     * <p>Currently, this will be the first user to go through setup on the device, but in future
+     * releases this status may be transferable or may even not be given to any users.
+     *
+     * <p>This is not necessarily the system user. For example, it will not be the system user on
+     * devices for which {@link UserManager#isHeadlessSystemUserMode()} returns true.
+     */
+    public static final int FLAG_MAIN = 0x00004000;
+
+    /**
+     * Indicates that this user was created for the purposes of testing.
+     *
+     * <p>These users are subject to removal during tests and should not be used on actual devices
+     * used by humans.
+     *
+     * @hide
+     */
+    public static final int FLAG_FOR_TESTING = 0x00008000;
+
+    /**
      * @hide
      */
     @IntDef(flag = true, prefix = "FLAG_", value = {
@@ -155,7 +212,10 @@ public class UserInfo implements Parcelable {
             FLAG_DEMO,
             FLAG_FULL,
             FLAG_SYSTEM,
-            FLAG_PROFILE
+            FLAG_PROFILE,
+            FLAG_EPHEMERAL_ON_CREATE,
+            FLAG_MAIN,
+            FLAG_FOR_TESTING
     })
     @Retention(RetentionPolicy.SOURCE)
     public @interface UserInfoFlag {
@@ -168,7 +228,7 @@ public class UserInfo implements Parcelable {
     @UnsupportedAppUsage
     public int serialNumber;
     @UnsupportedAppUsage
-    public String name;
+    public @Nullable String name;
     @UnsupportedAppUsage
     public String iconPath;
     @UnsupportedAppUsage
@@ -209,14 +269,17 @@ public class UserInfo implements Parcelable {
     public boolean guestToRemove;
 
     /**
-     * This is used to optimize the creation of an user, i.e. OEMs might choose to pre-create a
+     * This is used to optimize the creation of a user, i.e. OEMs might choose to pre-create a
      * number of users at the first boot, so the actual creation later is faster.
      *
      * <p>A {@code preCreated} user is not a real user yet, so it should not show up on regular
      * user operations (other than user creation per se).
      *
-     * <p>Once the pre-created is used to create a "real" user later on, {@code preCreate} is set to
-     * {@code false}.
+     * <p>Once the pre-created is used to create a "real" user later on, {@code preCreated} is set
+     * to {@code false}.
+     *
+     * <p><b>NOTE: Pre-created users are deprecated. This field remains to be able to recognize
+     * pre-created users in older versions, but will eventually be removed.
      */
     public boolean preCreated;
 
@@ -225,6 +288,9 @@ public class UserInfo implements Parcelable {
      * user.
      *
      * <p><b>NOTE: </b>only used for debugging purposes, it's not set when marshalled to a parcel.
+     *
+     * <p><b>NOTE: Pre-created users are deprecated. This field remains to be able to recognize
+     * pre-created users in older versions, but will eventually ve removed.
      */
     public boolean convertedFromPreCreated;
 
@@ -290,7 +356,12 @@ public class UserInfo implements Parcelable {
         }
     }
 
+    /**
+     * @deprecated For checking for user 0, compare {@link #id} to {@link UserHandle#USER_SYSTEM}.
+     *             For checking for the designated "main human user", use {@link #isMain()}.
+     */
     @UnsupportedAppUsage
+    @Deprecated
     public boolean isPrimary() {
         return (flags & FLAG_PRIMARY) == FLAG_PRIMARY;
     }
@@ -319,6 +390,21 @@ public class UserInfo implements Parcelable {
         return UserManager.isUserTypeManagedProfile(userType);
     }
 
+    public boolean isCloneProfile() {
+        return UserManager.isUserTypeCloneProfile(userType);
+    }
+
+    @FlaggedApi(android.multiuser.Flags.FLAG_SUPPORT_COMMUNAL_PROFILE)
+    public boolean isCommunalProfile() {
+        return UserManager.isUserTypeCommunalProfile(userType);
+    }
+
+    @FlaggedApi(android.os.Flags.FLAG_ALLOW_PRIVATE_PROFILE)
+    public boolean isPrivateProfile() {
+        return UserManager.isUserTypePrivateProfile(userType);
+    }
+
+    /** See {@link #FLAG_DISABLED}*/
     @UnsupportedAppUsage
     public boolean isEnabled() {
         return (flags & FLAG_DISABLED) != FLAG_DISABLED;
@@ -332,12 +418,18 @@ public class UserInfo implements Parcelable {
         return (flags & FLAG_EPHEMERAL) == FLAG_EPHEMERAL;
     }
 
+    /** @hide */
+    @TestApi
+    public boolean isForTesting() {
+        return (flags & FLAG_FOR_TESTING) == FLAG_FOR_TESTING;
+    }
+
     public boolean isInitialized() {
         return (flags & FLAG_INITIALIZED) == FLAG_INITIALIZED;
     }
 
     public boolean isDemo() {
-        return UserManager.isUserTypeDemo(userType);
+        return UserManager.isUserTypeDemo(userType) || (flags & FLAG_DEMO) != 0;
     }
 
     public boolean isFull() {
@@ -345,45 +437,47 @@ public class UserInfo implements Parcelable {
     }
 
     /**
-     * Returns true if the user is a split system user.
-     * <p>If {@link UserManager#isSplitSystemUser split system user mode} is not enabled,
-     * the method always returns false.
+     * @see #FLAG_MAIN
      */
-    public boolean isSystemOnly() {
-        return isSystemOnly(id);
-    }
-
-    /**
-     * Returns true if the given user is a split system user.
-     * <p>If {@link UserManager#isSplitSystemUser split system user mode} is not enabled,
-     * the method always returns false.
-     */
-    public static boolean isSystemOnly(int userId) {
-        return userId == UserHandle.USER_SYSTEM && UserManager.isSplitSystemUser();
+    public boolean isMain() {
+        return (flags & FLAG_MAIN) == FLAG_MAIN;
     }
 
     /**
      * @return true if this user can be switched to.
      **/
+    @android.ravenwood.annotation.RavenwoodThrow
     public boolean supportsSwitchTo() {
-        if (isEphemeral() && !isEnabled()) {
-            // Don't support switching to an ephemeral user with removal in progress.
+        if (partial || !isEnabled()) {
+            // Don't support switching to disabled or partial users, which includes users with
+            // removal in progress.
             return false;
         }
         if (preCreated) {
             // Don't support switching to pre-created users until they become "real" users.
             return false;
         }
-        return !isProfile();
+        return isFull() || canSwitchToHeadlessSystemUser();
+    }
+
+    /**
+     * @return true if user is of type {@link UserManager#USER_TYPE_SYSTEM_HEADLESS} and
+     * {@link com.android.internal.R.bool.config_canSwitchToHeadlessSystemUser} is true.
+     */
+    @android.ravenwood.annotation.RavenwoodThrow
+    private boolean canSwitchToHeadlessSystemUser() {
+        return UserManager.USER_TYPE_SYSTEM_HEADLESS.equals(userType) && Resources.getSystem()
+                .getBoolean(com.android.internal.R.bool.config_canSwitchToHeadlessSystemUser);
     }
 
     /**
      * @return true if this user can be switched to by end user through UI.
+     * @deprecated Use {@link UserInfo#supportsSwitchTo} instead.
      */
+    @Deprecated
+    @android.ravenwood.annotation.RavenwoodThrow
     public boolean supportsSwitchToByUser() {
-        // Hide the system user when it does not represent a human user.
-        boolean hideSystemUser = UserManager.isHeadlessSystemUserMode();
-        return (!hideSystemUser || id != UserHandle.USER_SYSTEM) && supportsSwitchTo();
+        return supportsSwitchTo();
     }
 
     // TODO(b/142482943): Make this logic more specific and customizable. (canHaveProfile(userType))
@@ -392,11 +486,7 @@ public class UserInfo implements Parcelable {
         if (isProfile() || isGuest() || isRestricted()) {
             return false;
         }
-        if (UserManager.isSplitSystemUser() || UserManager.isHeadlessSystemUserMode()) {
-            return id != UserHandle.USER_SYSTEM;
-        } else {
-            return id == UserHandle.USER_SYSTEM;
-        }
+        return isMain();
     }
 
     // TODO(b/142482943): Get rid of this (after removing it from all tests) if feasible.

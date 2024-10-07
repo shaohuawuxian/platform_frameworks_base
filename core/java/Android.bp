@@ -9,28 +9,90 @@ package {
     default_applicable_licenses: ["frameworks_base_license"],
 }
 
+aidl_library {
+    name: "HardwareBuffer_aidl",
+    hdrs: ["android/hardware/HardwareBuffer.aidl"],
+}
+
 filegroup {
     name: "framework-core-sources",
     srcs: [
         "**/*.java",
         "**/*.aidl",
+        ":framework-nfc-non-updatable-sources",
+        ":ranging_stack_mock_initializer",
+    ],
+    exclude_srcs: [
+        "android/ranging/**/*.java",
     ],
     visibility: ["//frameworks/base"],
 }
 
-filegroup {
-    name: "IKeyAttestationApplicationIdProvider.aidl",
-    srcs: ["android/security/keymaster/IKeyAttestationApplicationIdProvider.aidl"],
+//Mock to allow service registry for ranging stack.
+//TODO(b/331206299): Remove this after RELEASE_RANGING_STACK is ramped up to next.
+soong_config_module_type {
+    name: "ranging_stack_framework_mock_init",
+    module_type: "genrule",
+    config_namespace: "bootclasspath",
+    bool_variables: [
+        "release_ranging_stack",
+    ],
+    properties: [
+        "srcs",
+        "cmd",
+        "out",
+    ],
+}
+
+// The actual RangingFrameworkInitializer is present in packages/modules/Uwb/ranging/framework.
+// Mock RangingFrameworkInitializer does nothing and allows to successfully build
+// SystemServiceRegistry after registering for system service in SystemServiceRegistry both with
+// and without build flag RELEASE_RANGING_STACK enabled.
+ranging_stack_framework_mock_init {
+    name: "ranging_stack_mock_initializer",
+    soong_config_variables: {
+        release_ranging_stack: {
+            cmd: "touch $(out)",
+            // Adding an empty file as out is mandatory.
+            out: ["android/ranging/empty_ranging_fw.txt"],
+            conditions_default: {
+                srcs: ["android/ranging/mock/RangingFrameworkInitializer.java"],
+                cmd: "mkdir -p android/ranging/; cp $(in) $(out);",
+                out: ["android/ranging/RangingFrameworkInitializer.java"],
+            },
+        },
+    },
+}
+
+aidl_library {
+    name: "IDropBoxManagerService_aidl",
+    srcs: [
+        "com/android/internal/os/IDropBoxManagerService.aidl",
+    ],
+    hdrs: [
+        "android/os/DropBoxManager.aidl",
+    ],
 }
 
 filegroup {
-    name: "IDropBoxManagerService.aidl",
-    srcs: ["com/android/internal/os/IDropBoxManagerService.aidl"],
+    name: "IBinaryTransparencyService.aidl",
+    srcs: ["com/android/internal/os/IBinaryTransparencyService.aidl"],
 }
 
 filegroup {
     name: "ITracingServiceProxy.aidl",
     srcs: ["android/tracing/ITracingServiceProxy.aidl"],
+}
+
+filegroup {
+    name: "TraceReportParams.aidl",
+    srcs: ["android/tracing/TraceReportParams.aidl"],
+}
+
+filegroup {
+    name: "framework-internal-display-sources",
+    srcs: ["com/android/internal/display/BrightnessSynchronizer.java"],
+    visibility: ["//frameworks/base/services/tests/mockingservicestests"],
 }
 
 // These are subset of framework-core-sources that are needed by the
@@ -104,6 +166,7 @@ filegroup {
     srcs: [
         "android/os/IExternalVibrationController.aidl",
         "android/os/IExternalVibratorService.aidl",
+        "android/os/ExternalVibrationScale.aidl",
     ],
 }
 
@@ -115,7 +178,38 @@ filegroup {
         "android/os/IThermalEventListener.aidl",
         "android/os/IThermalStatusListener.aidl",
         "android/os/IThermalService.aidl",
+        "android/os/IPowerManager.aidl",
+        "android/os/IWakeLockCallback.aidl",
     ],
+}
+
+aidl_interface {
+    name: "android.os.hintmanager_aidl",
+    srcs: [
+        "android/os/IHintManager.aidl",
+        "android/os/IHintSession.aidl",
+    ],
+    unstable: true,
+    backend: {
+        java: {
+            sdk_version: "module_current",
+            enabled: true,
+        },
+        cpp: {
+            enabled: false,
+        },
+        ndk: {
+            enabled: true,
+        },
+    },
+    imports: [
+        "android.hardware.power-V5",
+    ],
+}
+
+aidl_library {
+    name: "ILogcatManagerService_aidl",
+    srcs: ["android/os/logcat/ILogcatManagerService.aidl"],
 }
 
 genrule {
@@ -126,24 +220,32 @@ genrule {
     out: ["com/android/internal/util/FrameworkStatsLog.java"],
 }
 
+// Library that provides functionality to log UiEvents in framework space.
+// If this functionality is needed outside the framework, the interfaces library
+// can be re-used and a local implementation is needed.
 java_library {
     name: "uieventloggerlib",
     srcs: [
-        "com/android/internal/logging/UiEvent.java",
-        "com/android/internal/logging/UiEventLogger.java",
         "com/android/internal/logging/UiEventLoggerImpl.java",
-        "com/android/internal/logging/InstanceId.java",
-        "com/android/internal/logging/InstanceIdSequence.java",
         ":statslog-framework-java-gen",
     ],
+    libs: [
+        "androidx.annotation_annotation",
+    ],
+    static_libs: ["modules-utils-uieventlogger-interface"],
 }
 
-filegroup {
-    name: "framework-services-net-module-wifi-shared-srcs",
-    srcs: [
-        "android/net/DhcpResults.java",
-        "android/util/LocalLog.java",
+java_library {
+    name: "modules-utils-locallog",
+    srcs: ["android/util/LocalLog.java"],
+    libs: ["unsupportedappusage"],
+    sdk_version: "module_current",
+    min_sdk_version: "30",
+    apex_available: [
+        "//apex_available:anyapex",
+        "//apex_available:platform",
     ],
+    visibility: ["//visibility:public"],
 }
 
 // keep these files in sync with the package/Tethering/jarjar-rules.txt and
@@ -151,14 +253,64 @@ filegroup {
 filegroup {
     name: "framework-connectivity-shared-srcs",
     srcs: [
+        "android/util/IndentingPrintWriter.java",
         "android/util/LocalLog.java",
         // This should be android.util.IndentingPrintWriter, but it's not available in all branches.
         "com/android/internal/util/IndentingPrintWriter.java",
-        "com/android/internal/util/IState.java",
         "com/android/internal/util/MessageUtils.java",
-        "com/android/internal/util/State.java",
-        "com/android/internal/util/StateMachine.java",
         "com/android/internal/util/WakeupMessage.java",
+    ],
+}
+
+// keep these files in sync with the packages/modules/Connectivity jarjar-rules.txt for
+// the connectivity module.
+filegroup {
+    name: "framework-connectivity-api-shared-srcs",
+    srcs: [
+        "android/util/IndentingPrintWriter.java",
+        "com/android/internal/util/FileRotator.java",
+    ],
+}
+
+// keep these files in sync with the apex/jobscheduler/service jarjar-rules.txt for
+// the jobscheduler module.
+filegroup {
+    name: "framework-jobscheduler-shared-srcs",
+    srcs: [
+        ":modules-utils-preconditions-srcs",
+        "com/android/internal/util/ArrayUtils.java",
+        "com/android/internal/util/BitUtils.java",
+        "com/android/internal/util/CollectionUtils.java",
+        "com/android/internal/util/ConcurrentUtils.java",
+        "com/android/internal/util/DumpUtils.java",
+        "com/android/internal/util/FastPrintWriter.java",
+        "com/android/internal/util/FunctionalUtils.java",
+        "com/android/internal/util/ParseUtils.java",
+        "com/android/internal/util/RingBufferIndices.java",
+        "com/android/internal/util/StatLogger.java",
+        "com/android/internal/util/XmlUtils.java",
+    ],
+}
+
+// Keep these files in sync with the apex/permission/jarjar-rules.txt for the permission module.
+filegroup {
+    name: "framework-permission-s-shared-srcs",
+    srcs: [
+        ":modules-utils-preconditions-srcs",
+        "com/android/internal/infra/AndroidFuture.java",
+        "com/android/internal/infra/ServiceConnector.java",
+        "com/android/internal/infra/AndroidFuture.aidl",
+        "com/android/internal/infra/IAndroidFuture.aidl",
+        "android/os/HandlerExecutor.java",
+    ],
+}
+
+// Keep these files in sync with the apex/permission/jarjar-rules.txt for the permission module.
+filegroup {
+    name: "service-permission-shared-srcs",
+    srcs: [
+        "android/util/IndentingPrintWriter.java",
+        "com/android/internal/util/dump/DualDumpOutputStream.java",
     ],
 }
 
@@ -189,8 +341,10 @@ filegroup {
     name: "incremental_manager_aidl",
     srcs: [
         "android/os/incremental/IIncrementalService.aidl",
+        "android/os/incremental/IStorageLoadingProgressListener.aidl",
         "android/os/incremental/IncrementalNewFileParams.aidl",
         "android/os/incremental/IStorageHealthListener.aidl",
+        "android/os/incremental/PerUidReadTimeouts.aidl",
         "android/os/incremental/StorageHealthCheckParams.aidl",
     ],
 }
@@ -198,71 +352,93 @@ filegroup {
 filegroup {
     name: "activity_manager_procstate_aidl",
     srcs: [
-        // internal only
+        "android/app/ProcessStateEnum.aidl",
     ],
 }
 
-aidl_interface {
-    name: "libincremental_aidl",
-    unstable: true,
+filegroup {
+    name: "hwbinder-stubs-srcs",
+    srcs: [
+        "android/os/HidlSupport.java",
+        "android/os/HidlMemory.java",
+        "android/os/HwBinder.java",
+        "android/os/HwBlob.java",
+        "android/os/HwParcel.java",
+        "android/os/IHwBinder.java",
+        "android/os/IHwInterface.java",
+        "android/os/DeadObjectException.java",
+        "android/os/DeadSystemException.java",
+        "android/os/NativeHandle.java",
+        "android/os/RemoteException.java",
+        "android/util/AndroidException.java",
+    ],
+    visibility: [
+        "//frameworks/base",
+        "//frameworks/base/api",
+    ],
+}
+
+cc_defaults {
+    name: "incremental_default",
+    cflags: [
+        "-Wall",
+        "-Wextra",
+        "-Wextra-semi",
+        "-Werror",
+        "-Wzero-as-null-pointer-constant",
+        "-DANDROID_BASE_UNIQUE_FD_DISABLE_IMPLICIT_CONVERSION",
+    ],
+    shared_libs: [
+        "libbinder",
+        "libutils",
+    ],
+    aidl: {
+        include_dirs: [
+            "frameworks/native/aidl/binder",
+        ],
+        export_aidl_headers: true,
+    },
+}
+
+cc_library {
+    name: "libincremental_aidl-cpp",
     srcs: [
         ":incremental_aidl",
     ],
-    backend: {
-        java: {
-            sdk_version: "28",
-        },
-        cpp: {
-            enabled: true,
-        },
-        ndk: {
-            enabled: true,
-        },
-    },
+    defaults: ["incremental_default"],
 }
 
-aidl_interface {
-    name: "libdataloader_aidl",
-    unstable: true,
+cc_library {
+    name: "libdataloader_aidl-cpp",
     srcs: [
         ":dataloader_aidl",
     ],
-    imports: [
-        "libincremental_aidl",
+    defaults: ["incremental_default"],
+    shared_libs: [
+        "libincremental_aidl-cpp",
     ],
-    backend: {
-        java: {
-            sdk_version: "28",
-        },
-        cpp: {
-            enabled: true,
-        },
-        ndk: {
-            enabled: false,
-        },
-    },
 }
 
-aidl_interface {
-    name: "libincremental_manager_aidl",
-    unstable: true,
+cc_library {
+    name: "libincremental_manager_aidl-cpp",
     srcs: [
         ":incremental_manager_aidl",
     ],
-    imports: [
-        "libincremental_aidl",
-        "libdataloader_aidl",
+    defaults: ["incremental_default"],
+    shared_libs: [
+        "libincremental_aidl-cpp",
+        "libdataloader_aidl-cpp",
     ],
-    backend: {
-        java: {
-            sdk_version: "28",
-        },
-        cpp: {
-            enabled: true,
-        },
-        ndk: {
-            enabled: false,
-        },
+}
+
+cc_library {
+    name: "libactivity_manager_procstate_aidl-cpp",
+    host_supported: true,
+    srcs: [
+        ":activity_manager_procstate_aidl",
+    ],
+    aidl: {
+        export_aidl_headers: true,
     },
 }
 
@@ -277,8 +453,62 @@ aidl_interface {
     backend: {
         rust: {
             enabled: true,
+            apex_available: [
+                "//apex_available:platform",
+                "com.android.virt", // for virtualizationservice
+            ],
         },
     },
+}
+
+// Build Rust bindings for remote provisioning. Needed by keystore2.
+aidl_interface {
+    name: "android.security.rkp_aidl",
+    unstable: true,
+    srcs: [
+        "android/security/rkp/*.aidl",
+    ],
+    backend: {
+        rust: {
+            enabled: true,
+            apex_available: [
+                "//apex_available:platform",
+                "com.android.virt",
+            ],
+        },
+    },
+}
+
+aidl_interface {
+    name: "android.debug_aidl",
+    unstable: true,
+    srcs: [
+        "android/debug/AdbTransportType.aidl",
+        "android/debug/FingerprintAndPairDevice.aidl",
+        "android/debug/IAdbCallback.aidl",
+        "android/debug/IAdbManager.aidl",
+        "android/debug/PairDevice.aidl",
+    ],
+    backend: {
+        cpp: {
+            enabled: true,
+        },
+    },
+}
+
+aidl_interface {
+    name: "android.companion.virtual.virtualdevice_aidl",
+    unstable: true,
+    host_supported: true,
+    srcs: [
+        "android/companion/virtualnative/IVirtualDeviceManagerNative.aidl",
+    ],
+    local_include_dir: ".",
+}
+
+filegroup {
+    name: "frameworks-base-java-overview",
+    srcs: ["overview.html"],
 }
 
 // Avoid including Parcelable classes as we don't want to have two copies of
@@ -289,50 +519,53 @@ filegroup {
     srcs: [
         "android/os/RegistrantList.java",
         "android/os/Registrant.java",
+        "android/util/IndentingPrintWriter.java",
         "android/util/LocalLog.java",
         "android/util/TimeUtils.java",
         "com/android/internal/os/SomeArgs.java",
         "com/android/internal/util/AsyncChannel.java",
         "com/android/internal/util/AsyncService.java",
         "com/android/internal/util/BitwiseInputStream.java",
-        "com/android/internal/util/FastXmlSerializer.java",
         "com/android/internal/util/HexDump.java",
-        "com/android/internal/util/IState.java",
         "com/android/internal/util/IndentingPrintWriter.java",
-        "com/android/internal/util/Preconditions.java",
-        "com/android/internal/util/State.java",
-        "com/android/internal/util/StateMachine.java",
         "com/android/internal/util/UserIcons.java",
-    ],
-}
-
-// Avoid including Parcelable classes as we don't want to have two copies of
-// Parcelable cross the process.
-filegroup {
-    name: "framework-cellbroadcast-shared-srcs",
-    srcs: [
-        "android/os/HandlerExecutor.java",
-        "android/util/LocalLog.java",
-        "com/android/internal/util/IState.java",
-        "com/android/internal/util/Preconditions.java",
-        "com/android/internal/util/State.java",
-        "com/android/internal/util/StateMachine.java",
     ],
 }
 
 filegroup {
     name: "framework-ims-common-shared-srcs",
     srcs: [
+        ":modules-utils-preconditions-srcs",
         "android/os/RegistrantList.java",
         "android/os/Registrant.java",
         "com/android/internal/os/SomeArgs.java",
-        "com/android/internal/util/Preconditions.java",
     ],
 }
 
+// This file group is used by service fuzzer
 filegroup {
-    name: "framework-wifi-util-lib-aidls",
-    srcs: ["android/content/pm/ParceledListSlice.aidl"],
+    name: "framework-core-sources-for-fuzzers",
+    srcs: [
+        "android/os/IInterface.java",
+        "android/os/Binder.java",
+        "android/os/IBinder.java",
+        "android/os/Parcelable.java",
+    ],
+}
+
+aidl_interface {
+    name: "android.os.statsbootstrap_aidl",
+    unstable: true,
+    srcs: [
+        "android/os/IStatsBootstrapAtomService.aidl",
+        "android/os/StatsBootstrapAtom.aidl",
+        "android/os/StatsBootstrapAtomValue.aidl",
+    ],
+    backend: {
+        cpp: {
+            enabled: true,
+        },
+    },
 }
 
 // utility classes statically linked into wifi-service
@@ -342,12 +575,8 @@ filegroup {
         "android/net/InterfaceConfiguration.java",
         "android/util/BackupUtils.java",
         "android/util/Rational.java",
-        "com/android/internal/util/FastXmlSerializer.java",
         "com/android/internal/util/HexDump.java",
-        "com/android/internal/util/IState.java",
         "com/android/internal/util/MessageUtils.java",
-        "com/android/internal/util/State.java",
-        "com/android/internal/util/StateMachine.java",
         "com/android/internal/util/WakeupMessage.java",
     ],
     visibility: [
@@ -355,3 +584,56 @@ filegroup {
         "//packages/modules/Wifi/service",
     ],
 }
+
+// protolog start
+filegroup {
+    name: "protolog-common-src",
+    srcs: [
+        "com/android/internal/protolog/common/**/*.java",
+    ],
+}
+
+java_library {
+    name: "protolog-group",
+    srcs: [
+        "com/android/internal/protolog/common/IProtoLogGroup.java",
+    ],
+}
+
+// PackageManager common
+filegroup {
+    name: "framework-pm-common-shared-srcs",
+    srcs: [
+        "com/android/server/pm/pkg/AndroidPackage.java",
+        "com/android/server/pm/pkg/AndroidPackageSplit.java",
+    ],
+}
+
+filegroup {
+    name: "protolog-impl",
+    srcs: [
+        "com/android/internal/protolog/ProtoLogImpl.java",
+    ],
+}
+
+java_library {
+    name: "protolog-lib",
+    platform_apis: true,
+    srcs: [
+        "com/android/internal/protolog/ProtoLogImpl.java",
+        "com/android/internal/protolog/ProtoLogViewerConfigReader.java",
+    ],
+    static_libs: [
+        "perfetto_trace_javastream_protos_jarjar",
+    ],
+}
+
+java_library {
+    name: "protolog-groups",
+    srcs: [
+        "com/android/internal/protolog/ProtoLogGroup.java",
+        ":protolog-common-src",
+    ],
+}
+
+// protolog end

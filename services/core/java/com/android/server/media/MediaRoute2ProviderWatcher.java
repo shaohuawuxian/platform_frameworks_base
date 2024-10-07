@@ -16,6 +16,8 @@
 
 package com.android.server.media;
 
+import static android.content.pm.PackageManager.GET_RESOLVED_FILTER;
+
 import android.annotation.NonNull;
 import android.content.BroadcastReceiver;
 import android.content.ComponentName;
@@ -31,9 +33,12 @@ import android.os.UserHandle;
 import android.util.Log;
 import android.util.Slog;
 
+import com.android.media.flags.Flags;
+
 import java.io.PrintWriter;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Iterator;
 
 /**
  * Watches changes of packages, or scan them for finding media route providers.
@@ -41,6 +46,8 @@ import java.util.Collections;
 final class MediaRoute2ProviderWatcher {
     private static final String TAG = "MR2ProviderWatcher";
     private static final boolean DEBUG = Log.isLoggable(TAG, Log.DEBUG);
+    private static final PackageManager.ResolveInfoFlags RESOLVE_INFO_FLAGS =
+            PackageManager.ResolveInfoFlags.of(GET_RESOLVED_FILTER);
 
     private final Context mContext;
     private final Callback mCallback;
@@ -61,10 +68,15 @@ final class MediaRoute2ProviderWatcher {
     }
 
     public void dump(PrintWriter pw, String prefix) {
-        pw.println(prefix + "Watcher");
-        pw.println(prefix + "  mUserId=" + mUserId);
-        pw.println(prefix + "  mRunning=" + mRunning);
-        pw.println(prefix + "  mProxies.size()=" + mProxies.size());
+        pw.println(prefix + "MediaRoute2ProviderWatcher");
+        prefix += "  ";
+        if (mProxies.isEmpty()) {
+            pw.println(prefix + "<no provider service proxies>");
+        } else {
+            for (MediaRoute2ProviderServiceProxy proxy : mProxies) {
+                proxy.dump(pw, prefix);
+            }
+        }
     }
 
     public void start() {
@@ -76,7 +88,9 @@ final class MediaRoute2ProviderWatcher {
             filter.addAction(Intent.ACTION_PACKAGE_REMOVED);
             filter.addAction(Intent.ACTION_PACKAGE_CHANGED);
             filter.addAction(Intent.ACTION_PACKAGE_REPLACED);
-            filter.addAction(Intent.ACTION_PACKAGE_RESTARTED);
+            if (!Flags.enablePreventionOfKeepAliveRouteProviders()) {
+                filter.addAction(Intent.ACTION_PACKAGE_RESTARTED);
+            }
             filter.addDataScheme("package");
             mContext.registerReceiverAsUser(mScanPackagesReceiver,
                     new UserHandle(mUserId), filter, null, mHandler);
@@ -110,23 +124,40 @@ final class MediaRoute2ProviderWatcher {
         // Reorder the list so that providers left at the end will be the ones to remove.
         int targetIndex = 0;
         Intent intent = new Intent(MediaRoute2ProviderService.SERVICE_INTERFACE);
-        for (ResolveInfo resolveInfo : mPackageManager.queryIntentServicesAsUser(
-                intent, 0, mUserId)) {
+        for (ResolveInfo resolveInfo :
+                mPackageManager.queryIntentServicesAsUser(intent, RESOLVE_INFO_FLAGS, mUserId)) {
             ServiceInfo serviceInfo = resolveInfo.serviceInfo;
             if (serviceInfo != null) {
+                boolean isSelfScanOnlyProvider = false;
+                Iterator<String> categoriesIterator = resolveInfo.filter.categoriesIterator();
+                if (categoriesIterator != null) {
+                    while (categoriesIterator.hasNext()) {
+                        isSelfScanOnlyProvider |=
+                                MediaRoute2ProviderService.CATEGORY_SELF_SCAN_ONLY.equals(
+                                        categoriesIterator.next());
+                    }
+                }
                 int sourceIndex = findProvider(serviceInfo.packageName, serviceInfo.name);
                 if (sourceIndex < 0) {
                     MediaRoute2ProviderServiceProxy proxy =
-                            new MediaRoute2ProviderServiceProxy(mContext,
-                            new ComponentName(serviceInfo.packageName, serviceInfo.name),
-                            mUserId);
-                    proxy.start();
+                            new MediaRoute2ProviderServiceProxy(
+                                    mContext,
+                                    mHandler.getLooper(),
+                                    new ComponentName(serviceInfo.packageName, serviceInfo.name),
+                                    isSelfScanOnlyProvider,
+                                    mUserId);
+                    Slog.i(
+                            TAG,
+                            "Enabling proxy for MediaRoute2ProviderService: "
+                                    + proxy.mComponentName);
+                    proxy.start(/* rebindIfDisconnected= */ false);
                     mProxies.add(targetIndex++, proxy);
                     mCallback.onAddProviderService(proxy);
                 } else if (sourceIndex >= targetIndex) {
                     MediaRoute2ProviderServiceProxy proxy = mProxies.get(sourceIndex);
-                    proxy.start(); // restart the proxy if needed
-                    proxy.rebindIfDisconnected();
+                    proxy.start(
+                            /* rebindIfDisconnected= */
+                                    !Flags.enablePreventionOfKeepAliveRouteProviders());
                     Collections.swap(mProxies, sourceIndex, targetIndex++);
                 }
             }
@@ -136,6 +167,9 @@ final class MediaRoute2ProviderWatcher {
         if (targetIndex < mProxies.size()) {
             for (int i = mProxies.size() - 1; i >= targetIndex; i--) {
                 MediaRoute2ProviderServiceProxy proxy = mProxies.get(i);
+                Slog.i(
+                        TAG,
+                        "Disabling proxy for MediaRoute2ProviderService: " + proxy.mComponentName);
                 mCallback.onRemoveProviderService(proxy);
                 mProxies.remove(proxy);
                 proxy.stop();

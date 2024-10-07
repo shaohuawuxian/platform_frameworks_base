@@ -68,7 +68,7 @@ public final class PhoneAccountSuggestion implements Parcelable {
 
     /**
      * Creates a new instance of {@link PhoneAccountSuggestion}. This constructor is intended for
-     * use by apps implementing a {@link PhoneAccountSuggestionService}, and generally should not be
+     * use by apps implementing a {@code PhoneAccountSuggestionService}, and generally should not be
      * used by dialer apps other than for testing purposes.
      *
      * @param handle The {@link PhoneAccountHandle} for this suggestion.
@@ -84,7 +84,7 @@ public final class PhoneAccountSuggestion implements Parcelable {
     }
 
     private PhoneAccountSuggestion(Parcel in) {
-        mHandle = in.readParcelable(PhoneAccountHandle.class.getClassLoader());
+        mHandle = in.readParcelable(PhoneAccountHandle.class.getClassLoader(), android.telecom.PhoneAccountHandle.class);
         mReason = in.readInt();
         mShouldAutoSelect = in.readByte() != 0;
     }

@@ -21,7 +21,14 @@ import android.util.AndroidException;
 
 /**
  * Parent exception for all Binder remote-invocation errors
+ *
+ * Note: not all exceptions from binder services will be subclasses of this.
+ *   For instance, RuntimeException and several subclasses of it may be
+ *   thrown as well as OutOfMemoryException.
+ *
+ * One common subclass is {@link DeadObjectException}.
  */
+@android.ravenwood.annotation.RavenwoodKeepWholeClass
 public class RemoteException extends AndroidException {
     public RemoteException() {
         super();
@@ -35,6 +42,11 @@ public class RemoteException extends AndroidException {
     public RemoteException(String message, Throwable cause, boolean enableSuppression,
             boolean writableStackTrace) {
         super(message, cause, enableSuppression, writableStackTrace);
+    }
+
+    /** @hide */
+    public RemoteException(Throwable cause) {
+        this(cause.getMessage(), cause, true, false);
     }
 
     /**
@@ -55,7 +67,7 @@ public class RemoteException extends AndroidException {
     /**
      * Rethrow this exception when we know it came from the system server. This
      * gives us an opportunity to throw a nice clean
-     * {@link DeadSystemException} signal to avoid spamming logs with
+     * {@code DeadSystemRuntimeException} signal to avoid spamming logs with
      * misleading stack traces.
      * <p>
      * Apps making calls into the system server may end up persisting internal
@@ -68,7 +80,7 @@ public class RemoteException extends AndroidException {
     @NonNull
     public RuntimeException rethrowFromSystemServer() {
         if (this instanceof DeadObjectException) {
-            throw new RuntimeException(new DeadSystemException());
+            throw new DeadSystemRuntimeException();
         } else {
             throw new RuntimeException(this);
         }

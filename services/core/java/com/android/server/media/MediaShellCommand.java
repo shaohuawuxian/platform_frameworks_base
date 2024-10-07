@@ -16,6 +16,7 @@
 
 package com.android.server.media;
 
+import android.annotation.NonNull;
 import android.app.ActivityThread;
 import android.content.Context;
 import android.media.MediaMetadata;
@@ -38,6 +39,7 @@ import android.view.KeyEvent;
 
 import java.io.BufferedReader;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.PrintWriter;
 import java.util.List;
@@ -46,25 +48,31 @@ import java.util.List;
  * ShellCommand for MediaSessionService.
  */
 public class MediaShellCommand extends ShellCommand {
-    // This doesn't belongs to any package. Setting the package name to empty string.
-    private static final String PACKAGE_NAME = "";
     private static ActivityThread sThread;
     private static MediaSessionManager sMediaSessionManager;
+
+    private final String mPackageName;
     private ISessionManager mSessionService;
     private PrintWriter mWriter;
     private PrintWriter mErrorWriter;
+    private InputStream mInput;
+
+    public MediaShellCommand(String packageName) {
+        mPackageName = packageName;
+    }
 
     @Override
     public int onCommand(String cmd) {
         mWriter = getOutPrintWriter();
         mErrorWriter = getErrPrintWriter();
+        mInput = getRawInputStream();
 
         if (TextUtils.isEmpty(cmd)) {
             return handleDefaultCommands(cmd);
         }
         if (sThread == null) {
             Looper.prepare();
-            sThread = ActivityThread.systemMain();
+            sThread = ActivityThread.currentActivityThread();
             Context context = sThread.getSystemContext();
             sMediaSessionManager =
                     (MediaSessionManager) context.getSystemService(Context.MEDIA_SESSION_SERVICE);
@@ -85,6 +93,8 @@ public class MediaShellCommand extends ShellCommand {
                 runMonitor();
             } else if (cmd.equals("volume")) {
                 runVolume();
+            } else if (cmd.equals("expire-temp-engaged-sessions")) {
+                expireTempEngagedSessions();
             } else {
                 showError("Error: unknown command '" + cmd + "'");
                 return -1;
@@ -100,24 +110,28 @@ public class MediaShellCommand extends ShellCommand {
     public void onHelp() {
         mWriter.println("usage: media_session [subcommand] [options]");
         mWriter.println("       media_session dispatch KEY");
-        mWriter.println("       media_session dispatch KEY");
         mWriter.println("       media_session list-sessions");
         mWriter.println("       media_session monitor <tag>");
         mWriter.println("       media_session volume [options]");
+        mWriter.println("       media_session expire-temp-engaged-sessions");
         mWriter.println();
         mWriter.println("media_session dispatch: dispatch a media key to the system.");
         mWriter.println("                KEY may be: play, pause, play-pause, mute, headsethook,");
-        mWriter.println("                stop, next, previous, rewind, record, fast-forword.");
+        mWriter.println("                stop, next, previous, rewind, record, fast-forward.");
         mWriter.println("media_session list-sessions: print a list of the current sessions.");
         mWriter.println("media_session monitor: monitor updates to the specified session.");
         mWriter.println("                       Use the tag from list-sessions.");
         mWriter.println("media_session volume:  " + VolumeCtrl.USAGE);
+        mWriter.println("media_session expire-temp-engaged-sessions: Expires any ongoing");
+        mWriter.println("                timers for media sessions in a temporary user-engaged");
+        mWriter.println("                state.");
         mWriter.println();
     }
 
     private void sendMediaKey(KeyEvent event) {
         try {
-            mSessionService.dispatchMediaKeyEvent(PACKAGE_NAME, false, event, false);
+            mSessionService.dispatchMediaKeyEvent(
+                    mPackageName, /* asSystemService= */ false, event, /* needWakeLock= */ false);
         } catch (RemoteException e) {
         }
     }
@@ -189,6 +203,10 @@ public class MediaShellCommand extends ShellCommand {
                 KeyCharacterMap.VIRTUAL_KEYBOARD, 0, 0, InputDevice.SOURCE_KEYBOARD));
     }
 
+    void log(String code, String msg) {
+        mWriter.println(code + " " + msg);
+    }
+
     void showError(String errMsg) {
         onHelp();
         mErrorWriter.println(errMsg);
@@ -234,7 +252,7 @@ public class MediaShellCommand extends ShellCommand {
         }
 
         @Override
-        public void onAudioInfoChanged(MediaController.PlaybackInfo info) {
+        public void onAudioInfoChanged(@NonNull MediaController.PlaybackInfo info) {
             mWriter.println("onAudioInfoChanged " + info);
         }
     }
@@ -273,11 +291,14 @@ public class MediaShellCommand extends ShellCommand {
             cbThread.start();
 
             try {
-                InputStreamReader converter = new InputStreamReader(System.in);
+                InputStreamReader converter = new InputStreamReader(mInput);
                 BufferedReader in = new BufferedReader(converter);
                 String line;
 
-                while ((line = in.readLine()) != null) {
+                while (true) {
+                    mWriter.flush();
+                    mErrorWriter.flush();
+                    if ((line = in.readLine()) == null) break;
                     boolean addNewline = true;
                     if (line.length() <= 0) {
                         addNewline = false;
@@ -297,7 +318,7 @@ public class MediaShellCommand extends ShellCommand {
 
                     synchronized (this) {
                         if (addNewline) {
-                            System.out.println("");
+                            mWriter.println("");
                         }
                         printUsageMessage();
                     }
@@ -352,5 +373,9 @@ public class MediaShellCommand extends ShellCommand {
     // "volume" command for stream volume control
     private void runVolume() throws Exception {
         VolumeCtrl.run(this);
+    }
+
+    private void expireTempEngagedSessions() throws Exception {
+        mSessionService.expireTempEngagedSessions();
     }
 }

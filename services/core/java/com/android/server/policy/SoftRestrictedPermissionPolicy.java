@@ -21,7 +21,6 @@ import static android.Manifest.permission.WRITE_EXTERNAL_STORAGE;
 import static android.Manifest.permission.WRITE_MEDIA_STORAGE;
 import static android.app.AppOpsManager.OP_LEGACY_STORAGE;
 import static android.app.AppOpsManager.OP_NONE;
-import static android.content.pm.PackageManager.FLAG_PERMISSION_APPLY_RESTRICTION;
 import static android.content.pm.PackageManager.FLAG_PERMISSION_RESTRICTION_INSTALLER_EXEMPT;
 import static android.content.pm.PackageManager.FLAG_PERMISSION_RESTRICTION_SYSTEM_EXEMPT;
 import static android.content.pm.PackageManager.FLAG_PERMISSION_RESTRICTION_UPGRADE_EXEMPT;
@@ -42,7 +41,7 @@ import android.os.storage.StorageManagerInternal;
 import android.provider.DeviceConfig;
 
 import com.android.server.LocalServices;
-import com.android.server.pm.parsing.pkg.AndroidPackage;
+import com.android.server.pm.pkg.AndroidPackage;
 
 import java.util.Arrays;
 import java.util.HashSet;
@@ -148,7 +147,7 @@ public abstract class SoftRestrictedPermissionPolicy {
                             pkg.hasPreserveLegacyExternalStorage();
                     targetSDK = getMinimumTargetSDK(context, appInfo, user);
 
-                    shouldApplyRestriction = (flags & FLAG_PERMISSION_APPLY_RESTRICTION) != 0;
+                    shouldApplyRestriction = !isWhiteListed;
                     isForcedScopedStorage = sForcedScopedStorageAppWhitelist
                             .contains(appInfo.packageName);
                 } else {
@@ -189,12 +188,16 @@ public abstract class SoftRestrictedPermissionPolicy {
                             return false;
                         }
 
-                        // 3. The app has WRITE_MEDIA_STORAGE, OR
-                        //      the app already has legacy external storage or requested it,
-                        //      and is < R.
-                        return hasWriteMediaStorageGrantedForUid
-                                || ((hasLegacyExternalStorage || hasRequestedLegacyExternalStorage)
-                                    && targetSDK < Build.VERSION_CODES.R);
+                        // 3. The app targetSDK should be less than R
+                        if (targetSDK >= Build.VERSION_CODES.R) {
+                            return false;
+                        }
+
+                        // 4. The app has WRITE_MEDIA_STORAGE,
+                        //    OR the app already has legacy external storage
+                        //    OR the app requested legacy external storage
+                        return hasWriteMediaStorageGrantedForUid || hasLegacyExternalStorage
+                                || hasRequestedLegacyExternalStorage;
                     }
                     @Override
                     public boolean mayDenyExtraAppOpIfGranted() {
@@ -211,15 +214,13 @@ public abstract class SoftRestrictedPermissionPolicy {
                             return true;
                         }
 
-                        // The package is now a part of the forced scoped storage whitelist
+                        // The package is now a part of the forced scoped storage allowlist
                         if (isForcedScopedStorage) {
                             return true;
                         }
 
-                        // The package doesn't have WRITE_MEDIA_STORAGE,
-                        // AND didn't request legacy storage to be preserved
-                        if (!hasWriteMediaStorageGrantedForUid
-                                && !hasRequestedPreserveLegacyExternalStorage) {
+                        // The package doesn't request legacy storage to be preserved
+                        if (!hasRequestedPreserveLegacyExternalStorage) {
                             return true;
                         }
 

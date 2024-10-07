@@ -9,20 +9,25 @@ package {
 
 android_test {
     name: "mediaroutertest",
+    team: "trendy_team_android_media_solutions",
 
     srcs: ["**/*.java"],
 
     libs: [
-        "android.test.runner",
-        "android.test.base",
+        "android.test.runner.stubs.system",
+        "android.test.base.stubs.system",
     ],
 
     static_libs: [
-        "android-support-test",
+        "androidx.test.core",
+        "androidx.test.ext.truth",
+        "androidx.test.rules",
+        "compatibility-device-util-axt",
         "mockito-target-minus-junit4",
-        "testng"
+        "testng",
+        "truth",
     ],
-
+    test_suites: ["general-tests"],
     platform_apis: true,
     certificate: "platform",
 }

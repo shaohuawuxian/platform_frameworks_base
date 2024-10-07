@@ -16,22 +16,13 @@
 
 package com.android.systemui.statusbar.notification.row;
 
-import static android.app.Notification.EXTRA_IS_GROUP_CONVERSATION;
-
-import static java.lang.annotation.RetentionPolicy.SOURCE;
-
-import android.annotation.IntDef;
 import android.app.INotificationManager;
-import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationChannelGroup;
 import android.content.Context;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
 import android.graphics.drawable.Drawable;
-import android.graphics.drawable.Icon;
-import android.os.Bundle;
-import android.os.Parcelable;
 import android.os.RemoteException;
 import android.service.notification.StatusBarNotification;
 import android.text.TextUtils;
@@ -43,12 +34,8 @@ import android.widget.LinearLayout;
 import android.widget.TextView;
 
 import com.android.internal.annotations.VisibleForTesting;
-import com.android.systemui.R;
+import com.android.systemui.res.R;
 import com.android.systemui.statusbar.notification.collection.NotificationEntry;
-
-import java.lang.annotation.Retention;
-import java.util.List;
-import java.util.Set;
 
 /**
  * The guts of a conversation notification that doesn't use valid shortcuts that is revealed when
@@ -68,11 +55,8 @@ public class PartialConversationInfo extends LinearLayout implements
     private StatusBarNotification mSbn;
     private boolean mIsDeviceProvisioned;
     private boolean mIsNonBlockable;
-    private Set<NotificationChannel> mUniqueChannelsInRow;
     private Drawable mPkgIcon;
 
-    private @Action int mSelectedAction = -1;
-    private boolean mPressedApply;
     private boolean mPresentingChannelEditorDialog = false;
 
     private NotificationInfo.OnSettingsClickListener mOnSettingsClickListener;
@@ -82,14 +66,8 @@ public class PartialConversationInfo extends LinearLayout implements
     @VisibleForTesting
     boolean mSkipPost = false;
 
-    @Retention(SOURCE)
-    @IntDef({ACTION_SETTINGS})
-    private @interface Action {}
-    static final int ACTION_SETTINGS = 5;
-
     private OnClickListener mOnDone = v -> {
-        mPressedApply = true;
-        mGutsContainer.closeControls(v, true);
+        mGutsContainer.closeControls(v, /* save= */ false);
     };
 
     public PartialConversationInfo(Context context, AttributeSet attrs) {
@@ -102,12 +80,10 @@ public class PartialConversationInfo extends LinearLayout implements
             ChannelEditorDialogController channelEditorDialogController,
             String pkg,
             NotificationChannel notificationChannel,
-            Set<NotificationChannel> uniqueChannelsInRow,
             NotificationEntry entry,
             NotificationInfo.OnSettingsClickListener onSettingsClick,
             boolean isDeviceProvisioned,
             boolean isNonBlockable) {
-        mSelectedAction = -1;
         mINotificationManager = iNotificationManager;
         mPackageName = pkg;
         mSbn = entry.getSbn();
@@ -120,7 +96,6 @@ public class PartialConversationInfo extends LinearLayout implements
         mIsDeviceProvisioned = isDeviceProvisioned;
         mIsNonBlockable = isNonBlockable;
         mChannelEditorDialogController = channelEditorDialogController;
-        mUniqueChannelsInRow = uniqueChannelsInRow;
 
         bindHeader();
         bindActions();
@@ -169,7 +144,7 @@ public class PartialConversationInfo extends LinearLayout implements
                 mPresentingChannelEditorDialog = true;
 
                 mChannelEditorDialogController.prepareDialogForApp(mAppName, mPackageName, mAppUid,
-                        mUniqueChannelsInRow, mPkgIcon, mOnSettingsClickListener);
+                        mNotificationChannel, mPkgIcon, mOnSettingsClickListener);
                 mChannelEditorDialogController.setOnFinishListener(() -> {
                     mPresentingChannelEditorDialog = false;
                     mGutsContainer.closeControls(this, false);
@@ -286,8 +261,8 @@ public class PartialConversationInfo extends LinearLayout implements
     }
 
     @Override
-    public boolean shouldBeSaved() {
-        return mPressedApply;
+    public boolean shouldBeSavedOnClose() {
+        return false;
     }
 
     @Override

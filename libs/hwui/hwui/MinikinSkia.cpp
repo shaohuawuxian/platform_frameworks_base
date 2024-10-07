@@ -16,10 +16,13 @@
 
 #include "MinikinSkia.h"
 
-#include <SkFontDescriptor.h>
 #include <SkFont.h>
+#include <SkFontDescriptor.h>
 #include <SkFontMetrics.h>
 #include <SkFontMgr.h>
+#include <SkRect.h>
+#include <SkScalar.h>
+#include <SkStream.h>
 #include <SkTypeface.h>
 #include <log/log.h>
 
@@ -27,14 +30,15 @@
 #include <minikin/MinikinExtent.h>
 #include <minikin/MinikinPaint.h>
 #include <minikin/MinikinRect.h>
+#include <utils/TypefaceUtils.h>
 
 namespace android {
 
-MinikinFontSkia::MinikinFontSkia(sk_sp<SkTypeface> typeface, const void* fontData, size_t fontSize,
-                                 std::string_view filePath, int ttcIndex,
+MinikinFontSkia::MinikinFontSkia(sk_sp<SkTypeface> typeface, int sourceId, const void* fontData,
+                                 size_t fontSize, std::string_view filePath, int ttcIndex,
                                  const std::vector<minikin::FontVariation>& axes)
-        : minikin::MinikinFont(typeface->uniqueID())
-        , mTypeface(std::move(typeface))
+        : mTypeface(std::move(typeface))
+        , mSourceId(sourceId)
         , mFontData(fontData)
         , mFontSize(fontSize)
         , mTtcIndex(ttcIndex)
@@ -125,25 +129,19 @@ const std::vector<minikin::FontVariation>& MinikinFontSkia::GetAxes() const {
 
 std::shared_ptr<minikin::MinikinFont> MinikinFontSkia::createFontWithVariation(
         const std::vector<minikin::FontVariation>& variations) const {
-    SkFontArguments params;
+    SkFontArguments args;
 
-    int ttcIndex;
-    std::unique_ptr<SkStreamAsset> stream(mTypeface->openStream(&ttcIndex));
-    LOG_ALWAYS_FATAL_IF(stream == nullptr, "openStream failed");
-
-    params.setCollectionIndex(ttcIndex);
-    std::vector<SkFontArguments::Axis> skAxes;
-    skAxes.resize(variations.size());
+    std::vector<SkFontArguments::VariationPosition::Coordinate> skVariation;
+    skVariation.resize(variations.size());
     for (size_t i = 0; i < variations.size(); i++) {
-        skAxes[i].fTag = variations[i].axisTag;
-        skAxes[i].fStyleValue = SkFloatToScalar(variations[i].value);
+        skVariation[i].axis = variations[i].axisTag;
+        skVariation[i].value = SkFloatToScalar(variations[i].value);
     }
-    params.setAxes(skAxes.data(), skAxes.size());
-    sk_sp<SkFontMgr> fm(SkFontMgr::RefDefault());
-    sk_sp<SkTypeface> face(fm->makeFromStream(std::move(stream), params));
+    args.setVariationDesignPosition({skVariation.data(), static_cast<int>(skVariation.size())});
+    sk_sp<SkTypeface> face = mTypeface->makeClone(args);
 
-    return std::make_shared<MinikinFontSkia>(std::move(face), mFontData, mFontSize, mFilePath,
-                                             ttcIndex, variations);
+    return std::make_shared<MinikinFontSkia>(std::move(face), mSourceId, mFontData, mFontSize,
+                                             mFilePath, mTtcIndex, variations);
 }
 
 // hinting<<16 | edging<<8 | bools:5bits

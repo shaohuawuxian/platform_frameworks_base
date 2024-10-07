@@ -22,24 +22,34 @@ import android.annotation.Nullable;
 import android.annotation.UserIdInt;
 import android.content.Context;
 import android.content.pm.PackageStats;
+import android.os.Binder;
 import android.os.Build;
+import android.os.CreateAppDataArgs;
+import android.os.CreateAppDataResult;
 import android.os.IBinder;
-import android.os.IBinder.DeathRecipient;
 import android.os.IInstalld;
+import android.os.ParcelFileDescriptor;
+import android.os.ReconcileSdkDataArgs;
 import android.os.RemoteException;
 import android.os.ServiceManager;
 import android.os.storage.CrateMetadata;
 import android.text.format.DateUtils;
+import android.util.EventLog;
 import android.util.Slog;
 
 import com.android.internal.os.BackgroundThread;
+import com.android.server.EventLogTags;
 import com.android.server.SystemService;
 
 import dalvik.system.BlockGuard;
 import dalvik.system.VMRuntime;
 
-import java.io.FileDescriptor;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 public class Installer extends SystemService {
     private static final String TAG = "Installer";
@@ -75,9 +85,20 @@ public class Installer extends SystemService {
     /** Indicates that dexopt may be run with different performance / priority tuned for restore */
     public static final int DEXOPT_FOR_RESTORE = 1 << 13; // TODO(b/135202722): remove
 
+    /** The result of the profile analysis indicating that the app should be optimized. */
+    public static final int PROFILE_ANALYSIS_OPTIMIZE = 1;
+    /** The result of the profile analysis indicating that the app should not be optimized. */
+    public static final int PROFILE_ANALYSIS_DONT_OPTIMIZE_SMALL_DELTA = 2;
+    /**
+     * The result of the profile analysis indicating that the app should not be optimized because
+     * the profiles are empty.
+     */
+    public static final int PROFILE_ANALYSIS_DONT_OPTIMIZE_EMPTY_PROFILES = 3;
+
     public static final int FLAG_STORAGE_DE = IInstalld.FLAG_STORAGE_DE;
     public static final int FLAG_STORAGE_CE = IInstalld.FLAG_STORAGE_CE;
     public static final int FLAG_STORAGE_EXTERNAL = IInstalld.FLAG_STORAGE_EXTERNAL;
+    public static final int FLAG_STORAGE_SDK = IInstalld.FLAG_STORAGE_SDK;
 
     public static final int FLAG_CLEAR_CACHE_ONLY = IInstalld.FLAG_CLEAR_CACHE_ONLY;
     public static final int FLAG_CLEAR_CODE_CACHE_ONLY = IInstalld.FLAG_CLEAR_CODE_CACHE_ONLY;
@@ -85,6 +106,8 @@ public class Installer extends SystemService {
     public static final int FLAG_FREE_CACHE_V2 = IInstalld.FLAG_FREE_CACHE_V2;
     public static final int FLAG_FREE_CACHE_V2_DEFY_QUOTA = IInstalld.FLAG_FREE_CACHE_V2_DEFY_QUOTA;
     public static final int FLAG_FREE_CACHE_NOOP = IInstalld.FLAG_FREE_CACHE_NOOP;
+    public static final int FLAG_FREE_CACHE_DEFY_TARGET_FREE_BYTES =
+            IInstalld.FLAG_FREE_CACHE_DEFY_TARGET_FREE_BYTES;
 
     public static final int FLAG_USE_QUOTA = IInstalld.FLAG_USE_QUOTA;
     public static final int FLAG_FORCE = IInstalld.FLAG_FORCE;
@@ -92,9 +115,13 @@ public class Installer extends SystemService {
     public static final int FLAG_CLEAR_APP_DATA_KEEP_ART_PROFILES =
             IInstalld.FLAG_CLEAR_APP_DATA_KEEP_ART_PROFILES;
 
-    private final boolean mIsolated;
+    private static final long CONNECT_RETRY_DELAY_MS = DateUtils.SECOND_IN_MILLIS;
+    private static final long CONNECT_WAIT_MS = 10 * DateUtils.SECOND_IN_MILLIS;
 
-    private volatile IInstalld mInstalld;
+    private final boolean mIsolated;
+    private volatile boolean mDeferSetFirstBoot;
+    private volatile IInstalld mInstalld = null;
+    private volatile CountDownLatch mInstalldLatch = new CountDownLatch(1);
     private volatile Object mWarnIfHeld;
 
     public Installer(Context context) {
@@ -102,9 +129,7 @@ public class Installer extends SystemService {
     }
 
     /**
-     * @param isolated indicates if this object should <em>not</em> connect to
-     *            the real {@code installd}. All remote calls will be ignored
-     *            unless you extend this class and intercept them.
+     * @param isolated Make the installer isolated. See {@link isIsolated}.
      */
     public Installer(Context context, boolean isolated) {
         super(context);
@@ -119,10 +144,20 @@ public class Installer extends SystemService {
         mWarnIfHeld = warnIfHeld;
     }
 
+    /**
+     * Returns true if the installer is isolated, i.e. if this object should <em>not</em> connect to
+     * the real {@code installd}. All remote calls will be ignored unless you extend this class and
+     * intercept them.
+     */
+    public boolean isIsolated() {
+        return mIsolated;
+    }
+
     @Override
     public void onStart() {
         if (mIsolated) {
             mInstalld = null;
+            mInstalldLatch.countDown();
         } else {
             connect();
         }
@@ -132,12 +167,10 @@ public class Installer extends SystemService {
         IBinder binder = ServiceManager.getService("installd");
         if (binder != null) {
             try {
-                binder.linkToDeath(new DeathRecipient() {
-                    @Override
-                    public void binderDied() {
-                        Slog.w(TAG, "installd died; reconnecting");
-                        connect();
-                    }
+                binder.linkToDeath(() -> {
+                    Slog.w(TAG, "installd died; reconnecting");
+                    mInstalldLatch = new CountDownLatch(1);
+                    connect();
                 }, 0);
             } catch (RemoteException e) {
                 binder = null;
@@ -145,16 +178,26 @@ public class Installer extends SystemService {
         }
 
         if (binder != null) {
-            mInstalld = IInstalld.Stub.asInterface(binder);
+            IInstalld installd = IInstalld.Stub.asInterface(binder);
+            mInstalld = installd;
+            mInstalldLatch.countDown();
             try {
                 invalidateMounts();
+                executeDeferredActions();
             } catch (InstallerException ignored) {
             }
         } else {
             Slog.w(TAG, "installd not found; trying again");
-            BackgroundThread.getHandler().postDelayed(() -> {
-                connect();
-            }, DateUtils.SECOND_IN_MILLIS);
+            BackgroundThread.getHandler().postDelayed(this::connect, CONNECT_RETRY_DELAY_MS);
+        }
+    }
+
+    /**
+     * Perform any deferred actions on mInstalld while the connection could not be made.
+     */
+    private void executeDeferredActions() throws InstallerException {
+        if (mDeferSetFirstBoot) {
+            setFirstBoot();
         }
     }
 
@@ -163,7 +206,7 @@ public class Installer extends SystemService {
      *
      * @return if the remote call should continue.
      */
-    private boolean checkBeforeRemote() {
+    private boolean checkBeforeRemote() throws InstallerException {
         if (mWarnIfHeld != null && Thread.holdsLock(mWarnIfHeld)) {
             Slog.wtf(TAG, "Calling thread " + Thread.currentThread().getName() + " is holding 0x"
                     + Integer.toHexString(System.identityHashCode(mWarnIfHeld)), new Throwable());
@@ -171,53 +214,197 @@ public class Installer extends SystemService {
         if (mIsolated) {
             Slog.i(TAG, "Ignoring request because this installer is isolated");
             return false;
-        } else {
-            return true;
+        }
+
+        try {
+            if (!mInstalldLatch.await(CONNECT_WAIT_MS, TimeUnit.MILLISECONDS)) {
+                throw new InstallerException("time out waiting for the installer to be ready");
+            }
+        } catch (InterruptedException e) {
+            // Do nothing.
+        }
+
+        return true;
+    }
+
+    // We explicitly do NOT set previousAppId because the default value should always be 0.
+    // Manually override previousAppId after building CreateAppDataArgs for specific behaviors.
+    static CreateAppDataArgs buildCreateAppDataArgs(String uuid, String packageName,
+            int userId, int flags, int appId, String seInfo, int targetSdkVersion,
+            boolean usesSdk) {
+        final CreateAppDataArgs args = new CreateAppDataArgs();
+        args.uuid = uuid;
+        args.packageName = packageName;
+        args.userId = userId;
+        args.flags = flags;
+        if (usesSdk) {
+            args.flags |= FLAG_STORAGE_SDK;
+        }
+        args.appId = appId;
+        args.seInfo = seInfo;
+        args.targetSdkVersion = targetSdkVersion;
+        return args;
+    }
+
+    private static CreateAppDataResult buildPlaceholderCreateAppDataResult() {
+        final CreateAppDataResult result = new CreateAppDataResult();
+        result.ceDataInode = -1;
+        result.deDataInode = -1;
+        result.exceptionCode = 0;
+        result.exceptionMessage = null;
+        return result;
+    }
+
+    static ReconcileSdkDataArgs buildReconcileSdkDataArgs(String uuid, String packageName,
+            List<String> subDirNames, int userId, int appId,
+            String seInfo, int flags) {
+        final ReconcileSdkDataArgs args = new ReconcileSdkDataArgs();
+        args.uuid = uuid;
+        args.packageName = packageName;
+        args.subDirNames = subDirNames;
+        args.userId = userId;
+        args.appId = appId;
+        args.previousAppId = 0;
+        args.seInfo = seInfo;
+        args.flags = flags;
+        return args;
+    }
+
+    public @NonNull CreateAppDataResult createAppData(@NonNull CreateAppDataArgs args)
+            throws InstallerException {
+        if (!checkBeforeRemote()) {
+            return buildPlaceholderCreateAppDataResult();
+        }
+        // Hardcode previousAppId to 0 to disable any data migration (http://b/221088088)
+        args.previousAppId = 0;
+        try {
+            return mInstalld.createAppData(args);
+        } catch (Exception e) {
+            throw InstallerException.from(e);
         }
     }
 
-    public long createAppData(String uuid, String packageName, int userId, int flags, int appId,
-            String seInfo, int targetSdkVersion) throws InstallerException {
-        if (!checkBeforeRemote()) return -1;
+    public @NonNull CreateAppDataResult[] createAppDataBatched(@NonNull CreateAppDataArgs[] args)
+            throws InstallerException {
+        if (!checkBeforeRemote()) {
+            final CreateAppDataResult[] results = new CreateAppDataResult[args.length];
+            Arrays.fill(results, buildPlaceholderCreateAppDataResult());
+            return results;
+        }
+        // Hardcode previousAppId to 0 to disable any data migration (http://b/221088088)
+        for (final CreateAppDataArgs arg : args) {
+            arg.previousAppId = 0;
+        }
         try {
-            return mInstalld.createAppData(uuid, packageName, userId, flags, appId, seInfo,
-                    targetSdkVersion);
+            return mInstalld.createAppDataBatched(args);
+        } catch (Exception e) {
+            throw InstallerException.from(e);
+        }
+    }
+
+    void reconcileSdkData(@NonNull ReconcileSdkDataArgs args)
+            throws InstallerException {
+        if (!checkBeforeRemote()) {
+            return;
+        }
+        try {
+            mInstalld.reconcileSdkData(args);
         } catch (Exception e) {
             throw InstallerException.from(e);
         }
     }
 
     /**
-     * Batched version of createAppData for use with multiple packages.
+     * Sets in Installd that it is first boot after data wipe
      */
-    public void createAppDataBatched(String[] uuids, String[] packageNames, int userId, int flags,
-            int[] appIds, String[] seInfos, int[] targetSdkVersions) throws InstallerException {
-        if (!checkBeforeRemote()) return;
-        final int batchSize = 256;
-        for (int i = 0; i < uuids.length; i += batchSize) {
-            int to = i + batchSize;
-            if (to > uuids.length) {
-                to = uuids.length;
+    public void setFirstBoot() throws InstallerException {
+        if (!checkBeforeRemote()) {
+            return;
+        }
+        try {
+            // mInstalld might be null if the connection could not be established.
+            if (mInstalld != null) {
+                mInstalld.setFirstBoot();
+            } else {
+                // if it is null while trying to set the first boot, set a flag to try and set the
+                // first boot when the connection is eventually established
+                mDeferSetFirstBoot = true;
             }
-
-            try {
-                mInstalld.createAppDataBatched(Arrays.copyOfRange(uuids, i, to),
-                        Arrays.copyOfRange(packageNames, i, to), userId, flags,
-                        Arrays.copyOfRange(appIds, i, to), Arrays.copyOfRange(seInfos, i, to),
-                        Arrays.copyOfRange(targetSdkVersions, i, to));
-            } catch (Exception e) {
-                throw InstallerException.from(e);
-            }
+        } catch (Exception e) {
+            throw InstallerException.from(e);
         }
     }
 
-    public void restoreconAppData(String uuid, String packageName, int userId, int flags, int appId,
-            String seInfo) throws InstallerException {
-        if (!checkBeforeRemote()) return;
-        try {
-            mInstalld.restoreconAppData(uuid, packageName, userId, flags, appId, seInfo);
-        } catch (Exception e) {
-            throw InstallerException.from(e);
+    /**
+     * Class that collects multiple {@code installd} operations together in an
+     * attempt to more efficiently execute them in bulk.
+     * <p>
+     * Instead of returning results immediately, {@link CompletableFuture}
+     * instances are returned which can be used to chain follow-up work for each
+     * request.
+     * <p>
+     * The creator of this object <em>must</em> invoke {@link #execute()}
+     * exactly once to begin execution of all pending operations. Once execution
+     * has been kicked off, no additional events can be enqueued into this
+     * instance, but multiple instances can safely exist in parallel.
+     */
+    public static class Batch {
+        private static final int CREATE_APP_DATA_BATCH_SIZE = 256;
+
+        private boolean mExecuted;
+
+        private final List<CreateAppDataArgs> mArgs = new ArrayList<>();
+        private final List<CompletableFuture<CreateAppDataResult>> mFutures = new ArrayList<>();
+
+        /**
+         * Enqueue the given {@code installd} operation to be executed in the
+         * future when {@link #execute(Installer)} is invoked.
+         * <p>
+         * Callers of this method are not required to hold a monitor lock on an
+         * {@link Installer} object.
+         */
+        @NonNull
+        public synchronized CompletableFuture<CreateAppDataResult> createAppData(
+                CreateAppDataArgs args) {
+            if (mExecuted) {
+                throw new IllegalStateException();
+            }
+            final CompletableFuture<CreateAppDataResult> future = new CompletableFuture<>();
+            mArgs.add(args);
+            mFutures.add(future);
+            return future;
+        }
+
+        /**
+         * Execute all pending {@code installd} operations that have been
+         * collected by this batch in a blocking fashion.
+         * <p>
+         * Callers of this method <em>must</em> hold a monitor lock on the given
+         * {@link Installer} object.
+         */
+        public synchronized void execute(@NonNull Installer installer) throws InstallerException {
+            if (mExecuted) throw new IllegalStateException();
+            mExecuted = true;
+
+            final int size = mArgs.size();
+            for (int i = 0; i < size; i += CREATE_APP_DATA_BATCH_SIZE) {
+                final CreateAppDataArgs[] args = new CreateAppDataArgs[Math.min(size - i,
+                        CREATE_APP_DATA_BATCH_SIZE)];
+                for (int j = 0; j < args.length; j++) {
+                    args[j] = mArgs.get(i + j);
+                }
+                final CreateAppDataResult[] results = installer.createAppDataBatched(args);
+                for (int j = 0; j < results.length; j++) {
+                    final CreateAppDataResult result = results[j];
+                    final CompletableFuture<CreateAppDataResult> future = mFutures.get(i + j);
+                    if (result.exceptionCode == 0) {
+                        future.complete(result);
+                    } else {
+                        future.completeExceptionally(
+                                new InstallerException(result.exceptionMessage));
+                    }
+                }
+            }
         }
     }
 
@@ -236,6 +423,26 @@ public class Installer extends SystemService {
         if (!checkBeforeRemote()) return;
         try {
             mInstalld.clearAppData(uuid, packageName, userId, flags, ceDataInode);
+
+            final StackTraceElement[] elements = Thread.currentThread().getStackTrace();
+            String className;
+            String methodName;
+            String fileName;
+            int lineNumber;
+            final int pid = Binder.getCallingPid();
+            final int uid = Binder.getCallingUid();
+            EventLog.writeEvent(EventLogTags.INSTALLER_CLEAR_APP_DATA_CALLER, pid, uid, packageName,
+                    flags);
+            // Skip the first two elements since they are always the same, ie
+            // Thread#getStackTrace() and VMStack#getThreadStackTrace()
+            for (int i = 2; i < elements.length; i++) {
+                className = elements[i].getClassName();
+                methodName = elements[i].getMethodName();
+                fileName = elements[i].getFileName();
+                lineNumber = elements[i].getLineNumber();
+                EventLog.writeEvent(EventLogTags.INSTALLER_CLEAR_APP_DATA_CALL_STACK, methodName,
+                        className, fileName, lineNumber);
+            }
         } catch (Exception e) {
             throw InstallerException.from(e);
         }
@@ -255,6 +462,20 @@ public class Installer extends SystemService {
         if (!checkBeforeRemote()) return;
         try {
             mInstalld.fixupAppData(uuid, flags);
+        } catch (Exception e) {
+            throw InstallerException.from(e);
+        }
+    }
+
+    /**
+     * Remove all invalid dirs under app data folder.
+     * All dirs are supposed to be valid file and package names.
+     */
+    public void cleanupInvalidPackageDirs(String uuid, int userId, int flags)
+            throws InstallerException {
+        if (!checkBeforeRemote()) return;
+        try {
+            mInstalld.cleanupInvalidPackageDirs(uuid, userId, flags);
         } catch (Exception e) {
             throw InstallerException.from(e);
         }
@@ -368,91 +589,27 @@ public class Installer extends SystemService {
         }
     }
 
-    public void dexopt(String apkPath, int uid, @Nullable String pkgName, String instructionSet,
-            int dexoptNeeded, @Nullable String outputPath, int dexFlags,
-            String compilerFilter, @Nullable String volumeUuid, @Nullable String sharedLibraries,
+    /**
+     * This function only remains to allow overriding in OtaDexoptService.
+     */
+    public boolean dexopt(String apkPath, int uid, String pkgName, String instructionSet,
+            int dexoptNeeded, @Nullable String outputPath, int dexFlags, String compilerFilter,
+            @Nullable String volumeUuid, @Nullable String classLoaderContext,
             @Nullable String seInfo, boolean downgrade, int targetSdkVersion,
             @Nullable String profileName, @Nullable String dexMetadataPath,
-            @Nullable String compilationReason) throws InstallerException {
-        assertValidInstructionSet(instructionSet);
-        BlockGuard.getVmPolicy().onPathAccess(apkPath);
-        BlockGuard.getVmPolicy().onPathAccess(outputPath);
-        BlockGuard.getVmPolicy().onPathAccess(dexMetadataPath);
-        if (!checkBeforeRemote()) return;
-        try {
-            mInstalld.dexopt(apkPath, uid, pkgName, instructionSet, dexoptNeeded, outputPath,
-                    dexFlags, compilerFilter, volumeUuid, sharedLibraries, seInfo, downgrade,
-                    targetSdkVersion, profileName, dexMetadataPath, compilationReason);
-        } catch (Exception e) {
-            throw InstallerException.from(e);
-        }
+            @Nullable String compilationReason)
+            throws InstallerException, LegacyDexoptDisabledException {
+        throw new LegacyDexoptDisabledException();
     }
 
-    public boolean mergeProfiles(int uid, String packageName, String profileName)
-            throws InstallerException {
-        if (!checkBeforeRemote()) return false;
-        try {
-            return mInstalld.mergeProfiles(uid, packageName, profileName);
-        } catch (Exception e) {
-            throw InstallerException.from(e);
-        }
-    }
-
-    public boolean dumpProfiles(int uid, String packageName, String profileName, String codePath)
-            throws InstallerException {
-        if (!checkBeforeRemote()) return false;
-        BlockGuard.getVmPolicy().onPathAccess(codePath);
-        try {
-            return mInstalld.dumpProfiles(uid, packageName, profileName, codePath);
-        } catch (Exception e) {
-            throw InstallerException.from(e);
-        }
-    }
-
-    public boolean copySystemProfile(String systemProfile, int uid, String packageName,
-                String profileName) throws InstallerException {
-        if (!checkBeforeRemote()) return false;
-        try {
-            return mInstalld.copySystemProfile(systemProfile, uid, packageName, profileName);
-        } catch (Exception e) {
-            throw InstallerException.from(e);
-        }
-    }
-
-    public void rmdex(String codePath, String instructionSet) throws InstallerException {
-        assertValidInstructionSet(instructionSet);
-        if (!checkBeforeRemote()) return;
-        BlockGuard.getVmPolicy().onPathAccess(codePath);
-        try {
-            mInstalld.rmdex(codePath, instructionSet);
-        } catch (Exception e) {
-            throw InstallerException.from(e);
-        }
-    }
-
-    public void rmPackageDir(String packageDir) throws InstallerException {
+    /**
+     * Remove a directory belonging to a package.
+     */
+    public void rmPackageDir(String packageName, String packageDir) throws InstallerException {
         if (!checkBeforeRemote()) return;
         BlockGuard.getVmPolicy().onPathAccess(packageDir);
         try {
-            mInstalld.rmPackageDir(packageDir);
-        } catch (Exception e) {
-            throw InstallerException.from(e);
-        }
-    }
-
-    public void clearAppProfiles(String packageName, String profileName) throws InstallerException {
-        if (!checkBeforeRemote()) return;
-        try {
-            mInstalld.clearAppProfiles(packageName, profileName);
-        } catch (Exception e) {
-            throw InstallerException.from(e);
-        }
-    }
-
-    public void destroyAppProfiles(String packageName) throws InstallerException {
-        if (!checkBeforeRemote()) return;
-        try {
-            mInstalld.destroyAppProfiles(packageName);
+            mInstalld.rmPackageDir(packageName, packageDir);
         } catch (Exception e) {
             throw InstallerException.from(e);
         }
@@ -477,11 +634,15 @@ public class Installer extends SystemService {
         }
     }
 
-    public void freeCache(String uuid, long targetFreeBytes, long cacheReservedBytes, int flags)
-            throws InstallerException {
+    /**
+     * Deletes cache from specified uuid until targetFreeBytes amount of space is free.
+     * flag denotes aggressive or non-aggresive mode where cache under quota is eligible or not
+     * respectively for clearing.
+     */
+    public void freeCache(String uuid, long targetFreeBytes, int flags) throws InstallerException {
         if (!checkBeforeRemote()) return;
         try {
-            mInstalld.freeCache(uuid, targetFreeBytes, cacheReservedBytes, flags);
+            mInstalld.freeCache(uuid, targetFreeBytes, flags);
         } catch (Exception e) {
             throw InstallerException.from(e);
         }
@@ -503,84 +664,47 @@ public class Installer extends SystemService {
         }
     }
 
-    public void createOatDir(String oatDir, String dexInstructionSet)
+    /**
+     * Creates an oat dir for given package and instruction set.
+     */
+    public void createOatDir(String packageName, String oatDir, String dexInstructionSet)
             throws InstallerException {
+        // This method should be allowed even if ART Service is enabled, because it's used for
+        // creating oat dirs before creating hard links for partial installation.
+        // TODO(b/274658735): Add an ART Service API to support hard linking.
         if (!checkBeforeRemote()) return;
         try {
-            mInstalld.createOatDir(oatDir, dexInstructionSet);
+            mInstalld.createOatDir(packageName, oatDir, dexInstructionSet);
         } catch (Exception e) {
             throw InstallerException.from(e);
         }
     }
 
-    public void linkFile(String relativePath, String fromBase, String toBase)
+    /**
+     * Creates a hardlink for a path.
+     */
+    public void linkFile(String packageName, String relativePath, String fromBase, String toBase)
             throws InstallerException {
         if (!checkBeforeRemote()) return;
         BlockGuard.getVmPolicy().onPathAccess(fromBase);
         BlockGuard.getVmPolicy().onPathAccess(toBase);
         try {
-            mInstalld.linkFile(relativePath, fromBase, toBase);
+            mInstalld.linkFile(packageName, relativePath, fromBase, toBase);
         } catch (Exception e) {
             throw InstallerException.from(e);
         }
     }
 
-    public void moveAb(String apkPath, String instructionSet, String outputPath)
+    /**
+     * Moves oat/vdex/art from "B" set defined by ro.boot.slot_suffix to the default set.
+     */
+    public void moveAb(String packageName, String apkPath, String instructionSet, String outputPath)
             throws InstallerException {
         if (!checkBeforeRemote()) return;
         BlockGuard.getVmPolicy().onPathAccess(apkPath);
         BlockGuard.getVmPolicy().onPathAccess(outputPath);
         try {
-            mInstalld.moveAb(apkPath, instructionSet, outputPath);
-        } catch (Exception e) {
-            throw InstallerException.from(e);
-        }
-    }
-
-    public void deleteOdex(String apkPath, String instructionSet, String outputPath)
-            throws InstallerException {
-        if (!checkBeforeRemote()) return;
-        BlockGuard.getVmPolicy().onPathAccess(apkPath);
-        BlockGuard.getVmPolicy().onPathAccess(outputPath);
-        try {
-            mInstalld.deleteOdex(apkPath, instructionSet, outputPath);
-        } catch (Exception e) {
-            throw InstallerException.from(e);
-        }
-    }
-
-    public void installApkVerity(String filePath, FileDescriptor verityInput, int contentSize)
-            throws InstallerException {
-        if (!checkBeforeRemote()) return;
-        BlockGuard.getVmPolicy().onPathAccess(filePath);
-        try {
-            mInstalld.installApkVerity(filePath, verityInput, contentSize);
-        } catch (Exception e) {
-            throw InstallerException.from(e);
-        }
-    }
-
-    public void assertFsverityRootHashMatches(String filePath, @NonNull byte[] expectedHash)
-            throws InstallerException {
-        if (!checkBeforeRemote()) return;
-        BlockGuard.getVmPolicy().onPathAccess(filePath);
-        try {
-            mInstalld.assertFsverityRootHashMatches(filePath, expectedHash);
-        } catch (Exception e) {
-            throw InstallerException.from(e);
-        }
-    }
-
-    public boolean reconcileSecondaryDexFile(String apkPath, String packageName, int uid,
-            String[] isas, @Nullable String volumeUuid, int flags) throws InstallerException {
-        for (int i = 0; i < isas.length; i++) {
-            assertValidInstructionSet(isas[i]);
-        }
-        if (!checkBeforeRemote()) return false;
-        BlockGuard.getVmPolicy().onPathAccess(apkPath);
-        try {
-            return mInstalld.reconcileSecondaryDexFile(apkPath, packageName, uid, isas,
-                    volumeUuid, flags);
+            mInstalld.moveAb(packageName, apkPath, instructionSet, outputPath);
         } catch (Exception e) {
             throw InstallerException.from(e);
         }
@@ -592,26 +716,6 @@ public class Installer extends SystemService {
         BlockGuard.getVmPolicy().onPathAccess(dexPath);
         try {
             return mInstalld.hashSecondaryDexFile(dexPath, packageName, uid, volumeUuid, flags);
-        } catch (Exception e) {
-            throw InstallerException.from(e);
-        }
-    }
-
-    public boolean createProfileSnapshot(int appId, String packageName, String profileName,
-            String classpath) throws InstallerException {
-        if (!checkBeforeRemote()) return false;
-        try {
-            return mInstalld.createProfileSnapshot(appId, packageName, profileName, classpath);
-        } catch (Exception e) {
-            throw InstallerException.from(e);
-        }
-    }
-
-    public void destroyProfileSnapshot(String packageName, String profileName)
-            throws InstallerException {
-        if (!checkBeforeRemote()) return;
-        try {
-            mInstalld.destroyProfileSnapshot(packageName, profileName);
         } catch (Exception e) {
             throw InstallerException.from(e);
         }
@@ -659,19 +763,6 @@ public class Installer extends SystemService {
         }
     }
 
-    public boolean prepareAppProfile(String pkg, @UserIdInt int userId, @AppIdInt int appId,
-            String profileName, String codePath, String dexMetadataPath) throws InstallerException {
-        if (!checkBeforeRemote()) return false;
-        BlockGuard.getVmPolicy().onPathAccess(codePath);
-        BlockGuard.getVmPolicy().onPathAccess(dexMetadataPath);
-        try {
-            return mInstalld.prepareAppProfile(pkg, userId, appId, profileName, codePath,
-                    dexMetadataPath);
-        } catch (Exception e) {
-            throw InstallerException.from(e);
-        }
-    }
-
     /**
      * Snapshots user data of the given package.
      *
@@ -680,17 +771,18 @@ public class Installer extends SystemService {
      * @param snapshotId id of this snapshot.
      * @param storageFlags flags controlling which data (CE or DE) to snapshot.
      *
-     * @return inode of the snapshot of users CE package data, or {@code 0} if a remote calls
-     *  shouldn't be continued. See {@link #checkBeforeRemote}.
+     * @return {@code true} if the snapshot was taken successfully, or {@code false} if a remote
+     * call shouldn't be continued. See {@link #checkBeforeRemote}.
      *
      * @throws InstallerException if failed to snapshot user data.
      */
-    public long snapshotAppData(String pkg, @UserIdInt int userId, int snapshotId, int storageFlags)
-            throws InstallerException {
-        if (!checkBeforeRemote()) return 0;
+    public boolean snapshotAppData(String pkg, @UserIdInt int userId, int snapshotId,
+            int storageFlags) throws InstallerException {
+        if (!checkBeforeRemote()) return false;
 
         try {
-            return mInstalld.snapshotAppData(null, pkg, userId, snapshotId, storageFlags);
+            mInstalld.snapshotAppData(null, pkg, userId, snapshotId, storageFlags);
+            return true;
         } catch (Exception e) {
             throw InstallerException.from(e);
         }
@@ -728,7 +820,6 @@ public class Installer extends SystemService {
      *
      * @param pkg name of the package to delete user data snapshot for.
      * @param userId id of the user whose user data snapshot to delete.
-     * @param ceSnapshotInode inode of CE user data snapshot.
      * @param snapshotId id of the snapshot to delete.
      * @param storageFlags flags controlling which user data snapshot (CE or DE) to delete.
      *
@@ -737,13 +828,12 @@ public class Installer extends SystemService {
      *
      * @throws InstallerException if failed to delete user data snapshot.
      */
-    public boolean destroyAppDataSnapshot(String pkg, @UserIdInt int userId, long ceSnapshotInode,
+    public boolean destroyAppDataSnapshot(String pkg, @UserIdInt int userId,
             int snapshotId, int storageFlags) throws InstallerException {
         if (!checkBeforeRemote()) return false;
 
         try {
-            mInstalld.destroyAppDataSnapshot(null, pkg, userId, ceSnapshotInode, snapshotId,
-                    storageFlags);
+            mInstalld.destroyAppDataSnapshot(null, pkg, userId, 0, snapshotId, storageFlags);
             return true;
         } catch (Exception e) {
             throw InstallerException.from(e);
@@ -802,11 +892,50 @@ public class Installer extends SystemService {
         throw new InstallerException("Invalid instruction set: " + instructionSet);
     }
 
-    public boolean compileLayouts(String apkPath, String packageName, String outDexFile, int uid) {
+    /**
+     * Returns an auth token for the provided writable FD.
+     *
+     * @param authFd a file descriptor to proof that the caller can write to the file.
+     * @param uid uid of the calling app.
+     *
+     * @return authToken, or null if a remote call shouldn't be continued. See {@link
+     * #checkBeforeRemote}.
+     *
+     * @throws InstallerException if the remote call failed.
+     */
+    public IInstalld.IFsveritySetupAuthToken createFsveritySetupAuthToken(
+            ParcelFileDescriptor authFd, int uid) throws InstallerException {
+        if (!checkBeforeRemote()) {
+            return null;
+        }
         try {
-            return mInstalld.compileLayouts(apkPath, packageName, outDexFile, uid);
-        } catch (RemoteException e) {
-            return false;
+            return mInstalld.createFsveritySetupAuthToken(authFd, uid);
+        } catch (Exception e) {
+            throw InstallerException.from(e);
+        }
+    }
+
+    /**
+     * Enables fs-verity to the given app file.
+     *
+     * @param authToken a token previously returned from {@link #createFsveritySetupAuthToken}.
+     * @param filePath file path of the package to enable fs-verity.
+     * @param packageName name of the package.
+     *
+     * @return 0 if the operation was successful, otherwise {@code errno}.
+     *
+     * @throws InstallerException if the remote call failed (e.g. see {@link #checkBeforeRemote}).
+     */
+    public int enableFsverity(IInstalld.IFsveritySetupAuthToken authToken, String filePath,
+            String packageName) throws InstallerException {
+        if (!checkBeforeRemote()) {
+            throw new InstallerException("fs-verity wasn't enabled with an isolated installer");
+        }
+        BlockGuard.getVmPolicy().onPathAccess(filePath);
+        try {
+            return mInstalld.enableFsverity(authToken, filePath, packageName);
+        } catch (Exception e) {
+            throw InstallerException.from(e);
         }
     }
 
@@ -817,6 +946,18 @@ public class Installer extends SystemService {
 
         public static InstallerException from(Exception e) throws InstallerException {
             throw new InstallerException(e.toString());
+        }
+    }
+
+    /**
+     * A checked exception that is thrown in legacy dexopt code paths when ART Service should be
+     * used instead.
+     */
+    public static class LegacyDexoptDisabledException extends Exception {
+        // TODO(b/260124949): Remove the legacy dexopt code paths, i.e. this exception and all code
+        // that may throw it.
+        public LegacyDexoptDisabledException() {
+            super("Invalid call to legacy dexopt method while ART Service is in use.");
         }
     }
 }

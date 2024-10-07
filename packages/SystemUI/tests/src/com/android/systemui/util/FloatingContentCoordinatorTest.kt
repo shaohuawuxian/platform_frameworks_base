@@ -1,10 +1,11 @@
 package com.android.systemui.util
 
 import android.graphics.Rect
-import android.testing.AndroidTestingRunner
 import android.testing.TestableLooper
+import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.filters.SmallTest
 import com.android.systemui.SysuiTestCase
+import com.android.wm.shell.common.FloatingContentCoordinator
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -13,7 +14,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 
 @TestableLooper.RunWithLooper
-@RunWith(AndroidTestingRunner::class)
+@RunWith(AndroidJUnit4::class)
 @SmallTest
 class FloatingContentCoordinatorTest : SysuiTestCase() {
 
@@ -197,12 +198,11 @@ class FloatingContentCoordinatorTest : SysuiTestCase() {
     }
 
     /**
-     * Helper class that uses [floatingCoordinator.findAreaForContentVertically] to move a
-     * Rect when needed.
+     * Helper class that uses [floatingCoordinator.findAreaForContentVertically] to move a Rect when
+     * needed.
      */
-    inner class FloatingRect(
-        private val underlyingRect: Rect
-    ) : FloatingContentCoordinator.FloatingContent {
+    inner class FloatingRect(private val underlyingRect: Rect) :
+        FloatingContentCoordinator.FloatingContent {
         override fun moveToBounds(bounds: Rect) {
             underlyingRect.set(bounds)
         }

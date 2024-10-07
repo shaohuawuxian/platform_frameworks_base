@@ -16,28 +16,45 @@
 
 package android.view.accessibility;
 
+import static com.android.internal.accessibility.AccessibilityShortcutController.COLOR_INVERSION_COMPONENT_NAME;
+import static com.android.internal.accessibility.AccessibilityShortcutController.COLOR_INVERSION_TILE_COMPONENT_NAME;
+import static com.android.internal.accessibility.AccessibilityShortcutController.DALTONIZER_COMPONENT_NAME;
+import static com.android.internal.accessibility.AccessibilityShortcutController.DALTONIZER_TILE_COMPONENT_NAME;
+
+import static com.google.common.truth.Truth.assertThat;
+
 import static junit.framework.TestCase.assertFalse;
-import static junit.framework.TestCase.assertSame;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
+import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.Matchers.any;
 import static org.mockito.Matchers.anyInt;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import android.accessibilityservice.AccessibilityServiceInfo;
+import android.accessibilityservice.IAccessibilityServiceClient;
 import android.app.Instrumentation;
 import android.app.PendingIntent;
 import android.app.RemoteAction;
 import android.content.Intent;
+import android.content.pm.ParceledListSlice;
 import android.graphics.drawable.Icon;
+import android.os.Bundle;
+import android.os.RemoteException;
 import android.os.UserHandle;
 
+import androidx.annotation.NonNull;
 import androidx.test.InstrumentationRegistry;
 import androidx.test.runner.AndroidJUnit4;
 
+import com.android.internal.R;
+import com.android.internal.accessibility.common.ShortcutConstants.UserShortcutType;
 import com.android.internal.util.IntPair;
 import com.android.server.accessibility.test.MessageCapturingHandler;
 
@@ -51,6 +68,9 @@ import org.mockito.MockitoAnnotations;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.Executors;
 
 /**
  * Tests for the AccessibilityManager by mocking the backing service.
@@ -63,22 +83,30 @@ public class AccessibilityManagerTest {
     private static final String INTENT_ACTION = "TESTACTION";
     private static final String DESCRIPTION = "description";
     private static final PendingIntent TEST_PENDING_INTENT = PendingIntent.getBroadcast(
-            InstrumentationRegistry.getTargetContext(), 0, new Intent(INTENT_ACTION), 0);
+            InstrumentationRegistry.getTargetContext(), 0, new Intent(INTENT_ACTION), 
+            PendingIntent.FLAG_IMMUTABLE);
     private static final RemoteAction TEST_ACTION = new RemoteAction(
             Icon.createWithContentUri("content://test"),
             LABEL,
             DESCRIPTION,
             TEST_PENDING_INTENT);
+    private static final int DISPLAY_ID = 22;
 
     @Mock private IAccessibilityManager mMockService;
     private MessageCapturingHandler mHandler;
     private Instrumentation mInstrumentation;
+    private int mFocusStrokeWidthDefaultValue;
+    private int mFocusColorDefaultValue;
 
     @Before
     public void setUp() throws Exception {
         MockitoAnnotations.initMocks(this);
         mHandler = new MessageCapturingHandler(null);
         mInstrumentation = InstrumentationRegistry.getInstrumentation();
+        mFocusStrokeWidthDefaultValue = mInstrumentation.getContext().getResources()
+                .getDimensionPixelSize(R.dimen.accessibility_focus_highlight_stroke_width);
+        mFocusColorDefaultValue = mInstrumentation.getContext().getResources().getColor(
+                R.color.accessibility_focus_highlight_color);
     }
 
     @After
@@ -94,13 +122,24 @@ public class AccessibilityManagerTest {
         when(mMockService.addClient(any(IAccessibilityManagerClient.class), anyInt()))
                 .thenReturn(serviceReturnValue);
 
+        when(mMockService.getFocusStrokeWidth()).thenReturn(mFocusStrokeWidthDefaultValue);
+        when(mMockService.getFocusColor()).thenReturn(mFocusColorDefaultValue);
+
         AccessibilityManager manager =
-                new AccessibilityManager(mHandler, mMockService, UserHandle.USER_CURRENT);
+                new AccessibilityManager(mInstrumentation.getContext(), mHandler, mMockService,
+                        UserHandle.USER_CURRENT, true);
 
         verify(mMockService).addClient(any(IAccessibilityManagerClient.class), anyInt());
         mHandler.setCallback(manager.getCallback());
         mHandler.sendAllMessages();
         return manager;
+    }
+
+    @Test
+    public void testRemoveManager() throws Exception {
+        AccessibilityManager manager = createManager(WITH_A11Y_ENABLED);
+        manager.removeClient();
+        verify(mMockService).removeClient(manager.getClient(), UserHandle.USER_CURRENT);
     }
 
     @Test
@@ -113,7 +152,7 @@ public class AccessibilityManagerTest {
 
         // configure the mock service behavior
         when(mMockService.getInstalledAccessibilityServiceList(anyInt()))
-                .thenReturn(expectedServices);
+                .thenReturn(new ParceledListSlice<>(expectedServices));
 
         // invoke the method under test
         AccessibilityManager manager = createManager(true);
@@ -169,17 +208,6 @@ public class AccessibilityManagerTest {
     }
 
     @Test
-    public void testSendAccessibilityEvent_AccessibilityEnabled() throws Exception {
-        AccessibilityEvent sentEvent = AccessibilityEvent.obtain(
-                AccessibilityEvent.TYPE_ANNOUNCEMENT);
-
-        AccessibilityManager manager = createManager(WITH_A11Y_ENABLED);
-        manager.sendAccessibilityEvent(sentEvent);
-
-        assertSame("The event should be recycled.", sentEvent, AccessibilityEvent.obtain());
-    }
-
-    @Test
     public void testSendAccessibilityEvent_AccessibilityDisabled() throws Exception {
         AccessibilityEvent sentEvent = AccessibilityEvent.obtain();
 
@@ -196,13 +224,149 @@ public class AccessibilityManagerTest {
     }
 
     @Test
-    public void testSetWindowMagnificationConnection() throws Exception {
+    public void testSetMagnificationConnection() throws Exception {
         AccessibilityManager manager = createManager(WITH_A11Y_ENABLED);
-        IWindowMagnificationConnection connection = Mockito.mock(
-                IWindowMagnificationConnection.class);
+        IMagnificationConnection connection = Mockito.mock(
+                IMagnificationConnection.class);
 
-        manager.setWindowMagnificationConnection(connection);
+        manager.setMagnificationConnection(connection);
 
-        verify(mMockService).setWindowMagnificationConnection(connection);
+        verify(mMockService).setMagnificationConnection(connection);
+    }
+
+    @Test
+    public void testGetDefaultValueOfFocusAppearanceData() {
+        AccessibilityManager manager =
+                new AccessibilityManager(mInstrumentation.getContext(), mHandler, null,
+                        UserHandle.USER_CURRENT, false);
+
+        assertEquals(mFocusStrokeWidthDefaultValue,
+                manager.getAccessibilityFocusStrokeWidth());
+        assertEquals(mFocusColorDefaultValue,
+                manager.getAccessibilityFocusColor());
+    }
+
+    @Test
+    public void testRegisterAccessibilityProxy() throws Exception {
+        // Accessibility does not need to be enabled for a proxy to be registered.
+        AccessibilityManager manager =
+                new AccessibilityManager(mInstrumentation.getContext(), mHandler, mMockService,
+                        UserHandle.USER_CURRENT, true);
+
+
+        ArrayList<AccessibilityServiceInfo> infos = new ArrayList<>();
+        infos.add(new AccessibilityServiceInfo());
+        AccessibilityDisplayProxy proxy = new MyAccessibilityProxy(DISPLAY_ID, infos);
+        manager.registerDisplayProxy(proxy);
+        // Cannot access proxy.mServiceClient directly due to visibility.
+        verify(mMockService).registerProxyForDisplay(any(IAccessibilityServiceClient.class),
+                any(Integer.class));
+    }
+
+    @Test
+    public void testUnregisterAccessibilityProxy() throws Exception {
+        // Accessibility does not need to be enabled for a proxy to be registered.
+        final AccessibilityManager manager =
+                new AccessibilityManager(mInstrumentation.getContext(), mHandler, mMockService,
+                        UserHandle.USER_CURRENT, true);
+
+        final ArrayList<AccessibilityServiceInfo> infos = new ArrayList<>();
+        infos.add(new AccessibilityServiceInfo());
+
+        final AccessibilityDisplayProxy proxy = new MyAccessibilityProxy(DISPLAY_ID, infos);
+        manager.registerDisplayProxy(proxy);
+        manager.unregisterDisplayProxy(proxy);
+        verify(mMockService).unregisterProxyForDisplay(proxy.getDisplayId());
+    }
+
+    @Test
+    public void getA11yFeatureToTileMap_catchRemoteExceptionAndRethrow() throws Exception {
+        AccessibilityManager manager = createManager(WITH_A11Y_ENABLED);
+        doThrow(new RemoteException(new SecurityException()))
+                .when(mMockService)
+                .getA11yFeatureToTileMap(anyInt());
+
+        Throwable rethrownException = assertThrows(RuntimeException.class,
+                () -> manager.getA11yFeatureToTileMap(UserHandle.USER_CURRENT));
+        assertThat(rethrownException.getCause().getCause()).isInstanceOf(SecurityException.class);
+    }
+
+    @Test
+    public void getA11yFeatureToTileMap_verifyServiceMethodCalled() throws Exception {
+        AccessibilityManager manager = createManager(WITH_A11Y_ENABLED);
+        Bundle bundle = new Bundle();
+        bundle.putParcelable(
+                COLOR_INVERSION_COMPONENT_NAME.flattenToString(),
+                COLOR_INVERSION_TILE_COMPONENT_NAME);
+        bundle.putParcelable(
+                DALTONIZER_COMPONENT_NAME.flattenToString(),
+                DALTONIZER_TILE_COMPONENT_NAME);
+        when(mMockService.getA11yFeatureToTileMap(UserHandle.USER_CURRENT)).thenReturn(bundle);
+
+        assertThat(manager.getA11yFeatureToTileMap(UserHandle.USER_CURRENT))
+                .containsExactlyEntriesIn(Map.of(
+                        COLOR_INVERSION_COMPONENT_NAME, COLOR_INVERSION_TILE_COMPONENT_NAME,
+                        DALTONIZER_COMPONENT_NAME, DALTONIZER_TILE_COMPONENT_NAME
+                ));
+        verify(mMockService).getA11yFeatureToTileMap(UserHandle.USER_CURRENT);
+    }
+
+    @Test
+    public void enableShortcutsForTargets_catchRemoteExceptionAndRethrow() throws Exception {
+        AccessibilityManager manager = createManager(WITH_A11Y_ENABLED);
+        doThrow(new RemoteException(new SecurityException()))
+                .when(mMockService)
+                .enableShortcutsForTargets(anyBoolean(), anyInt(), anyList(), anyInt());
+
+        Throwable rethrownException = assertThrows(RuntimeException.class,
+                () -> manager.enableShortcutsForTargets(
+                        /* enable= */ false,
+                        UserShortcutType.HARDWARE,
+                        Set.of(DALTONIZER_COMPONENT_NAME.flattenToString()),
+                        UserHandle.USER_CURRENT
+                ));
+        assertThat(rethrownException.getCause().getCause()).isInstanceOf(SecurityException.class);
+    }
+
+    @Test
+    public void enableShortcutsForTargets_verifyServiceMethodCalled() throws Exception {
+        AccessibilityManager manager = createManager(WITH_A11Y_ENABLED);
+        int shortcutTypes = UserShortcutType.HARDWARE | UserShortcutType.TRIPLETAP;
+
+        manager.enableShortcutsForTargets(
+                /* enable= */ false,
+                shortcutTypes,
+                Set.of(DALTONIZER_COMPONENT_NAME.flattenToString()),
+                UserHandle.USER_CURRENT
+        );
+
+        verify(mMockService).enableShortcutsForTargets(
+                /* enable= */ false,
+                shortcutTypes,
+                List.of(DALTONIZER_COMPONENT_NAME.flattenToString()),
+                UserHandle.USER_CURRENT
+        );
+    }
+
+    private class MyAccessibilityProxy extends AccessibilityDisplayProxy {
+        MyAccessibilityProxy(int displayId,
+                @NonNull List<AccessibilityServiceInfo> serviceInfos) {
+            super(displayId, Executors.newSingleThreadExecutor(), serviceInfos);
+        }
+
+        @Override
+        public void onAccessibilityEvent(@NonNull AccessibilityEvent event) {
+
+        }
+
+        @Override
+        public void onProxyConnected() {
+
+        }
+
+        @Override
+        public void interrupt() {
+
+        }
     }
 }

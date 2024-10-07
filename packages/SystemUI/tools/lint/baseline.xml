@@ -337,17 +337,6 @@
     <issue
         id="Deprecated"
         message="`android:singleLine` is deprecated: Use `maxLines=&quot;1&quot;` instead"
-        errorLine1="        android:singleLine=&quot;true&quot;"
-        errorLine2="        ~~~~~~~~~~~~~~~~~~~~~~~~~">
-        <location
-            file="res/layout/emergency_cryptkeeper_text.xml"
-            line="25"
-            column="9"/>
-    </issue>
-
-    <issue
-        id="Deprecated"
-        message="`android:singleLine` is deprecated: Use `maxLines=&quot;1&quot;` instead"
         errorLine1="                android:singleLine=&quot;true&quot;"
         errorLine2="                ~~~~~~~~~~~~~~~~~~~~~~~~~">
         <location
@@ -1262,17 +1251,6 @@
     <issue
         id="MergeRootFrame"
         message="This `&lt;FrameLayout>` can be replaced with a `&lt;merge>` tag"
-        errorLine1="&lt;FrameLayout"
-        errorLine2="^">
-        <location
-            file="res/layout/pip_menu_activity.xml"
-            line="16"
-            column="1"/>
-    </issue>
-
-    <issue
-        id="MergeRootFrame"
-        message="This `&lt;FrameLayout>` can be replaced with a `&lt;merge>` tag"
         errorLine1="&lt;FrameLayout xmlns:android=&quot;http://schemas.android.com/apk/res/android&quot;"
         errorLine2="^">
         <location
@@ -1288,17 +1266,6 @@
         errorLine2="^">
         <location
             file="res/layout/recents.xml"
-            line="16"
-            column="1"/>
-    </issue>
-
-    <issue
-        id="MergeRootFrame"
-        message="This `&lt;FrameLayout>` can be replaced with a `&lt;merge>` tag"
-        errorLine1="&lt;FrameLayout"
-        errorLine2="^">
-        <location
-            file="res/layout/volume_dnd_icon.xml"
             line="16"
             column="1"/>
     </issue>
@@ -2904,17 +2871,6 @@
         <location
             file="res/values/dimens.xml"
             line="451"
-            column="12"/>
-    </issue>
-
-    <issue
-        id="UnusedResources"
-        message="The resource `R.dimen.notification_header_height` appears to be unused"
-        errorLine1="    &lt;dimen name=&quot;notification_header_height&quot;>53dp&lt;/dimen>"
-        errorLine2="           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
-        <location
-            file="res/values/dimens.xml"
-            line="473"
             column="12"/>
     </issue>
 
@@ -88886,17 +88842,6 @@
         errorLine1="    &lt;ImageView"
         errorLine2="    ^">
         <location
-            file="res/layout/volume_dnd_icon.xml"
-            line="23"
-            column="5"/>
-    </issue>
-
-    <issue
-        id="ContentDescription"
-        message="[Accessibility] Missing `contentDescription` attribute on image"
-        errorLine1="    &lt;ImageView"
-        errorLine2="    ^">
-        <location
             file="res/layout/wireless_charging_layout.xml"
             line="26"
             column="5"/>
@@ -89010,17 +88955,6 @@
         <location
             file="res/layout/car_navigation_bar_unprovisioned.xml"
             line="33"
-            column="9"/>
-    </issue>
-
-    <issue
-        id="RtlSymmetry"
-        message="When you define `paddingStart` you should probably also define `paddingEnd` for right-to-left symmetry"
-        errorLine1="        android:paddingStart=&quot;6dp&quot;"
-        errorLine2="        ~~~~~~~~~~~~~~~~~~~~">
-        <location
-            file="res/layout/emergency_cryptkeeper_text.xml"
-            line="24"
             column="9"/>
     </issue>
 
@@ -89825,17 +89759,6 @@
             file="res/layout/volume_dialog.xml"
             line="59"
             column="22"/>
-    </issue>
-
-    <issue
-        id="RtlHardcoded"
-        message="Use &quot;`end`&quot; instead of &quot;`right`&quot; to ensure correct behavior in right-to-left locales"
-        errorLine1="        android:layout_gravity=&quot;right|top&quot;"
-        errorLine2="                                ~~~~~~~~~">
-        <location
-            file="res/layout/volume_dnd_icon.xml"
-            line="26"
-            column="33"/>
     </issue>
 
 </issues>

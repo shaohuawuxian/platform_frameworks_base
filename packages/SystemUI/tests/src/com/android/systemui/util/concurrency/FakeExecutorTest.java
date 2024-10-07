@@ -16,16 +16,19 @@
 
 package com.android.systemui.util.concurrency;
 
+import static com.google.common.truth.Truth.assertThat;
+
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
-import android.testing.AndroidTestingRunner;
-
+import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.filters.SmallTest;
 
 import com.android.systemui.SysuiTestCase;
 import com.android.systemui.util.time.FakeSystemClock;
+
+import kotlin.jvm.functions.Function4;
 
 import org.junit.Before;
 import org.junit.Test;
@@ -34,10 +37,8 @@ import org.junit.runner.RunWith;
 import java.util.ArrayList;
 import java.util.List;
 
-import kotlin.jvm.functions.Function4;
-
 @SmallTest
-@RunWith(AndroidTestingRunner.class)
+@RunWith(AndroidJUnit4.class)
 public class FakeExecutorTest extends SysuiTestCase {
     @Before
     public void setUp() throws Exception {
@@ -105,6 +106,40 @@ public class FakeExecutorTest extends SysuiTestCase {
         fakeExecutor.executeDelayed(runnable, 1);
         fakeExecutor.executeDelayed(runnable, 50);
         fakeExecutor.executeDelayed(runnable, 100);
+        assertEquals(0, runnable.mRunCount);
+        assertEquals(10000, clock.uptimeMillis());
+        assertEquals(3, fakeExecutor.numPending());
+        // Delayed runnables should not advance the clock and therefore should not run.
+        assertFalse(fakeExecutor.runNextReady());
+        assertEquals(0, fakeExecutor.runAllReady());
+        assertEquals(3, fakeExecutor.numPending());
+
+        // Advance the clock to the next runnable. One runnable should execute.
+        assertEquals(1, fakeExecutor.advanceClockToNext());
+        assertEquals(1, fakeExecutor.runAllReady());
+        assertEquals(2, fakeExecutor.numPending());
+        assertEquals(1, runnable.mRunCount);
+        // Advance the clock to the last runnable.
+        assertEquals(99, fakeExecutor.advanceClockToLast());
+        assertEquals(2, fakeExecutor.runAllReady());
+        // Now all remaining runnables should execute.
+        assertEquals(0, fakeExecutor.numPending());
+        assertEquals(3, runnable.mRunCount);
+    }
+
+    /**
+     * Test FakeExecutor that is told to delay execution on items.
+     */
+    @Test
+    public void testAtTime() {
+        FakeSystemClock clock = new FakeSystemClock();
+        FakeExecutor fakeExecutor = new FakeExecutor(clock);
+        RunnableImpl runnable = new RunnableImpl();
+
+        // Add three delayed runnables.
+        fakeExecutor.executeAtTime(runnable, 10001);
+        fakeExecutor.executeAtTime(runnable, 10050);
+        fakeExecutor.executeAtTime(runnable, 10100);
         assertEquals(0, runnable.mRunCount);
         assertEquals(10000, clock.uptimeMillis());
         assertEquals(3, fakeExecutor.numPending());
@@ -317,6 +352,18 @@ public class FakeExecutorTest extends SysuiTestCase {
         removeFunctions.forEach(Runnable::run);
         assertEquals(0, fakeExecutor.numPending());
         assertEquals(1, runnable.mRunCount);
+    }
+
+    @Test
+    public void testIsExecuting() {
+        FakeSystemClock clock = new FakeSystemClock();
+        FakeExecutor fakeExecutor = new FakeExecutor(clock);
+
+        Runnable runnable = () -> assertThat(fakeExecutor.isExecuting()).isTrue();
+
+        assertThat(fakeExecutor.isExecuting()).isFalse();
+        fakeExecutor.execute(runnable);
+        assertThat(fakeExecutor.isExecuting()).isFalse();
     }
 
     private static class RunnableImpl implements Runnable {

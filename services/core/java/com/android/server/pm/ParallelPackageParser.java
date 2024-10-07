@@ -18,14 +18,14 @@ package com.android.server.pm;
 
 import static android.os.Trace.TRACE_TAG_PACKAGE_MANAGER;
 
-import android.content.pm.PackageParser;
 import android.os.Process;
 import android.os.Trace;
 
 import com.android.internal.annotations.VisibleForTesting;
+import com.android.internal.pm.parsing.PackageParser2;
+import com.android.internal.pm.parsing.PackageParserException;
+import com.android.internal.pm.parsing.pkg.ParsedPackage;
 import com.android.internal.util.ConcurrentUtils;
-import com.android.server.pm.parsing.PackageParser2;
-import com.android.server.pm.parsing.pkg.ParsedPackage;
 
 import java.io.File;
 import java.util.concurrent.ArrayBlockingQueue;
@@ -33,7 +33,7 @@ import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ExecutorService;
 
 /**
- * Helper class for parallel parsing of packages using {@link PackageParser}.
+ * Helper class for parallel parsing of packages using {@link PackageParser2}.
  * <p>Parsing requests are processed by a thread-pool of {@link #MAX_THREADS}.
  * At any time, at most {@link #QUEUE_CAPACITY} results are kept in RAM</p>
  */
@@ -125,7 +125,11 @@ class ParallelPackageParser {
 
     @VisibleForTesting
     protected ParsedPackage parsePackage(File scanFile, int parseFlags)
-            throws PackageParser.PackageParserException {
-        return mPackageParser.parsePackage(scanFile, parseFlags, true);
+            throws PackageManagerException {
+        try {
+            return mPackageParser.parsePackage(scanFile, parseFlags, true);
+        } catch (PackageParserException e) {
+            throw new PackageManagerException(e.error, e.getMessage(), e);
+        }
     }
 }

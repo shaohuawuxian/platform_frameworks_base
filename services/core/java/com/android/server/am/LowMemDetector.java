@@ -16,7 +16,19 @@
 
 package com.android.server.am;
 
+import static com.android.internal.app.procstats.ProcessStats.ADJ_MEM_FACTOR_CRITICAL;
+import static com.android.internal.app.procstats.ProcessStats.ADJ_MEM_FACTOR_LOW;
+import static com.android.internal.app.procstats.ProcessStats.ADJ_MEM_FACTOR_MODERATE;
+import static com.android.internal.app.procstats.ProcessStats.ADJ_MEM_FACTOR_NORMAL;
+import static com.android.internal.app.procstats.ProcessStats.ADJ_NOTHING;
+
+import android.annotation.IntDef;
+import android.os.Trace;
+
 import com.android.internal.annotations.GuardedBy;
+
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
 
 /**
  * Detects low memory using PSI.
@@ -32,13 +44,20 @@ public final class LowMemDetector {
     private final Object mPressureStateLock = new Object();
 
     @GuardedBy("mPressureStateLock")
-    private int mPressureState = MEM_PRESSURE_NONE;
+    private int mPressureState = ADJ_MEM_FACTOR_NORMAL;
+
+    public static final int ADJ_MEM_FACTOR_NOTHING = ADJ_NOTHING;
 
     /* getPressureState return values */
-    public static final int MEM_PRESSURE_NONE = 0;
-    public static final int MEM_PRESSURE_LOW = 1;
-    public static final int MEM_PRESSURE_MEDIUM = 2;
-    public static final int MEM_PRESSURE_HIGH = 3;
+    @IntDef(prefix = { "ADJ_MEM_FACTOR_" }, value = {
+        ADJ_MEM_FACTOR_NOTHING,
+        ADJ_MEM_FACTOR_NORMAL,
+        ADJ_MEM_FACTOR_MODERATE,
+        ADJ_MEM_FACTOR_LOW,
+        ADJ_MEM_FACTOR_CRITICAL,
+    })
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface MemFactor{}
 
     LowMemDetector(ActivityManagerService am) {
         mAm = am;
@@ -62,7 +81,7 @@ public final class LowMemDetector {
      * there should be conversion performed here to translate pressure state
      * into memFactor.
      */
-    public int getMemFactor() {
+    public @MemFactor int getMemFactor() {
         synchronized (mPressureStateLock) {
             return mPressureState;
         }
@@ -72,17 +91,31 @@ public final class LowMemDetector {
     private native int waitForPressure();
 
     private final class LowMemThread extends Thread {
+        private boolean mIsTracingMemCriticalLow;
+
+        LowMemThread() {
+            super("LowMemThread");
+        }
+
         public void run() {
 
             while (true) {
                 // sleep waiting for a PSI event
                 int newPressureState = waitForPressure();
+                // PSI event detected
+                boolean isCriticalLowMemory = newPressureState == ADJ_MEM_FACTOR_CRITICAL;
+                if (isCriticalLowMemory && !mIsTracingMemCriticalLow) {
+                    Trace.traceBegin(Trace.TRACE_TAG_ACTIVITY_MANAGER, "criticalLowMemory");
+                } else if (!isCriticalLowMemory && mIsTracingMemCriticalLow) {
+                    Trace.traceEnd(Trace.TRACE_TAG_ACTIVITY_MANAGER);
+                }
+                mIsTracingMemCriticalLow = isCriticalLowMemory;
                 if (newPressureState == -1) {
                     // epoll broke, tear this down
                     mAvailable = false;
                     break;
                 }
-                // got a PSI event? let's update lowmem info
+                // got an actual PSI event? let's update lowmem info
                 synchronized (mPressureStateLock) {
                     mPressureState = newPressureState;
                 }

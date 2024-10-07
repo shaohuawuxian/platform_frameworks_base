@@ -1,11 +1,6 @@
 # Bug component: 142675
+# Assign bugs to device-policy-manager-triage@google.com
 
-# Android Enterprise team
-rubinxu@google.com
-sandness@google.com
-alexkershaw@google.com
-pgrafov@google.com
+file:EnterprisePlatformSecurity_OWNERS
 
-# Emeritus
-yamasani@google.com
-eranm@google.com
+yamasani@google.com #{LAST_RESORT_SUGGESTION}

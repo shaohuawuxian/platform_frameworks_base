@@ -16,13 +16,17 @@
 
 package com.android.server.job.controllers;
 
-import android.content.Context;
+import static com.android.server.job.JobSchedulerService.sElapsedRealtimeClock;
+
+import android.annotation.NonNull;
 import android.content.pm.PackageManager;
 import android.os.UserHandle;
+import android.provider.DeviceConfig;
 import android.util.ArraySet;
+import android.util.IndentingPrintWriter;
 import android.util.proto.ProtoOutputStream;
 
-import com.android.internal.util.IndentingPrintWriter;
+import com.android.internal.annotations.GuardedBy;
 import com.android.server.job.JobSchedulerService;
 import com.android.server.job.StateControllerProto;
 import com.android.server.job.controllers.idle.CarIdlenessTracker;
@@ -44,12 +48,16 @@ public final class IdleController extends RestrictingController implements Idlen
     private static final String TAG = "JobScheduler.IdleController";
     // Policy: we decide that we're "idle" if the device has been unused /
     // screen off or dreaming or wireless charging dock idle for at least this long
+    @GuardedBy("mLock")
     final ArraySet<JobStatus> mTrackedTasks = new ArraySet<>();
     IdlenessTracker mIdleTracker;
+    private final FlexibilityController mFlexibilityController;
 
-    public IdleController(JobSchedulerService service) {
+    public IdleController(JobSchedulerService service,
+            FlexibilityController flexibilityController) {
         super(service);
-        initIdleStateTracking(mContext);
+        initIdleStateTracker();
+        mFlexibilityController = flexibilityController;
     }
 
     /**
@@ -58,9 +66,10 @@ public final class IdleController extends RestrictingController implements Idlen
     @Override
     public void maybeStartTrackingJobLocked(JobStatus taskStatus, JobStatus lastJob) {
         if (taskStatus.hasIdleConstraint()) {
+            final long nowElapsed = sElapsedRealtimeClock.millis();
             mTrackedTasks.add(taskStatus);
             taskStatus.setTrackingController(JobStatus.TRACKING_IDLE);
-            taskStatus.setIdleConstraintSatisfied(mIdleTracker.isIdle());
+            taskStatus.setIdleConstraintSatisfied(nowElapsed, mIdleTracker.isIdle());
         }
     }
 
@@ -70,8 +79,7 @@ public final class IdleController extends RestrictingController implements Idlen
     }
 
     @Override
-    public void maybeStopTrackingJobLocked(JobStatus taskStatus, JobStatus incomingJob,
-            boolean forUpdate) {
+    public void maybeStopTrackingJobLocked(JobStatus taskStatus, JobStatus incomingJob) {
         if (taskStatus.clearTrackingController(JobStatus.TRACKING_IDLE)) {
             mTrackedTasks.remove(taskStatus);
         }
@@ -80,8 +88,21 @@ public final class IdleController extends RestrictingController implements Idlen
     @Override
     public void stopTrackingRestrictedJobLocked(JobStatus jobStatus) {
         if (!jobStatus.hasIdleConstraint()) {
-            maybeStopTrackingJobLocked(jobStatus, null, false);
+            maybeStopTrackingJobLocked(jobStatus, null);
         }
+    }
+
+    @Override
+    public void processConstantLocked(@NonNull DeviceConfig.Properties properties,
+            @NonNull String key) {
+        mIdleTracker.processConstant(properties, key);
+    }
+
+    @Override
+    @GuardedBy("mLock")
+    public void onBatteryStateChangedLocked() {
+        mIdleTracker.onBatteryStateChanged(
+                mService.isBatteryCharging(), mService.isBatteryNotLow());
     }
 
     /**
@@ -90,18 +111,25 @@ public final class IdleController extends RestrictingController implements Idlen
     @Override
     public void reportNewIdleState(boolean isIdle) {
         synchronized (mLock) {
+            logDeviceWideConstraintStateToStatsd(JobStatus.CONSTRAINT_IDLE, isIdle);
+
+            final long nowElapsed = sElapsedRealtimeClock.millis();
+            mFlexibilityController.setConstraintSatisfied(
+                    JobStatus.CONSTRAINT_IDLE, isIdle, nowElapsed);
             for (int i = mTrackedTasks.size()-1; i >= 0; i--) {
-                mTrackedTasks.valueAt(i).setIdleConstraintSatisfied(isIdle);
+                mTrackedTasks.valueAt(i).setIdleConstraintSatisfied(nowElapsed, isIdle);
+            }
+            if (!mTrackedTasks.isEmpty()) {
+                mStateChangedListener.onControllerStateChanged(mTrackedTasks);
             }
         }
-        mStateChangedListener.onControllerStateChanged();
     }
 
     /**
      * Idle state tracking, and messaging with the task manager when
      * significant state changes occur
      */
-    private void initIdleStateTracking(Context ctx) {
+    private void initIdleStateTracker() {
         final boolean isCar = mContext.getPackageManager().hasSystemFeature(
                 PackageManager.FEATURE_AUTOMOTIVE);
         if (isCar) {
@@ -109,7 +137,20 @@ public final class IdleController extends RestrictingController implements Idlen
         } else {
             mIdleTracker = new DeviceIdlenessTracker();
         }
-        mIdleTracker.startTracking(ctx, this);
+    }
+
+    @Override
+    public void startTrackingLocked() {
+        mIdleTracker.startTracking(mContext, mService, this);
+    }
+
+    @Override
+    public void dumpConstants(IndentingPrintWriter pw) {
+        pw.println();
+        pw.println("IdleController:");
+        pw.increaseIndent();
+        mIdleTracker.dumpConstants(pw);
+        pw.decreaseIndent();
     }
 
     @Override

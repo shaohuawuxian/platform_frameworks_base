@@ -17,35 +17,52 @@ package com.android.systemui.statusbar.phone
 import android.content.Context
 import android.content.pm.ActivityInfo
 import android.content.res.Configuration
+import android.graphics.Rect
 import android.os.LocaleList
+import android.view.View.LAYOUT_DIRECTION_RTL
+import com.android.systemui.dagger.SysUISingleton
+import com.android.systemui.dagger.qualifiers.Application
 import com.android.systemui.statusbar.policy.ConfigurationController
+import com.android.systemui.statusbar.policy.ConfigurationController.ConfigurationListener
+import javax.inject.Inject
 
-import java.util.ArrayList
+@SysUISingleton
+class ConfigurationControllerImpl @Inject constructor(
+        @Application context: Context,
+        ) : ConfigurationController {
 
-class ConfigurationControllerImpl(context: Context) : ConfigurationController {
-
-    private val listeners: MutableList<ConfigurationController.ConfigurationListener> = ArrayList()
+    private val listeners: MutableList<ConfigurationListener> = ArrayList()
     private val lastConfig = Configuration()
     private var density: Int = 0
+    private var smallestScreenWidth: Int = 0
+    private var maxBounds = Rect()
     private var fontScale: Float = 0.toFloat()
     private val inCarMode: Boolean
     private var uiMode: Int = 0
     private var localeList: LocaleList? = null
     private val context: Context
+    private var layoutDirection: Int
+    private var orientation = Configuration.ORIENTATION_UNDEFINED
 
     init {
         val currentConfig = context.resources.configuration
         this.context = context
         fontScale = currentConfig.fontScale
         density = currentConfig.densityDpi
+        smallestScreenWidth = currentConfig.smallestScreenWidthDp
+        maxBounds.set(currentConfig.windowConfiguration.maxBounds)
         inCarMode = currentConfig.uiMode and Configuration.UI_MODE_TYPE_MASK ==
                 Configuration.UI_MODE_TYPE_CAR
         uiMode = currentConfig.uiMode and Configuration.UI_MODE_NIGHT_MASK
         localeList = currentConfig.locales
+        layoutDirection = currentConfig.layoutDirection
     }
 
     override fun notifyThemeChanged() {
-        val listeners = ArrayList(listeners)
+        // Avoid concurrent modification exception
+        val listeners = synchronized(this.listeners) {
+           ArrayList(this.listeners)
+        }
 
         listeners.filterForEach({ this.listeners.contains(it) }) {
             it.onThemeChanged()
@@ -54,8 +71,9 @@ class ConfigurationControllerImpl(context: Context) : ConfigurationController {
 
     override fun onConfigurationChanged(newConfig: Configuration) {
         // Avoid concurrent modification exception
-        val listeners = ArrayList(listeners)
-
+        val listeners = synchronized(this.listeners) {
+           ArrayList(this.listeners)
+        }
         listeners.filterForEach({ this.listeners.contains(it) }) {
             it.onConfigChanged(newConfig)
         }
@@ -70,6 +88,26 @@ class ConfigurationControllerImpl(context: Context) : ConfigurationController {
             }
             this.density = density
             this.fontScale = fontScale
+        }
+
+        val smallestScreenWidth = newConfig.smallestScreenWidthDp
+        if (smallestScreenWidth != this.smallestScreenWidth) {
+            this.smallestScreenWidth = smallestScreenWidth
+            listeners.filterForEach({ this.listeners.contains(it) }) {
+                it.onSmallestScreenWidthChanged()
+            }
+        }
+
+        val maxBounds = newConfig.windowConfiguration.maxBounds
+        if (maxBounds != this.maxBounds) {
+            // Update our internal rect to have the same bounds, instead of using
+            // `this.maxBounds = maxBounds` directly. Setting it directly means that `maxBounds`
+            // would be a direct reference to windowConfiguration.maxBounds, so the if statement
+            // above would always fail. See b/245799099 for more information.
+            this.maxBounds.set(maxBounds)
+            listeners.filterForEach({ this.listeners.contains(it) }) {
+                it.onMaxBoundsChanged()
+            }
         }
 
         val localeList = newConfig.locales
@@ -91,20 +129,52 @@ class ConfigurationControllerImpl(context: Context) : ConfigurationController {
             }
         }
 
+        if (layoutDirection != newConfig.layoutDirection) {
+            layoutDirection = newConfig.layoutDirection
+            listeners.filterForEach({ this.listeners.contains(it) }) {
+                it.onLayoutDirectionChanged(layoutDirection == LAYOUT_DIRECTION_RTL)
+            }
+        }
+
         if (lastConfig.updateFrom(newConfig) and ActivityInfo.CONFIG_ASSETS_PATHS != 0) {
             listeners.filterForEach({ this.listeners.contains(it) }) {
-                it.onOverlayChanged()
+                it.onThemeChanged()
+            }
+        }
+
+        val newOrientation = newConfig.orientation
+        if (orientation != newOrientation) {
+            orientation = newOrientation
+            listeners.filterForEach({ this.listeners.contains(it) }) {
+                it.onOrientationChanged(orientation)
             }
         }
     }
 
-    override fun addCallback(listener: ConfigurationController.ConfigurationListener) {
-        listeners.add(listener)
+    override fun addCallback(listener: ConfigurationListener) {
+        synchronized(listeners) {
+            listeners.add(listener)
+        }
         listener.onDensityOrFontScaleChanged()
     }
 
-    override fun removeCallback(listener: ConfigurationController.ConfigurationListener) {
-        listeners.remove(listener)
+    override fun removeCallback(listener: ConfigurationListener) {
+        synchronized(listeners) {
+            listeners.remove(listener)
+        }
+    }
+
+    override fun isLayoutRtl(): Boolean {
+        return layoutDirection == LAYOUT_DIRECTION_RTL
+    }
+
+    override fun getNightModeName(): String {
+        return when (uiMode and Configuration.UI_MODE_NIGHT_MASK) {
+            Configuration.UI_MODE_NIGHT_YES -> "night"
+            Configuration.UI_MODE_NIGHT_NO -> "day"
+            Configuration.UI_MODE_NIGHT_UNDEFINED -> "undefined"
+            else -> "err"
+        }
     }
 }
 

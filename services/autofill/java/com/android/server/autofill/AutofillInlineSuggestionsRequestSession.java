@@ -34,9 +34,10 @@ import android.view.inputmethod.InlineSuggestionsRequest;
 import android.view.inputmethod.InlineSuggestionsResponse;
 
 import com.android.internal.annotations.GuardedBy;
-import com.android.internal.view.IInlineSuggestionsRequestCallback;
-import com.android.internal.view.IInlineSuggestionsResponseCallback;
-import com.android.internal.view.InlineSuggestionsRequestInfo;
+import com.android.internal.inputmethod.IInlineSuggestionsRequestCallback;
+import com.android.internal.inputmethod.IInlineSuggestionsResponseCallback;
+import com.android.internal.inputmethod.InlineSuggestionsRequestCallback;
+import com.android.internal.inputmethod.InlineSuggestionsRequestInfo;
 import com.android.server.autofill.ui.InlineFillUi;
 import com.android.server.inputmethod.InputMethodManagerInternal;
 
@@ -105,6 +106,8 @@ final class AutofillInlineSuggestionsRequestSession {
     private boolean mPreviousHasNonPinSuggestionShow;
     @GuardedBy("mLock")
     private boolean mImeSessionInvalidated = false;
+
+    private boolean mImeShowing = false;
 
     AutofillInlineSuggestionsRequestSession(
             @NonNull InputMethodManagerInternal inputMethodManagerInternal, int userId,
@@ -320,6 +323,7 @@ final class AutofillInlineSuggestionsRequestSession {
             if (mDestroyed) {
                 return;
             }
+            mImeShowing = imeInputViewStarted;
             if (mImeCurrentFieldId != null) {
                 boolean imeInputStartedChanged = (mImeInputStarted != imeInputStarted);
                 boolean imeInputViewStartedChanged = (mImeInputViewStarted != imeInputViewStarted);
@@ -364,11 +368,17 @@ final class AutofillInlineSuggestionsRequestSession {
         }
     }
 
+    boolean isImeShowing() {
+        synchronized (mLock) {
+            return !mDestroyed && mImeShowing;
+        }
+    }
+
     /**
      * Internal implementation of {@link IInlineSuggestionsRequestCallback}.
      */
-    private static final class InlineSuggestionsRequestCallbackImpl extends
-            IInlineSuggestionsRequestCallback.Stub {
+    private static final class InlineSuggestionsRequestCallbackImpl
+            implements InlineSuggestionsRequestCallback {
 
         private final WeakReference<AutofillInlineSuggestionsRequestSession> mSession;
 
@@ -379,7 +389,7 @@ final class AutofillInlineSuggestionsRequestSession {
 
         @BinderThread
         @Override
-        public void onInlineSuggestionsUnsupported() throws RemoteException {
+        public void onInlineSuggestionsUnsupported() {
             if (sDebug) Slog.d(TAG, "onInlineSuggestionsUnsupported() called.");
             final AutofillInlineSuggestionsRequestSession session = mSession.get();
             if (session != null) {
@@ -403,7 +413,7 @@ final class AutofillInlineSuggestionsRequestSession {
         }
 
         @Override
-        public void onInputMethodStartInput(AutofillId imeFieldId) throws RemoteException {
+        public void onInputMethodStartInput(AutofillId imeFieldId) {
             if (sVerbose) Slog.v(TAG, "onInputMethodStartInput() received on " + imeFieldId);
             final AutofillInlineSuggestionsRequestSession session = mSession.get();
             if (session != null) {
@@ -414,7 +424,7 @@ final class AutofillInlineSuggestionsRequestSession {
         }
 
         @Override
-        public void onInputMethodShowInputRequested(boolean requestResult) throws RemoteException {
+        public void onInputMethodShowInputRequested(boolean requestResult) {
             if (sVerbose) {
                 Slog.v(TAG, "onInputMethodShowInputRequested() received: " + requestResult);
             }
@@ -445,7 +455,7 @@ final class AutofillInlineSuggestionsRequestSession {
         }
 
         @Override
-        public void onInputMethodFinishInput() throws RemoteException {
+        public void onInputMethodFinishInput() {
             if (sVerbose) Slog.v(TAG, "onInputMethodFinishInput() received");
             final AutofillInlineSuggestionsRequestSession session = mSession.get();
             if (session != null) {
@@ -457,7 +467,7 @@ final class AutofillInlineSuggestionsRequestSession {
 
         @BinderThread
         @Override
-        public void onInlineSuggestionsSessionInvalidated() throws RemoteException {
+        public void onInlineSuggestionsSessionInvalidated() {
             if (sDebug) Slog.d(TAG, "onInlineSuggestionsSessionInvalidated() called.");
             final AutofillInlineSuggestionsRequestSession session = mSession.get();
             if (session != null) {

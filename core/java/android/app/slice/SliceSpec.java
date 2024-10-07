@@ -17,6 +17,7 @@
 package android.app.slice;
 
 import android.annotation.NonNull;
+import android.annotation.Nullable;
 import android.net.Uri;
 import android.os.Parcel;
 import android.os.Parcelable;
@@ -37,7 +38,12 @@ import android.os.Parcelable;
  *
  * @see Slice
  * @see SliceProvider#onBindSlice(Uri, Set)
+ * @deprecated Slice framework has been deprecated, it will not receive any updates from
+ *          {@link android.os.Build.VANILLA_ICE_CREAM} and forward. If you are looking for a
+ *          framework that sends displayable data from one app to another, consider using
+ *          {@link android.app.appsearch.AppSearchManager}.
  */
+@Deprecated
 public final class SliceSpec implements Parcelable {
 
     private final String mType;
@@ -97,7 +103,7 @@ public final class SliceSpec implements Parcelable {
     }
 
     @Override
-    public boolean equals(Object obj) {
+    public boolean equals(@Nullable Object obj) {
         if (!(obj instanceof SliceSpec)) return false;
         SliceSpec other = (SliceSpec) obj;
         return mType.equals(other.mType) && mRevision == other.mRevision;

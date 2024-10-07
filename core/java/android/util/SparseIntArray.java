@@ -21,8 +21,6 @@ import android.compat.annotation.UnsupportedAppUsage;
 import com.android.internal.util.ArrayUtils;
 import com.android.internal.util.GrowingArrayUtils;
 
-import libcore.util.EmptyArray;
-
 import java.util.Arrays;
 
 /**
@@ -46,6 +44,7 @@ import java.util.Arrays;
  * keys in ascending order, or the values corresponding to the keys in ascending
  * order in the case of <code>valueAt(int)</code>.</p>
  */
+@android.ravenwood.annotation.RavenwoodKeepWholeClass
 public class SparseIntArray implements Cloneable {
     @UnsupportedAppUsage(maxTargetSdk = 28) // Use keyAt(int)
     private int[] mKeys;
@@ -58,7 +57,7 @@ public class SparseIntArray implements Cloneable {
      * Creates a new SparseIntArray containing no mappings.
      */
     public SparseIntArray() {
-        this(10);
+        this(0);
     }
 
     /**

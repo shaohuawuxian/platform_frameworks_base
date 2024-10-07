@@ -16,9 +16,12 @@
 
 package android.app;
 
+import android.app.ActivityOptions.SceneTransitionInfo;
+import android.app.ContentProviderHolder;
 import android.app.IInstrumentationWatcher;
 import android.app.IUiAutomationConnection;
 import android.app.ProfilerInfo;
+import android.app.ReceiverInfo;
 import android.app.ResultInfo;
 import android.app.servertransaction.ClientTransaction;
 import android.content.AutofillOptions;
@@ -42,6 +45,12 @@ import android.os.IInterface;
 import android.os.ParcelFileDescriptor;
 import android.os.PersistableBundle;
 import android.os.RemoteCallback;
+import android.os.SharedMemory;
+import android.view.autofill.AutofillId;
+import android.view.translation.TranslationSpec;
+import android.view.translation.UiTranslationSpec;
+import android.window.ITaskFragmentOrganizer;
+import android.window.TaskFragmentTransaction;
 
 import com.android.internal.app.IVoiceInteractor;
 import com.android.internal.content.ReferrerIntent;
@@ -59,14 +68,20 @@ import java.util.Map;
 oneway interface IApplicationThread {
     void scheduleReceiver(in Intent intent, in ActivityInfo info,
             in CompatibilityInfo compatInfo,
-            int resultCode, in String data, in Bundle extras, boolean sync,
-            int sendingUser, int processState);
+            int resultCode, in String data, in Bundle extras, boolean ordered,
+            boolean assumeDelivered, int sendingUser, int processState, int sentFromUid,
+            in String sentFromPackage);
+
+    void scheduleReceiverList(in List<ReceiverInfo> info);
+
     @UnsupportedAppUsage
     void scheduleCreateService(IBinder token, in ServiceInfo info,
             in CompatibilityInfo compatInfo, int processState);
     @UnsupportedAppUsage
     void scheduleStopService(IBinder token);
     void bindApplication(in String packageName, in ApplicationInfo info,
+            in String sdkSandboxClientAppVolumeUuid, in String sdkSandboxClientAppPackage,
+            in boolean isSdkInSandbox,
             in ProviderInfoList providerList, in ComponentName testName,
             in ProfilerInfo profilerInfo, in Bundle testArguments,
             IInstrumentationWatcher testWatcher, IUiAutomationConnection uiAutomationConnection,
@@ -74,7 +89,9 @@ oneway interface IApplicationThread {
             boolean restrictedBackupMode, boolean persistent, in Configuration config,
             in CompatibilityInfo compatInfo, in Map services,
             in Bundle coreSettings, in String buildSerial, in AutofillOptions autofillOptions,
-            in ContentCaptureOptions contentCaptureOptions, in long[] disabledCompatChanges);
+            in ContentCaptureOptions contentCaptureOptions, in long[] disabledCompatChanges,
+            in long[] loggableCompatChanges, in SharedMemory serializedSystemFontMap,
+            long startRequestedElapsedTime, long startRequestedUptime);
     void runIsolatedEntryPoint(in String entryPoint, in String[] entryPointArgs);
     void scheduleExit();
     void scheduleServiceArgs(IBinder token, in ParceledListSlice args);
@@ -82,7 +99,7 @@ oneway interface IApplicationThread {
     void processInBackground();
     @UnsupportedAppUsage
     void scheduleBindService(IBinder token,
-            in Intent intent, boolean rebind, int processState);
+            in Intent intent, boolean rebind, int processState, long bindSeq);
     @UnsupportedAppUsage
     void scheduleUnbindService(IBinder token,
             in Intent intent);
@@ -90,22 +107,24 @@ oneway interface IApplicationThread {
             in String[] args);
     void scheduleRegisteredReceiver(IIntentReceiver receiver, in Intent intent,
             int resultCode, in String data, in Bundle extras, boolean ordered,
-            boolean sticky, int sendingUser, int processState);
+            boolean sticky, boolean assumeDelivered, int sendingUser, int processState,
+            int sentFromUid, in String sentFromPackage);
     void scheduleLowMemory();
     void profilerControl(boolean start, in ProfilerInfo profilerInfo, int profileType);
     void setSchedulingGroup(int group);
-    void scheduleCreateBackupAgent(in ApplicationInfo app, in CompatibilityInfo compatInfo,
-            int backupMode, int userId);
-    void scheduleDestroyBackupAgent(in ApplicationInfo app,
-            in CompatibilityInfo compatInfo, int userId);
-    void scheduleOnNewActivityOptions(IBinder token, in Bundle options);
+    void scheduleCreateBackupAgent(in ApplicationInfo app,
+            int backupMode, int userId, int operationType);
+    void scheduleDestroyBackupAgent(in ApplicationInfo app, int userId);
+    void scheduleOnNewSceneTransitionInfo(IBinder token, in SceneTransitionInfo info);
     void scheduleSuicide();
     void dispatchPackageBroadcast(int cmd, in String[] packages);
-    void scheduleCrash(in String msg);
-    void dumpHeap(boolean managed, boolean mallocInfo, boolean runGc, in String path,
+    void scheduleCrash(in String msg, int typeId, in Bundle extras);
+    void dumpHeap(boolean managed, boolean mallocInfo, boolean runGc,
+            in String dumpBitmaps, in String path,
             in ParcelFileDescriptor fd, in RemoteCallback finishCallback);
     void dumpActivity(in ParcelFileDescriptor fd, IBinder servicetoken, in String prefix,
             in String[] args);
+    void dumpResources(in ParcelFileDescriptor fd, in RemoteCallback finishCallback);
     void clearDnsCache();
     void updateHttpProxy();
     void setCoreSettings(in Bundle coreSettings);
@@ -114,7 +133,7 @@ oneway interface IApplicationThread {
     void scheduleTrimMemory(int level);
     void dumpMemInfo(in ParcelFileDescriptor fd, in Debug.MemoryInfo mem, boolean checkin,
             boolean dumpInfo, boolean dumpDalvik, boolean dumpSummaryOnly, boolean dumpUnreachable,
-            in String[] args);
+            boolean dumpAllocatorLogs, in String[] args);
     void dumpMemInfoProto(in ParcelFileDescriptor fd, in Debug.MemoryInfo mem,
             boolean dumpInfo, boolean dumpDalvik, boolean dumpSummaryOnly, boolean dumpUnreachable,
             in String[] args);
@@ -142,9 +161,24 @@ oneway interface IApplicationThread {
     void scheduleApplicationInfoChanged(in ApplicationInfo ai);
     void setNetworkBlockSeq(long procStateSeq);
     void scheduleTransaction(in ClientTransaction transaction);
+    void scheduleTaskFragmentTransaction(in ITaskFragmentOrganizer organizer,
+            in TaskFragmentTransaction transaction);
     void requestDirectActions(IBinder activityToken, IVoiceInteractor intractor,
             in RemoteCallback cancellationCallback, in RemoteCallback callback);
     void performDirectAction(IBinder activityToken, String actionId,
             in Bundle arguments, in RemoteCallback cancellationCallback,
             in RemoteCallback resultCallback);
+    void notifyContentProviderPublishStatus(in ContentProviderHolder holder, String authorities,
+            int userId, boolean published);
+    void instrumentWithoutRestart(in ComponentName instrumentationName,
+            in Bundle instrumentationArgs,
+            IInstrumentationWatcher instrumentationWatcher,
+            IUiAutomationConnection instrumentationUiConnection,
+            in ApplicationInfo targetInfo);
+    void updateUiTranslationState(IBinder activityToken, int state, in TranslationSpec sourceSpec,
+            in TranslationSpec targetSpec, in List<AutofillId> viewIds,
+            in UiTranslationSpec uiTranslationSpec);
+    void scheduleTimeoutService(IBinder token, int startId);
+    void scheduleTimeoutServiceForType(IBinder token, int startId, int fgsType);
+    void schedulePing(in RemoteCallback pong);
 }

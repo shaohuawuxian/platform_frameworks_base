@@ -34,6 +34,7 @@ import java.util.ArrayList;
  * @hide
  */
 @TestApi
+@android.ravenwood.annotation.RavenwoodKeepWholeClass
 public final class EncodedBuffer {
     private static final String TAG = "EncodedBuffer";
 
@@ -648,7 +649,7 @@ public final class EncodedBuffer {
      * Print the internal buffer chunks.
      */
     private static int dumpByteString(String tag, String prefix, int start, byte[] buf) {
-        StringBuffer sb = new StringBuffer();
+        StringBuilder sb = new StringBuilder();
         final int length = buf.length;
         final int lineLen = 16;
         int i;
@@ -656,7 +657,7 @@ public final class EncodedBuffer {
             if (i % lineLen == 0) {
                 if (i != 0) {
                     Log.d(tag, sb.toString());
-                    sb = new StringBuffer();
+                    sb = new StringBuilder();
                 }
                 sb.append(prefix);
                 sb.append('[');

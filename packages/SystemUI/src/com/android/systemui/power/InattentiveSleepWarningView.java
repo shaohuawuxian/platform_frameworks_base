@@ -29,7 +29,7 @@ import android.view.ViewGroup;
 import android.view.WindowManager;
 import android.widget.FrameLayout;
 
-import com.android.systemui.R;
+import com.android.systemui.res.R;
 
 /**
  * View that shows a warning shortly before the device goes into sleep
@@ -93,6 +93,8 @@ public class InattentiveSleepWarningView extends FrameLayout {
         setAlpha(1f);
         setVisibility(View.VISIBLE);
         mWindowManager.addView(this, getLayoutParams(mWindowToken));
+        announceForAccessibility(
+                getContext().getString(R.string.inattentive_sleep_warning_message));
     }
 
     /**

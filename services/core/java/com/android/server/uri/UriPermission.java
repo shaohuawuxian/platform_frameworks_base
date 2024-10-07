@@ -207,7 +207,9 @@ final class UriPermission {
             if (mReadOwners != null && includingOwners) {
                 ownedModeFlags &= ~Intent.FLAG_GRANT_READ_URI_PERMISSION;
                 for (UriPermissionOwner r : mReadOwners) {
-                    r.removeReadPermission(this);
+                    if (r != null) {
+                        r.removeReadPermission(this);
+                    }
                 }
                 mReadOwners = null;
             }
@@ -221,7 +223,9 @@ final class UriPermission {
             if (mWriteOwners != null && includingOwners) {
                 ownedModeFlags &= ~Intent.FLAG_GRANT_WRITE_URI_PERMISSION;
                 for (UriPermissionOwner r : mWriteOwners) {
-                    r.removeWritePermission(this);
+                    if (r != null) {
+                        r.removeWritePermission(this);
+                    }
                 }
                 mWriteOwners = null;
             }
@@ -267,8 +271,9 @@ final class UriPermission {
      * Remove given read owner, updating {@Link #modeFlags} as needed.
      */
     void removeReadOwner(UriPermissionOwner owner) {
-        if (!mReadOwners.remove(owner)) {
+        if (mReadOwners == null || !mReadOwners.remove(owner)) {
             Slog.wtf(TAG, "Unknown read owner " + owner + " in " + this);
+            return;
         }
         if (mReadOwners.size() == 0) {
             mReadOwners = null;
@@ -292,8 +297,9 @@ final class UriPermission {
      * Remove given write owner, updating {@Link #modeFlags} as needed.
      */
     void removeWriteOwner(UriPermissionOwner owner) {
-        if (!mWriteOwners.remove(owner)) {
+        if (mWriteOwners == null || !mWriteOwners.remove(owner)) {
             Slog.wtf(TAG, "Unknown write owner " + owner + " in " + this);
+            return;
         }
         if (mWriteOwners.size() == 0) {
             mWriteOwners = null;
@@ -344,7 +350,7 @@ final class UriPermission {
         if (mWriteOwners != null) {
             pw.print(prefix);
             pw.println("writeOwners:");
-            for (UriPermissionOwner owner : mReadOwners) {
+            for (UriPermissionOwner owner : mWriteOwners) {
                 pw.print(prefix);
                 pw.println("  * " + owner);
             }

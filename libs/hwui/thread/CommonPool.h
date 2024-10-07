@@ -17,14 +17,16 @@
 #ifndef FRAMEWORKS_BASE_COMMONPOOL_H
 #define FRAMEWORKS_BASE_COMMONPOOL_H
 
-#include "utils/Macros.h"
-
 #include <log/log.h>
 
 #include <condition_variable>
 #include <functional>
 #include <future>
 #include <mutex>
+#include <vector>
+
+#include "thread/CommonPoolBase.h"
+#include "utils/Macros.h"
 
 namespace android {
 namespace uirenderer {
@@ -72,7 +74,7 @@ private:
     int mTail = 0;
 };
 
-class CommonPool {
+class CommonPool : private CommonPoolBase {
     PREVENT_COPY_AND_ASSIGN(CommonPool);
 
 public:
@@ -97,6 +99,8 @@ public:
         return task.get_future().get();
     };
 
+    static std::vector<int> getThreadIds();
+
     // For testing purposes only, blocks until all worker threads are parked.
     static void waitForIdle();
 
@@ -104,17 +108,23 @@ private:
     static CommonPool& instance();
 
     CommonPool();
-    ~CommonPool() {}
+    ~CommonPool() {
+        mIsStopping = true;
+        mCondition.notify_all();
+    }
 
     void enqueue(Task&&);
     void doWaitForIdle();
 
     void workerLoop();
 
+    std::vector<int> mWorkerThreadIds;
+
     std::mutex mLock;
     std::condition_variable mCondition;
     int mWaitingThreads = 0;
     ArrayQueue<Task, QUEUE_SIZE> mWorkQueue;
+    std::atomic_bool mIsStopping = false;
 };
 
 }  // namespace uirenderer

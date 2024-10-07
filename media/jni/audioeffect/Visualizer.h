@@ -20,6 +20,9 @@
 #include <media/AudioEffect.h>
 #include <system/audio_effects/effect_visualizer.h>
 #include <utils/Thread.h>
+#include <cstdint>
+#include <cutils/bitops.h>
+#include "android/content/AttributionSourceState.h"
 
 /**
  * The Visualizer class enables application to retrieve part of the currently playing audio for
@@ -65,17 +68,17 @@ public:
     /* Constructor.
      * See AudioEffect constructor for details on parameters.
      */
-                        explicit Visualizer(const String16& opPackageName);
+     explicit Visualizer(const android::content::AttributionSourceState& attributionSource);
 
-                        ~Visualizer();
+     ~Visualizer();
 
     /**
      * Initialize an uninitialized Visualizer.
      * See AudioEffect 'set' function for details on parameters.
      */
     status_t    set(int32_t priority = 0,
-                    effect_callback_t cbf = NULL,
-                    void* user = NULL,
+                    legacy_callback_t cbf = nullptr,
+                    void* user = nullptr,
                     audio_session_t sessionId = AUDIO_SESSION_OUTPUT_MIX,
                     audio_io_handle_t io = AUDIO_IO_HANDLE_NONE,
                     const AudioDeviceTypeAddr& device = {},
@@ -156,7 +159,8 @@ private:
     class CaptureThread : public Thread
     {
     public:
-        CaptureThread(Visualizer* visualizer, uint32_t captureRate, bool bCanCallJava = false);
+        CaptureThread(const sp<Visualizer>& visualizer,
+                uint32_t captureRate, bool bCanCallJava = false);
 
     private:
         friend class Visualizer;
@@ -168,7 +172,12 @@ private:
 
     status_t doFft(uint8_t *fft, uint8_t *waveform);
     void periodicCapture();
-    uint32_t initCaptureSize();
+    status_t initCaptureSize();
+    void initSampleRate();
+    static constexpr bool isCaptureSizeValid(uint32_t size) {
+        return size <= VISUALIZER_CAPTURE_SIZE_MAX && size >= VISUALIZER_CAPTURE_SIZE_MIN &&
+                popcount(size) == 1;
+    }
 
     Mutex mCaptureLock;
     uint32_t mCaptureRate = CAPTURE_RATE_DEF;

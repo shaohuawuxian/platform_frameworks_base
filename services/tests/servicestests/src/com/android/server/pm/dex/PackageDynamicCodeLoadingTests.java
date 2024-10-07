@@ -30,6 +30,8 @@ import static org.testng.Assert.assertThrows;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
 
+import android.platform.test.annotations.Presubmit;
+
 import androidx.test.filters.SmallTest;
 import androidx.test.runner.AndroidJUnit4;
 
@@ -50,6 +52,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 
+@Presubmit
 @RunWith(AndroidJUnit4.class)
 @SmallTest
 public class PackageDynamicCodeLoadingTests {
@@ -103,13 +106,13 @@ public class PackageDynamicCodeLoadingTests {
     }
 
     @Test
-    public void testRecord_changeUserForFile_throws() {
+    public void testRecord_changeUserForFile_ignored() {
         Entry entry1 = new Entry("owning.package1", "/path/file1", 'D', 10, "loading.package1");
         Entry entry2 = new Entry("owning.package1", "/path/file1", 'D', 20, "loading.package1");
 
         PackageDynamicCodeLoading info = makePackageDcl(entry1);
 
-        assertThrows(() -> record(info, entry2));
+        assertThat(record(info, entry2)).isFalse();
         assertHasEntries(info, entry1);
     }
 

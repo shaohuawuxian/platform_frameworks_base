@@ -17,17 +17,29 @@
 package android.os;
 
 import android.annotation.NonNull;
+import android.annotation.Nullable;
+import android.annotation.SystemApi;
 import android.compat.annotation.UnsupportedAppUsage;
 import android.util.ArrayMap;
 import android.util.Log;
 
 import com.android.internal.annotations.GuardedBy;
 import com.android.internal.os.BinderInternal;
+import com.android.internal.util.Preconditions;
 import com.android.internal.util.StatLogger;
 
 import java.util.Map;
 
-/** @hide */
+/**
+ * Manage binder services as registered with the binder context manager. These services must be
+ * declared statically on an Android device (SELinux access_vector service_manager, w/ service
+ * names in service_contexts files), and they do not follow the activity lifecycle. When
+ * building applications, android.app.Service should be preferred.
+ *
+ * @hide
+ **/
+@SystemApi(client = SystemApi.Client.MODULE_LIBRARIES)
+@android.ravenwood.annotation.RavenwoodKeepPartialClass
 public final class ServiceManager {
     private static final String TAG = "ServiceManager";
     private static final Object sLock = new Object();
@@ -38,8 +50,15 @@ public final class ServiceManager {
     /**
      * Cache for the "well known" services, such as WM and AM.
      */
+    // NOTE: this cache is designed to be populated exactly once at process
+    // start to avoid any overhead from locking
     @UnsupportedAppUsage
     private static Map<String, IBinder> sCache = new ArrayMap<String, IBinder>();
+
+    @GuardedBy("ServiceManager.class")
+    // NOTE: this cache is designed to support mutation by tests, so we require
+    // a lock to be held for all accesses
+    private static Map<String, IBinder> sCache$ravenwood;
 
     /**
      * We do the "slow log" at most once every this interval.
@@ -98,12 +117,32 @@ public final class ServiceManager {
         int COUNT = GET_SERVICE + 1;
     }
 
+    /** @hide */
     public static final StatLogger sStatLogger = new StatLogger(new String[] {
             "getService()",
     });
 
+    /** @hide */
     @UnsupportedAppUsage
+    @android.ravenwood.annotation.RavenwoodKeep
     public ServiceManager() {
+    }
+
+    /** @hide */
+    @android.ravenwood.annotation.RavenwoodKeep
+    public static void init$ravenwood() {
+        synchronized (ServiceManager.class) {
+            sCache$ravenwood = new ArrayMap<>();
+        }
+    }
+
+    /** @hide */
+    @android.ravenwood.annotation.RavenwoodKeep
+    public static void reset$ravenwood() {
+        synchronized (ServiceManager.class) {
+            sCache$ravenwood.clear();
+            sCache$ravenwood = null;
+        }
     }
 
     @UnsupportedAppUsage
@@ -123,8 +162,10 @@ public final class ServiceManager {
      *
      * @param name the name of the service to get
      * @return a reference to the service, or <code>null</code> if the service doesn't exist
+     * @hide
      */
     @UnsupportedAppUsage
+    @android.ravenwood.annotation.RavenwoodReplace
     public static IBinder getService(String name) {
         try {
             IBinder service = sCache.get(name);
@@ -139,12 +180,21 @@ public final class ServiceManager {
         return null;
     }
 
+    /** @hide */
+    public static IBinder getService$ravenwood(String name) {
+        synchronized (ServiceManager.class) {
+            // Ravenwood is a single-process environment, so it only needs to store locally
+            return Preconditions.requireNonNullViaRavenwoodRule(sCache$ravenwood).get(name);
+        }
+    }
+
     /**
      * Returns a reference to a service with the given name, or throws
      * {@link ServiceNotFoundException} if none is found.
      *
      * @hide
      */
+    @android.ravenwood.annotation.RavenwoodKeep
     public static IBinder getServiceOrThrow(String name) throws ServiceNotFoundException {
         final IBinder binder = getService(name);
         if (binder != null) {
@@ -160,8 +210,10 @@ public final class ServiceManager {
      *
      * @param name the name of the new service
      * @param service the service object
+     * @hide
      */
     @UnsupportedAppUsage
+    @android.ravenwood.annotation.RavenwoodKeep
     public static void addService(String name, IBinder service) {
         addService(name, service, false, IServiceManager.DUMP_FLAG_PRIORITY_DEFAULT);
     }
@@ -174,8 +226,10 @@ public final class ServiceManager {
      * @param service the service object
      * @param allowIsolated set to true to allow isolated sandboxed processes
      * to access this service
+     * @hide
      */
     @UnsupportedAppUsage
+    @android.ravenwood.annotation.RavenwoodKeep
     public static void addService(String name, IBinder service, boolean allowIsolated) {
         addService(name, service, allowIsolated, IServiceManager.DUMP_FLAG_PRIORITY_DEFAULT);
     }
@@ -189,8 +243,10 @@ public final class ServiceManager {
      * @param allowIsolated set to true to allow isolated sandboxed processes
      * @param dumpPriority supported dump priority levels as a bitmask
      * to access this service
+     * @hide
      */
     @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
+    @android.ravenwood.annotation.RavenwoodReplace
     public static void addService(String name, IBinder service, boolean allowIsolated,
             int dumpPriority) {
         try {
@@ -200,9 +256,19 @@ public final class ServiceManager {
         }
     }
 
+    /** @hide */
+    public static void addService$ravenwood(String name, IBinder service, boolean allowIsolated,
+            int dumpPriority) {
+        synchronized (ServiceManager.class) {
+            // Ravenwood is a single-process environment, so it only needs to store locally
+            Preconditions.requireNonNullViaRavenwoodRule(sCache$ravenwood).put(name, service);
+        }
+    }
+
     /**
      * Retrieve an existing service called @a name from the
      * service manager.  Non-blocking.
+     * @hide
      */
     @UnsupportedAppUsage
     public static IBinder checkService(String name) {
@@ -211,7 +277,7 @@ public final class ServiceManager {
             if (service != null) {
                 return service;
             } else {
-                return Binder.allowBlocking(getIServiceManager().checkService(name));
+                return Binder.allowBlocking(getIServiceManager().checkService(name).getBinder());
             }
         } catch (RemoteException e) {
             Log.e(TAG, "error in checkService", e);
@@ -228,24 +294,29 @@ public final class ServiceManager {
     public static boolean isDeclared(@NonNull String name) {
         try {
             return getIServiceManager().isDeclared(name);
-        } catch (RemoteException e) {
+        } catch (RemoteException | SecurityException e) {
             Log.e(TAG, "error in isDeclared", e);
             return false;
         }
     }
 
     /**
-     * Returns the list of declared instances for an interface.
+     * Returns an array of all declared instances for a particular interface.
      *
-     * @return true if the service is declared somewhere (eg. VINTF manifest) and
-     * waitForService should always be able to return the service.
+     * For instance, if 'android.foo.IFoo/foo' is declared (e.g. in VINTF
+     * manifest), and 'android.foo.IFoo' is passed here, then ["foo"] would be
+     * returned.
+     *
+     * @hide
      */
+    @SystemApi(client = SystemApi.Client.MODULE_LIBRARIES)
+    @NonNull
     public static String[] getDeclaredInstances(@NonNull String iface) {
         try {
             return getIServiceManager().getDeclaredInstances(iface);
         } catch (RemoteException e) {
             Log.e(TAG, "error in getDeclaredInstances", e);
-            return null;
+            throw e.rethrowFromSystemServer();
         }
     }
 
@@ -256,8 +327,13 @@ public final class ServiceManager {
      * will wait for it to be ready.
      *
      * @return {@code null} only if there are permission problems or fatal errors.
+     * @hide
      */
-    public static native IBinder waitForService(@NonNull String name);
+    public static IBinder waitForService(@NonNull String name) {
+        return Binder.allowBlocking(waitForServiceNative(name));
+    }
+
+    private static native IBinder waitForServiceNative(@NonNull String name);
 
     /**
      * Returns the specified service from the service manager, if declared.
@@ -265,17 +341,33 @@ public final class ServiceManager {
      * If the service is not running, servicemanager will attempt to start it, and this function
      * will wait for it to be ready.
      *
-     * @return {@code null} if the service is not declared in the manifest, or if there are
-     * permission problems, or if there are fatal errors.
+     * @throws SecurityException if the process does not have the permissions to check
+     * isDeclared() for the service.
+     * @return {@code null} if the service is not declared in the manifest, or if there
+     * are fatal errors.
+     * @hide
      */
-    public static IBinder waitForDeclaredService(@NonNull String name) {
+    @SystemApi(client = SystemApi.Client.MODULE_LIBRARIES)
+    @Nullable public static IBinder waitForDeclaredService(@NonNull String name) {
         return isDeclared(name) ? waitForService(name) : null;
+    }
+
+    /**
+     * Register callback for service registration notifications.
+     *
+     * @throws RemoteException for underlying error.
+     * @hide
+     */
+    public static void registerForNotifications(
+            @NonNull String name, @NonNull IServiceCallback callback) throws RemoteException {
+        getIServiceManager().registerForNotifications(name, callback);
     }
 
     /**
      * Return a list of all currently running services.
      * @return an array of all currently running services, or <code>null</code> in
      * case of an exception
+     * @hide
      */
     @UnsupportedAppUsage
     public static String[] listServices() {
@@ -323,6 +415,7 @@ public final class ServiceManager {
      *
      * @hide
      */
+    @android.ravenwood.annotation.RavenwoodKeepWholeClass
     public static class ServiceNotFoundException extends Exception {
         public ServiceNotFoundException(String name) {
             super("No service published for: " + name);
@@ -332,7 +425,7 @@ public final class ServiceManager {
     private static IBinder rawGetService(String name) throws RemoteException {
         final long start = sStatLogger.getTime();
 
-        final IBinder binder = getIServiceManager().getService(name);
+        final IBinder binder = getIServiceManager().getService2(name).getBinder();
 
         final int time = (int) sStatLogger.logDurationStat(Stats.GET_SERVICE, start);
 

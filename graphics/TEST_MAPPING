@@ -2,6 +2,10 @@
   "presubmit": [
     {
       "name": "CtsGraphicsTestCases"
+    },
+    {
+      "name": "CtsTextTestCases_text",
+      "file_patterns": ["(/|^)Typeface\\.java", "(/|^)Paint\\.java"]
     }
   ]
 }

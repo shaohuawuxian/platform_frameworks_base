@@ -25,8 +25,9 @@
 #include <limits.h>
 
 #include <audio_utils/fixedfft.h>
-#include <cutils/bitops.h>
 #include <utils/Thread.h>
+
+#include <android/content/AttributionSourceState.h>
 
 #include "Visualizer.h"
 
@@ -34,8 +35,8 @@ namespace android {
 
 // ---------------------------------------------------------------------------
 
-Visualizer::Visualizer (const String16& opPackageName)
-        :   AudioEffect(opPackageName)
+Visualizer::Visualizer (const android::content::AttributionSourceState& attributionSource)
+        :   AudioEffect(attributionSource)
 {
 }
 
@@ -47,7 +48,7 @@ Visualizer::~Visualizer()
 }
 
 status_t Visualizer::set(int32_t priority,
-                         effect_callback_t cbf,
+                         legacy_callback_t cbf,
                          void* user,
                          audio_session_t sessionId,
                          audio_io_handle_t io,
@@ -57,7 +58,8 @@ status_t Visualizer::set(int32_t priority,
     status_t status = AudioEffect::set(
             SL_IID_VISUALIZATION, nullptr, priority, cbf, user, sessionId, io, device, probe);
     if (status == NO_ERROR || status == ALREADY_EXISTS) {
-        initCaptureSize();
+        status = initCaptureSize();
+        if (status == NO_ERROR) initSampleRate();
     }
     return status;
 }
@@ -139,7 +141,8 @@ status_t Visualizer::setCaptureCallBack(capture_cbk_t cbk, void* user, uint32_t 
     mCaptureRate = rate;
 
     if (cbk != NULL) {
-        mCaptureThread = new CaptureThread(this, rate, ((flags & CAPTURE_CALL_JAVA) != 0));
+        mCaptureThread = sp<CaptureThread>::make(
+                sp<Visualizer>::fromExisting(this), rate, ((flags & CAPTURE_CALL_JAVA) != 0));
     }
     ALOGV("setCaptureCallBack() rate: %d thread %p flags 0x%08x",
             rate, mCaptureThread.get(), mCaptureFlags);
@@ -148,9 +151,8 @@ status_t Visualizer::setCaptureCallBack(capture_cbk_t cbk, void* user, uint32_t 
 
 status_t Visualizer::setCaptureSize(uint32_t size)
 {
-    if (size > VISUALIZER_CAPTURE_SIZE_MAX ||
-        size < VISUALIZER_CAPTURE_SIZE_MIN ||
-        popcount(size) != 1) {
+    if (!isCaptureSizeValid(size)) {
+        ALOGE("%s with invalid capture size %u from HAL", __func__, size);
         return BAD_VALUE;
     }
 
@@ -168,7 +170,7 @@ status_t Visualizer::setCaptureSize(uint32_t size)
     *((int32_t *)p->data + 1)= size;
     status_t status = setParameter(p);
 
-    ALOGV("setCaptureSize size %d  status %d p->status %d", size, status, p->status);
+    ALOGV("setCaptureSize size %u status %d p->status %d", size, status, p->status);
 
     if (status == NO_ERROR) {
         status = p->status;
@@ -253,8 +255,8 @@ status_t Visualizer::getIntMeasurements(uint32_t type, uint32_t number, int32_t 
     if ((type != MEASUREMENT_MODE_PEAK_RMS)
             // for peak+RMS measurement, the results are 2 int32_t values
             || (number != 2)) {
-        ALOGE("Cannot retrieve int measurements, MEASUREMENT_MODE_PEAK_RMS returns 2 ints, not %d",
-                        number);
+        ALOGE("Cannot retrieve int measurements, MEASUREMENT_MODE_PEAK_RMS returns 2 ints, not %u",
+              number);
         return BAD_VALUE;
     }
 
@@ -386,7 +388,7 @@ void Visualizer::periodicCapture()
     }
 }
 
-uint32_t Visualizer::initCaptureSize()
+status_t Visualizer::initCaptureSize()
 {
     uint32_t buf32[sizeof(effect_param_t) / sizeof(uint32_t) + 2];
     effect_param_t *p = (effect_param_t *)buf32;
@@ -401,14 +403,30 @@ uint32_t Visualizer::initCaptureSize()
     }
 
     uint32_t size = 0;
-    if (status == NO_ERROR) {
-        size = *((int32_t *)p->data + 1);
+    if (status != NO_ERROR) {
+        ALOGE("%s getParameter failed status %d", __func__, status);
+        return status;
     }
+
+    size = *((int32_t *)p->data + 1);
+    if (!isCaptureSizeValid(size)) {
+        ALOGE("%s with invalid capture size %u from HAL", __func__, size);
+        return BAD_VALUE;
+    }
+
     mCaptureSize = size;
+    ALOGV("%s size %u status %d", __func__, mCaptureSize, status);
+    return NO_ERROR;
+}
 
-    ALOGV("initCaptureSize size %d status %d", mCaptureSize, status);
-
-    return size;
+void Visualizer::initSampleRate()
+{
+    audio_config_base_t inputConfig, outputConfig;
+    status_t status = getConfigs(&inputConfig, &outputConfig);
+    if (status == NO_ERROR) {
+        mSampleRate = outputConfig.sample_rate * 1000;
+    }
+    ALOGV("%s sample rate %d status %d", __func__, mSampleRate, status);
 }
 
 void Visualizer::controlStatusChanged(bool controlGranted) {
@@ -426,7 +444,7 @@ void Visualizer::controlStatusChanged(bool controlGranted) {
 
 //-------------------------------------------------------------------------
 
-Visualizer::CaptureThread::CaptureThread(Visualizer* receiver, uint32_t captureRate,
+Visualizer::CaptureThread::CaptureThread(const sp<Visualizer>& receiver, uint32_t captureRate,
         bool bCanCallJava)
     : Thread(bCanCallJava), mReceiver(receiver)
 {

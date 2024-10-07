@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 #
 # Copyright 2016 The Android Open Source Project. All Rights Reserved.
 #
@@ -22,6 +22,8 @@ import glob
 import os.path
 import sys
 
+import xml.etree.ElementTree as ElementTree
+
 
 def get_locale_parts(locale):
     """Split a locale into three parts, for langauge, script, and region."""
@@ -40,42 +42,43 @@ def get_locale_parts(locale):
 
 def read_likely_subtags(input_file_name):
     """Read and parse ICU's likelySubtags.txt."""
-    with open(input_file_name) as input_file:
-        likely_script_dict = {
-            # Android's additions for pseudo-locales. These internal codes make
-            # sure that the pseudo-locales would not match other English or
-            # Arabic locales. (We can't use private-use ISO 15924 codes, since
-            # they may be used by apps for other purposes.)
-            "en_XA": "~~~A",
-            "ar_XB": "~~~B",
-            # Removed data from later versions of ICU
-            "ji": "Hebr", # Old code for Yiddish, still used in Java and Android
-        }
-        representative_locales = {
-            # Android's additions
-            "en_Latn_GB", # representative for en_Latn_001
-            "es_Latn_MX", # representative for es_Latn_419
-            "es_Latn_US", # representative for es_Latn_419 (not the best idea,
-                          # but Android has been shipping with it for quite a
-                          # while. Fortunately, MX < US, so if both exist, MX
-                          # would be chosen.)
-        }
-        for line in input_file:
-            line = unicode(line, 'UTF-8').strip(u' \n\uFEFF').encode('UTF-8')
-            if line.startswith('//'):
-                continue
-            if '{' in line and '}' in line:
-                from_locale = line[:line.index('{')]
-                to_locale = line[line.index('"')+1:line.rindex('"')]
-                from_lang, from_scr, from_region = get_locale_parts(from_locale)
-                _, to_scr, to_region = get_locale_parts(to_locale)
-                if from_lang == 'und':
-                    continue  # not very useful for our purposes
-                if from_region is None and to_region not in ['001', 'ZZ']:
-                    representative_locales.add(to_locale)
-                if from_scr is None:
-                    likely_script_dict[from_locale] = to_scr
-        return likely_script_dict, frozenset(representative_locales)
+    likely_script_dict = {
+        # Android's additions for pseudo-locales. These internal codes make
+        # sure that the pseudo-locales would not match other English or
+        # Arabic locales. (We can't use private-use ISO 15924 codes, since
+        # they may be used by apps for other purposes.)
+        "en_XA": "~~~A",
+        "ar_XB": "~~~B",
+        # Removed data from later versions of ICU
+        "ji": "Hebr", # Old code for Yiddish, still used in Java and Android
+    }
+    representative_locales = {
+        # Android's additions
+        "en_Latn_GB", # representative for en_Latn_001
+        "es_Latn_MX", # representative for es_Latn_419
+        "es_Latn_US", # representative for es_Latn_419 (not the best idea,
+        # but Android has been shipping with it for quite a
+        # while. Fortunately, MX < US, so if both exist, MX
+        # would be chosen.)
+    }
+    xml_tree = ElementTree.parse(input_file_name)
+    likely_subtags = xml_tree.find('likelySubtags')
+    for child in likely_subtags:
+        from_locale = child.get('from')
+        to_locale = child.get('to')
+        # print(f'from: {from_locale} to: {to_locale}')
+        from_lang, from_scr, from_region = get_locale_parts(from_locale)
+        _, to_scr, to_region = get_locale_parts(to_locale)
+        if to_locale == "FAIL":
+            continue # "FAIL" cases are not useful here.
+        if from_lang == 'und':
+            continue  # not very useful for our purposes
+        if from_region is None and to_region not in ['001', 'ZZ']:
+            representative_locales.add(to_locale)
+        if from_scr is None:
+            likely_script_dict[from_locale] = to_scr
+
+    return likely_script_dict, frozenset(representative_locales)
 
 
 # From packLanguageOrRegion() in ResourceTypes.cpp
@@ -86,7 +89,7 @@ def pack_language_or_region(inp, base):
     elif len(inp) == 2:
         return ord(inp[0]), ord(inp[1])
     else:
-        assert len(inp) == 3
+        assert len(inp) == 3, f'Expects a 3-character string, but "{inp}" '
         base = ord(base)
         first = ord(inp[0]) - base
         second = ord(inp[1]) - base
@@ -118,26 +121,26 @@ def pack_to_uint32(locale):
 
 def dump_script_codes(all_scripts):
     """Dump the SCRIPT_CODES table."""
-    print 'const char SCRIPT_CODES[][4] = {'
+    print('const char SCRIPT_CODES[][4] = {')
     for index, script in enumerate(all_scripts):
-        print "    /* %-2d */ {'%c', '%c', '%c', '%c'}," % (
-            index, script[0], script[1], script[2], script[3])
-    print '};'
-    print
+        print("    /* %-2d */ {'%c', '%c', '%c', '%c'}," % (
+            index, script[0], script[1], script[2], script[3]))
+    print('};')
+    print()
 
 
 def dump_script_data(likely_script_dict, all_scripts):
     """Dump the script data."""
-    print
-    print 'const std::unordered_map<uint32_t, uint8_t> LIKELY_SCRIPTS({'
+    print()
+    print('const std::unordered_map<uint32_t, uint8_t> LIKELY_SCRIPTS({')
     for locale in sorted(likely_script_dict.keys()):
         script = likely_script_dict[locale]
-        print '    {0x%08Xu, %2du}, // %s -> %s' % (
+        print('    {0x%08Xu, %2du}, // %s -> %s' % (
             pack_to_uint32(locale),
             all_scripts.index(script),
             locale.replace('_', '-'),
-            script)
-    print '});'
+            script))
+    print('});')
 
 
 def pack_to_uint64(locale):
@@ -152,18 +155,19 @@ def pack_to_uint64(locale):
 
 def dump_representative_locales(representative_locales):
     """Dump the set of representative locales."""
-    print
-    print 'std::unordered_set<uint64_t> REPRESENTATIVE_LOCALES({'
+    print()
+    print('std::unordered_set<uint64_t> REPRESENTATIVE_LOCALES({')
     for locale in sorted(representative_locales):
-        print '    0x%08XLLU, // %s' % (
+        print('    0x%08XLLU, // %s' % (
             pack_to_uint64(locale),
-            locale)
-    print '});'
+            locale))
+    print('});')
 
 
-def read_and_dump_likely_data(icu_data_dir):
+def read_and_dump_likely_data(cldr_source_dir):
     """Read and dump the likely-script data."""
-    likely_subtags_txt = os.path.join(icu_data_dir, 'misc', 'likelySubtags.txt')
+    likely_subtags_txt = os.path.join(cldr_source_dir,
+                                      'common', 'supplemental', 'likelySubtags.xml')
     likely_script_dict, representative_locales = read_likely_subtags(
         likely_subtags_txt)
 
@@ -220,30 +224,30 @@ def get_likely_script(locale, likely_script_dict):
 def dump_parent_data(script_organized_dict):
     """Dump information for parents of locales."""
     sorted_scripts = sorted(script_organized_dict.keys())
-    print
+    print()
     for script in sorted_scripts:
         parent_dict = script_organized_dict[script]
         print ('const std::unordered_map<uint32_t, uint32_t> %s_PARENTS({'
             % escape_script_variable_name(script.upper()))
         for locale in sorted(parent_dict.keys()):
             parent = parent_dict[locale]
-            print '    {0x%08Xu, 0x%08Xu}, // %s -> %s' % (
+            print('    {0x%08Xu, 0x%08Xu}, // %s -> %s' % (
                 pack_to_uint32(locale),
                 pack_to_uint32(parent),
                 locale.replace('_', '-'),
-                parent.replace('_', '-'))
-        print '});'
-        print
+                parent.replace('_', '-')))
+        print('});')
+        print()
 
-    print 'const struct {'
-    print '    const char script[4];'
-    print '    const std::unordered_map<uint32_t, uint32_t>* map;'
-    print '} SCRIPT_PARENTS[] = {'
+    print('const struct {')
+    print('    const char script[4];')
+    print('    const std::unordered_map<uint32_t, uint32_t>* map;')
+    print('} SCRIPT_PARENTS[] = {')
     for script in sorted_scripts:
-        print "    {{'%c', '%c', '%c', '%c'}, &%s_PARENTS}," % (
+        print("    {{'%c', '%c', '%c', '%c'}, &%s_PARENTS}," % (
             script[0], script[1], script[2], script[3],
-            escape_script_variable_name(script.upper()))
-    print '};'
+            escape_script_variable_name(script.upper())))
+    print('};')
 
 
 def dump_parent_tree_depth(parent_dict):
@@ -256,8 +260,8 @@ def dump_parent_tree_depth(parent_dict):
             depth += 1
         max_depth = max(max_depth, depth)
     assert max_depth < 5 # Our algorithms assume small max_depth
-    print
-    print 'const size_t MAX_PARENT_DEPTH = %d;' % max_depth
+    print()
+    print('const size_t MAX_PARENT_DEPTH = %d;' % max_depth)
 
 
 def read_and_dump_parent_data(icu_data_dir, likely_script_dict):
@@ -280,10 +284,11 @@ def main():
     icu_data_dir = os.path.join(
         source_root,
         'external', 'icu', 'icu4c', 'source', 'data')
+    cldr_source_dir = os.path.join(source_root, 'external', 'cldr')
 
-    print '// Auto-generated by %s' % sys.argv[0]
-    print
-    likely_script_dict = read_and_dump_likely_data(icu_data_dir)
+    print('// Auto-generated by %s' % sys.argv[0])
+    print()
+    likely_script_dict = read_and_dump_likely_data(cldr_source_dir)
     read_and_dump_parent_data(icu_data_dir, likely_script_dict)
 
 

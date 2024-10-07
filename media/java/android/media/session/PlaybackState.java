@@ -15,7 +15,10 @@
  */
 package android.media.session;
 
+import static com.android.media.flags.Flags.FLAG_ENABLE_NOTIFYING_ACTIVITY_MANAGER_WITH_MEDIA_SESSION_STATUS_CHANGE;
+
 import android.annotation.DrawableRes;
+import android.annotation.FlaggedApi;
 import android.annotation.IntDef;
 import android.annotation.LongDef;
 import android.annotation.Nullable;
@@ -45,7 +48,8 @@ public final class PlaybackState implements Parcelable {
             ACTION_SKIP_TO_PREVIOUS, ACTION_SKIP_TO_NEXT, ACTION_FAST_FORWARD, ACTION_SET_RATING,
             ACTION_SEEK_TO, ACTION_PLAY_PAUSE, ACTION_PLAY_FROM_MEDIA_ID, ACTION_PLAY_FROM_SEARCH,
             ACTION_SKIP_TO_QUEUE_ITEM, ACTION_PLAY_FROM_URI, ACTION_PREPARE,
-            ACTION_PREPARE_FROM_MEDIA_ID, ACTION_PREPARE_FROM_SEARCH, ACTION_PREPARE_FROM_URI})
+            ACTION_PREPARE_FROM_MEDIA_ID, ACTION_PREPARE_FROM_SEARCH, ACTION_PREPARE_FROM_URI,
+            ACTION_SET_PLAYBACK_SPEED})
     @Retention(RetentionPolicy.SOURCE)
     public @interface Actions {}
 
@@ -175,12 +179,21 @@ public final class PlaybackState implements Parcelable {
      */
     public static final long ACTION_PREPARE_FROM_URI = 1 << 17;
 
+    // Note: The value jumps from 1 << 17 to 1 << 22 for matching same value with AndroidX.
+    /**
+     * Indicates this session supports the set playback speed command.
+     *
+     * @see Builder#setActions(long)
+     */
+    public static final long ACTION_SET_PLAYBACK_SPEED = 1 << 22;
+
     /**
      * @hide
      */
     @IntDef({STATE_NONE, STATE_STOPPED, STATE_PAUSED, STATE_PLAYING, STATE_FAST_FORWARDING,
             STATE_REWINDING, STATE_BUFFERING, STATE_ERROR, STATE_CONNECTING,
-            STATE_SKIPPING_TO_PREVIOUS, STATE_SKIPPING_TO_NEXT, STATE_SKIPPING_TO_QUEUE_ITEM})
+            STATE_SKIPPING_TO_PREVIOUS, STATE_SKIPPING_TO_NEXT, STATE_SKIPPING_TO_QUEUE_ITEM,
+            STATE_PLAYBACK_SUPPRESSED})
     @Retention(RetentionPolicy.SOURCE)
     public @interface State {}
 
@@ -277,6 +290,19 @@ public final class PlaybackState implements Parcelable {
     public static final int STATE_SKIPPING_TO_QUEUE_ITEM = 11;
 
     /**
+     * State indicating that playback is paused due to an external transient interruption, like a
+     * phone call.
+     *
+     * <p>This state is different from {@link #STATE_PAUSED} in that it is deemed transitory,
+     * possibly allowing the service associated to the session in this state to run in the
+     * foreground.
+     *
+     * @see Builder#setState
+     */
+    @FlaggedApi(FLAG_ENABLE_NOTIFYING_ACTIVITY_MANAGER_WITH_MEDIA_SESSION_STATUS_CHANGE)
+    public static final int STATE_PLAYBACK_SUPPRESSED = 12;
+
+    /**
      * Use this value for the position to indicate the position is not known.
      */
     public static final long PLAYBACK_POSITION_UNKNOWN = -1;
@@ -324,7 +350,11 @@ public final class PlaybackState implements Parcelable {
     @Override
     public String toString() {
         StringBuilder bob = new StringBuilder("PlaybackState {");
-        bob.append("state=").append(mState);
+        bob.append("state=")
+                .append(getStringForStateInt(mState))
+                .append("(")
+                .append(mState)
+                .append(")");
         bob.append(", position=").append(mPosition);
         bob.append(", buffered position=").append(mBufferedPosition);
         bob.append(", speed=").append(mSpeed);
@@ -371,6 +401,7 @@ public final class PlaybackState implements Parcelable {
      * <li> {@link PlaybackState#STATE_SKIPPING_TO_PREVIOUS}</li>
      * <li> {@link PlaybackState#STATE_SKIPPING_TO_NEXT}</li>
      * <li> {@link PlaybackState#STATE_SKIPPING_TO_QUEUE_ITEM}</li>
+     * <li> {@link PlaybackState#STATE_PLAYBACK_SUPPRESSED}</li>
      * </ul>
      */
     @State
@@ -427,6 +458,7 @@ public final class PlaybackState implements Parcelable {
      * <li> {@link PlaybackState#ACTION_PREPARE_FROM_MEDIA_ID}</li>
      * <li> {@link PlaybackState#ACTION_PREPARE_FROM_SEARCH}</li>
      * <li> {@link PlaybackState#ACTION_PREPARE_FROM_URI}</li>
+     * <li> {@link PlaybackState#ACTION_SET_PLAYBACK_SPEED}</li>
      * </ul>
      */
     @Actions
@@ -480,6 +512,38 @@ public final class PlaybackState implements Parcelable {
         return mExtras;
     }
 
+    /**
+     * Returns whether this is considered as an active playback state.
+     * <p>
+     * The playback state is considered as an active if the state is one of the following:
+     * <ul>
+     * <li>{@link #STATE_BUFFERING}</li>
+     * <li>{@link #STATE_CONNECTING}</li>
+     * <li>{@link #STATE_FAST_FORWARDING}</li>
+     * <li>{@link #STATE_PLAYING}</li>
+     * <li>{@link #STATE_REWINDING}</li>
+     * <li>{@link #STATE_SKIPPING_TO_NEXT}</li>
+     * <li>{@link #STATE_SKIPPING_TO_PREVIOUS}</li>
+     * <li>{@link #STATE_SKIPPING_TO_QUEUE_ITEM}</li>
+     * <li>{@link #STATE_PLAYBACK_SUPPRESSED}</li>
+     * </ul>
+     */
+    public boolean isActive() {
+        switch (mState) {
+            case PlaybackState.STATE_FAST_FORWARDING:
+            case PlaybackState.STATE_REWINDING:
+            case PlaybackState.STATE_SKIPPING_TO_PREVIOUS:
+            case PlaybackState.STATE_SKIPPING_TO_NEXT:
+            case PlaybackState.STATE_SKIPPING_TO_QUEUE_ITEM:
+            case PlaybackState.STATE_BUFFERING:
+            case PlaybackState.STATE_CONNECTING:
+            case PlaybackState.STATE_PLAYING:
+            case PlaybackState.STATE_PLAYBACK_SUPPRESSED:
+                return true;
+        }
+        return false;
+    }
+
     public static final @android.annotation.NonNull Parcelable.Creator<PlaybackState> CREATOR =
             new Parcelable.Creator<PlaybackState>() {
         @Override
@@ -492,6 +556,40 @@ public final class PlaybackState implements Parcelable {
             return new PlaybackState[size];
         }
     };
+
+    /** Returns a human readable string representation of the given int {@code state} */
+    private static String getStringForStateInt(int state) {
+        switch (state) {
+            case STATE_NONE:
+                return "NONE";
+            case STATE_STOPPED:
+                return "STOPPED";
+            case STATE_PAUSED:
+                return "PAUSED";
+            case STATE_PLAYING:
+                return "PLAYING";
+            case STATE_FAST_FORWARDING:
+                return "FAST_FORWARDING";
+            case STATE_REWINDING:
+                return "REWINDING";
+            case STATE_BUFFERING:
+                return "BUFFERING";
+            case STATE_ERROR:
+                return "ERROR";
+            case STATE_CONNECTING:
+                return "CONNECTING";
+            case STATE_SKIPPING_TO_PREVIOUS:
+                return "SKIPPING_TO_PREVIOUS";
+            case STATE_SKIPPING_TO_NEXT:
+                return "SKIPPING_TO_NEXT";
+            case STATE_SKIPPING_TO_QUEUE_ITEM:
+                return "SKIPPING_TO_QUEUE_ITEM";
+            case STATE_PLAYBACK_SUPPRESSED:
+                return "STATE_PLAYBACK_SUPPRESSED";
+            default:
+                return "UNKNOWN";
+        }
+    }
 
     /**
      * {@link PlaybackState.CustomAction CustomActions} can be used to extend the capabilities of
@@ -725,6 +823,7 @@ public final class PlaybackState implements Parcelable {
          * <li> {@link PlaybackState#STATE_SKIPPING_TO_PREVIOUS}</li>
          * <li> {@link PlaybackState#STATE_SKIPPING_TO_NEXT}</li>
          * <li> {@link PlaybackState#STATE_SKIPPING_TO_QUEUE_ITEM}</li>
+         * <li> {@link PlaybackState#STATE_PLAYBACK_SUPPRESSED}</li>
          * </ul>
          *
          * @param state The current state of playback.
@@ -769,6 +868,7 @@ public final class PlaybackState implements Parcelable {
          * <li> {@link PlaybackState#STATE_SKIPPING_TO_PREVIOUS}</li>
          * <li> {@link PlaybackState#STATE_SKIPPING_TO_NEXT}</li>
          * <li> {@link PlaybackState#STATE_SKIPPING_TO_QUEUE_ITEM}</li>
+         * <li> {@link PlaybackState#STATE_PLAYBACK_SUPPRESSED}</li>
          * </ul>
          *
          * @param state The current state of playback.
@@ -803,6 +903,7 @@ public final class PlaybackState implements Parcelable {
          * <li> {@link PlaybackState#ACTION_PREPARE_FROM_MEDIA_ID}</li>
          * <li> {@link PlaybackState#ACTION_PREPARE_FROM_SEARCH}</li>
          * <li> {@link PlaybackState#ACTION_PREPARE_FROM_URI}</li>
+         * <li> {@link PlaybackState#ACTION_SET_PLAYBACK_SPEED}</li>
          * </ul>
          *
          * @param actions The set of actions allowed.

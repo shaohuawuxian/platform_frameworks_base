@@ -33,8 +33,9 @@ license {
 
 android_app {
     name: "FusedLocation",
+    defaults: ["platform_app_defaults"],
     srcs: ["src/**/*.java"],
-    libs: ["com.android.location.provider"],
+    libs: ["com.android.location.provider.impl"],
     platform_apis: true,
     certificate: "platform",
     privileged: true,
@@ -46,12 +47,12 @@ android_test {
     test_config: "test/AndroidTest.xml",
     srcs: [
         "test/src/**/*.java",
-        "src/**/*.java",  // include real sources because we're forced to test this directly
+        "src/**/*.java", // include real sources because we're forced to test this directly
     ],
     libs: [
-        "android.test.base",
-        "android.test.runner",
-        "com.android.location.provider",
+        "android.test.base.stubs.system",
+        "android.test.runner.stubs.system",
+        "com.android.location.provider.impl",
     ],
     static_libs: [
         "androidx.test.core",
@@ -59,7 +60,9 @@ android_test {
         "androidx.test.ext.junit",
         "androidx.test.ext.truth",
         "mockito-target-minus-junit4",
-        "truth-prebuilt",
+        "truth",
     ],
-    test_suites: ["device-tests"]
+    platform_apis: true,
+    certificate: "platform",
+    test_suites: ["device-tests"],
 }

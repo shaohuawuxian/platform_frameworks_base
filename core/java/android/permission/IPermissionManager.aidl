@@ -16,12 +16,14 @@
 
 package android.permission;
 
+import android.content.AttributionSourceState;
 import android.content.pm.ParceledListSlice;
 import android.content.pm.PermissionGroupInfo;
 import android.content.pm.PermissionInfo;
 import android.content.pm.permission.SplitPermissionInfoParcelable;
 import android.os.UserHandle;
 import android.permission.IOnPermissionsChangeListener;
+import android.permission.PermissionManager.PermissionState;
 
 /**
  * Interface to communicate directly with the permission manager service.
@@ -29,91 +31,87 @@ import android.permission.IOnPermissionsChangeListener;
  * @hide
  */
 interface IPermissionManager {
-    String[] getAppOpPermissionPackages(String permName);
-
     ParceledListSlice getAllPermissionGroups(int flags);
 
     PermissionGroupInfo getPermissionGroupInfo(String groupName, int flags);
 
-    PermissionInfo getPermissionInfo(String permName, String packageName, int flags);
+    PermissionInfo getPermissionInfo(String permissionName, String packageName, int flags);
 
     ParceledListSlice queryPermissionsByGroup(String groupName, int flags);
 
-    boolean addPermission(in PermissionInfo info, boolean async);
+    boolean addPermission(in PermissionInfo permissionInfo, boolean async);
 
-    void removePermission(String name);
+    void removePermission(String permissionName);
 
-    int getPermissionFlags(String permName, String packageName, int userId);
+    int getPermissionFlags(String packageName, String permissionName, String persistentDeviceId,
+            int userId);
 
-    void updatePermissionFlags(String permName, String packageName, int flagMask,
-            int flagValues, boolean checkAdjustPolicyFlagPermission, int userId);
+    void updatePermissionFlags(String packageName, String permissionName, int flagMask,
+            int flagValues, boolean checkAdjustPolicyFlagPermission, String persistentDeviceId,
+            int userId);
 
     void updatePermissionFlagsForAllApps(int flagMask, int flagValues, int userId);
-
-    int checkPermission(String permName, String pkgName, int userId);
-
-    int checkUidPermission(String permName, int uid);
-
-    int checkDeviceIdentifierAccess(String packageName, String callingFeatureId, String message, int pid, int uid);
 
     void addOnPermissionsChangeListener(in IOnPermissionsChangeListener listener);
 
     void removeOnPermissionsChangeListener(in IOnPermissionsChangeListener listener);
 
-    List<String> getWhitelistedRestrictedPermissions(String packageName,
+    List<String> getAllowlistedRestrictedPermissions(String packageName,
             int flags, int userId);
 
-    boolean addWhitelistedRestrictedPermission(String packageName, String permName,
+    boolean addAllowlistedRestrictedPermission(String packageName, String permissionName,
             int flags, int userId);
 
-    boolean removeWhitelistedRestrictedPermission(String packageName, String permName,
+    boolean removeAllowlistedRestrictedPermission(String packageName, String permissionName,
             int flags, int userId);
 
-    void grantRuntimePermission(String packageName, String permName, int userId);
+    void grantRuntimePermission(String packageName, String permissionName,
+            String persistentDeviceId, int userId);
 
-    void revokeRuntimePermission(String packageName, String permName, int userId, String reason);
+    void revokeRuntimePermission(String packageName, String permissionName,
+            String persistentDeviceId, int userId, String reason);
 
-    void resetRuntimePermissions();
+    void revokePostNotificationPermissionWithoutKillForTest(String packageName, int userId);
 
-    boolean setDefaultBrowser(String packageName, int userId);
+    boolean shouldShowRequestPermissionRationale(String packageName, String permissionName,
+            int deviceId, int userId);
 
-    String getDefaultBrowser(int userId);
-
-    void grantDefaultPermissionsToEnabledCarrierApps(in String[] packageNames, int userId);
-
-    void grantDefaultPermissionsToEnabledImsServices(in String[] packageNames, int userId);
-
-    void grantDefaultPermissionsToEnabledTelephonyDataServices(
-            in String[] packageNames, int userId);
-
-    void revokeDefaultPermissionsFromDisabledTelephonyDataServices(
-            in String[] packageNames, int userId);
-
-    void grantDefaultPermissionsToActiveLuiApp(in String packageName, int userId);
-
-    void revokeDefaultPermissionsFromLuiApps(in String[] packageNames, int userId);
-
-    void setPermissionEnforced(String permName, boolean enforced);
-
-    boolean isPermissionEnforced(String permName);
-
-    boolean shouldShowRequestPermissionRationale(String permName,
-            String packageName, int userId);
-
-    boolean isPermissionRevokedByPolicy(String permName, String packageName, int userId);
+    boolean isPermissionRevokedByPolicy(String packageName, String permissionName, int deviceId,
+            int userId);
 
     List<SplitPermissionInfoParcelable> getSplitPermissions();
 
-    void startOneTimePermissionSession(String packageName, int userId, long timeout,
-            int importanceToResetTimer, int importanceToKeepSessionAlive);
+    @EnforcePermission("MANAGE_ONE_TIME_PERMISSION_SESSIONS")
+    void startOneTimePermissionSession(String packageName, int deviceId, int userId, long timeout,
+            long revokeAfterKilledDelay);
 
+    @EnforcePermission("MANAGE_ONE_TIME_PERMISSION_SESSIONS")
     void stopOneTimePermissionSession(String packageName, int userId);
 
     List<String> getAutoRevokeExemptionRequestedPackages(int userId);
 
     List<String> getAutoRevokeExemptionGrantedPackages(int userId);
 
-    boolean setAutoRevokeWhitelisted(String packageName, boolean whitelisted, int userId);
+    boolean setAutoRevokeExempted(String packageName, boolean exempted, int userId);
 
-    boolean isAutoRevokeWhitelisted(String packageName, int userId);
+    boolean isAutoRevokeExempted(String packageName, int userId);
+
+    IBinder registerAttributionSource(in AttributionSourceState source);
+
+    int getRegisteredAttributionSourceCount(int uid);
+
+    boolean isRegisteredAttributionSource(in AttributionSourceState source);
+
+    int checkPermission(String packageName, String permissionName, String persistentDeviceId,
+            int userId);
+
+    int checkUidPermission(int uid, String permissionName, int deviceId);
+
+    Map<String, PermissionState> getAllPermissionStates(String packageName, String persistentDeviceId, int userId);
 }
+
+/**
+ * Data class for the state of a permission requested by a package
+ * @hide
+ */
+parcelable PermissionManager.PermissionState;

@@ -16,7 +16,6 @@
 
 package android.view;
 
-import static android.os.Build.VERSION_CODES.JELLY_BEAN_MR1;
 import static android.view.WindowInsetsAnimation.Callback.DISPATCH_MODE_CONTINUE_ON_SUBTREE;
 import static android.view.WindowInsetsAnimation.Callback.DISPATCH_MODE_STOP;
 
@@ -50,11 +49,11 @@ import android.os.Bundle;
 import android.os.Parcelable;
 import android.os.SystemClock;
 import android.util.AttributeSet;
+import android.util.IntArray;
 import android.util.Log;
 import android.util.Pools;
 import android.util.Pools.SynchronizedPool;
 import android.util.SparseArray;
-import android.util.SparseBooleanArray;
 import android.view.WindowInsetsAnimation.Bounds;
 import android.view.WindowInsetsAnimation.Callback.DispatchMode;
 import android.view.accessibility.AccessibilityEvent;
@@ -64,9 +63,16 @@ import android.view.animation.Animation;
 import android.view.animation.AnimationUtils;
 import android.view.animation.LayoutAnimationController;
 import android.view.animation.Transformation;
+import android.view.autofill.AutofillId;
+import android.view.autofill.AutofillManager;
 import android.view.autofill.Helper;
 import android.view.inspector.InspectableProperty;
 import android.view.inspector.InspectableProperty.EnumEntry;
+import android.view.translation.TranslationCapability;
+import android.view.translation.TranslationSpec.DataFormat;
+import android.view.translation.ViewTranslationRequest;
+import android.webkit.WebView;
+import android.window.OnBackInvokedDispatcher;
 
 import com.android.internal.R;
 
@@ -76,7 +82,7 @@ import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Queue;
+import java.util.function.Consumer;
 import java.util.function.Predicate;
 
 /**
@@ -611,7 +617,7 @@ public abstract class ViewGroup extends View implements ViewParent, ViewManager 
     private int mNestedScrollAxes;
 
     // Used to manage the list of transient views, added by addTransientView()
-    private List<Integer> mTransientIndices = null;
+    private IntArray mTransientIndices = null;
     private List<View> mTransientViews = null;
 
     /**
@@ -710,10 +716,7 @@ public abstract class ViewGroup extends View implements ViewParent, ViewManager 
         mGroupFlags |= FLAG_ANIMATION_DONE;
         mGroupFlags |= FLAG_ANIMATION_CACHE;
         mGroupFlags |= FLAG_ALWAYS_DRAWN_WITH_CACHE;
-
-        if (mContext.getApplicationInfo().targetSdkVersion >= Build.VERSION_CODES.HONEYCOMB) {
-            mGroupFlags |= FLAG_SPLIT_MOTION_EVENTS;
-        }
+        mGroupFlags |= FLAG_SPLIT_MOTION_EVENTS;
 
         setDescendantFocusability(FOCUS_BEFORE_DESCENDANTS);
 
@@ -2033,10 +2036,13 @@ public abstract class ViewGroup extends View implements ViewParent, ViewManager 
 
     @Override
     public PointerIcon onResolvePointerIcon(MotionEvent event, int pointerIndex) {
-        final float x = event.getX(pointerIndex);
-        final float y = event.getY(pointerIndex);
+        final float x = event.getXDispatchLocation(pointerIndex);
+        final float y = event.getYDispatchLocation(pointerIndex);
         if (isOnScrollbarThumb(x, y) || isDraggingScrollBar()) {
-            return PointerIcon.getSystemIcon(mContext, PointerIcon.TYPE_ARROW);
+            // Return null here so that it fallbacks to the default PointerIcon for the source
+            // device. For mouse, the default PointerIcon is PointerIcon.TYPE_ARROW.
+            // For stylus, the default PointerIcon is PointerIcon.TYPE_NULL.
+            return null;
         }
         // Check what the child under the pointer says about the pointer.
         final int childrenCount = mChildrenCount;
@@ -2048,26 +2054,9 @@ public abstract class ViewGroup extends View implements ViewParent, ViewManager 
             for (int i = childrenCount - 1; i >= 0; i--) {
                 final int childIndex = getAndVerifyPreorderedIndex(childrenCount, i, customOrder);
                 final View child = getAndVerifyPreorderedView(preorderedList, children, childIndex);
-                View childWithAccessibilityFocus =
-                        event.isTargetAccessibilityFocus()
-                                ? findChildWithAccessibilityFocus()
-                                : null;
 
                 if (!child.canReceivePointerEvents()
                         || !isTransformedTouchPointInView(x, y, child, null)) {
-
-                    // If there is a view that has accessibility focus we want it
-                    // to get the event first and if not handled we will perform a
-                    // normal dispatch. We may do a double iteration but this is
-                    // safer given the timeframe.
-                    if (childWithAccessibilityFocus != null) {
-                        if (childWithAccessibilityFocus != child) {
-                            continue;
-                        }
-                        childWithAccessibilityFocus = null;
-                        i = childrenCount - 1;
-                    }
-                    event.setTargetAccessibilityFocus(false);
                     continue;
                 }
                 final PointerIcon pointerIcon =
@@ -2135,8 +2124,8 @@ public abstract class ViewGroup extends View implements ViewParent, ViewManager 
         HoverTarget firstOldHoverTarget = mFirstHoverTarget;
         mFirstHoverTarget = null;
         if (!interceptHover && action != MotionEvent.ACTION_HOVER_EXIT) {
-            final float x = event.getX();
-            final float y = event.getY();
+            final float x = event.getXDispatchLocation(0);
+            final float y = event.getYDispatchLocation(0);
             final int childrenCount = mChildrenCount;
             if (childrenCount != 0) {
                 final ArrayList<View> preorderedList = buildOrderedChildList();
@@ -2357,8 +2346,8 @@ public abstract class ViewGroup extends View implements ViewParent, ViewManager 
                 // Check what the child under the pointer says about the tooltip.
                 final int childrenCount = mChildrenCount;
                 if (childrenCount != 0) {
-                    final float x = event.getX();
-                    final float y = event.getY();
+                    final float x = event.getXDispatchLocation(0);
+                    final float y = event.getYDispatchLocation(0);
 
                     final ArrayList<View> preorderedList = buildOrderedChildList();
                     final boolean customOrder = preorderedList == null
@@ -2453,8 +2442,8 @@ public abstract class ViewGroup extends View implements ViewParent, ViewManager 
     @Override
     protected boolean pointInHoveredChild(MotionEvent event) {
         if (mFirstHoverTarget != null) {
-            return isTransformedTouchPointInView(event.getX(), event.getY(),
-                mFirstHoverTarget.child, null);
+            return isTransformedTouchPointInView(event.getXDispatchLocation(0),
+                    event.getYDispatchLocation(0), mFirstHoverTarget.child, null);
         }
         return false;
     }
@@ -2523,8 +2512,8 @@ public abstract class ViewGroup extends View implements ViewParent, ViewManager 
     public boolean onInterceptHoverEvent(MotionEvent event) {
         if (event.isFromSource(InputDevice.SOURCE_MOUSE)) {
             final int action = event.getAction();
-            final float x = event.getX();
-            final float y = event.getY();
+            final float x = event.getXDispatchLocation(0);
+            final float y = event.getYDispatchLocation(0);
             if ((action == MotionEvent.ACTION_HOVER_MOVE
                     || action == MotionEvent.ACTION_HOVER_ENTER) && isOnScrollbar(x, y)) {
                 return true;
@@ -2545,8 +2534,8 @@ public abstract class ViewGroup extends View implements ViewParent, ViewManager 
         // Send the event to the child under the pointer.
         final int childrenCount = mChildrenCount;
         if (childrenCount != 0) {
-            final float x = event.getX();
-            final float y = event.getY();
+            final float x = event.getXDispatchLocation(0);
+            final float y = event.getYDispatchLocation(0);
 
             final ArrayList<View> preorderedList = buildOrderedChildList();
             final boolean customOrder = preorderedList == null
@@ -2615,7 +2604,7 @@ public abstract class ViewGroup extends View implements ViewParent, ViewManager 
      * It's the responsibility of the caller to recycle it once they're finished with it.
      * @param event The event to transform.
      * @param child The view whose coordinate space is to be used.
-     * @return A copy of the the given MotionEvent, transformed into the given View's coordinate
+     * @return A copy of the given MotionEvent, transformed into the given View's coordinate
      *         space.
      */
     private MotionEvent getTransformedMotionEvent(MotionEvent event, View child) {
@@ -2657,10 +2646,13 @@ public abstract class ViewGroup extends View implements ViewParent, ViewManager 
 
             // Check for interception.
             final boolean intercepted;
-            if (actionMasked == MotionEvent.ACTION_DOWN
-                    || mFirstTouchTarget != null) {
+            ViewRootImpl viewRootImpl = getViewRootImpl();
+            if (actionMasked == MotionEvent.ACTION_DOWN || mFirstTouchTarget != null) {
                 final boolean disallowIntercept = (mGroupFlags & FLAG_DISALLOW_INTERCEPT) != 0;
-                if (!disallowIntercept) {
+                final boolean isBackGestureInProgress = (viewRootImpl != null
+                        && viewRootImpl.getOnBackInvokedDispatcher().isBackGestureInProgress());
+                if (!disallowIntercept || isBackGestureInProgress) {
+                    // Allow back to intercept touch
                     intercepted = onInterceptTouchEvent(ev);
                     ev.setAction(action); // restore action in case it was changed
                 } else {
@@ -2710,10 +2702,8 @@ public abstract class ViewGroup extends View implements ViewParent, ViewManager 
 
                     final int childrenCount = mChildrenCount;
                     if (newTouchTarget == null && childrenCount != 0) {
-                        final float x =
-                                isMouseEvent ? ev.getXCursorPosition() : ev.getX(actionIndex);
-                        final float y =
-                                isMouseEvent ? ev.getYCursorPosition() : ev.getY(actionIndex);
+                        final float x = ev.getXDispatchLocation(actionIndex);
+                        final float y = ev.getYDispatchLocation(actionIndex);
                         // Find a child that can receive the event.
                         // Scan children from front to back.
                         final ArrayList<View> preorderedList = buildTouchDispatchChildList();
@@ -2725,8 +2715,22 @@ public abstract class ViewGroup extends View implements ViewParent, ViewManager 
                                     childrenCount, i, customOrder);
                             final View child = getAndVerifyPreorderedView(
                                     preorderedList, children, childIndex);
+
+                            // If there is a view that has accessibility focus we want it
+                            // to get the event first and if not handled we will perform a
+                            // normal dispatch. We may do a double iteration but this is
+                            // safer given the timeframe.
+                            if (childWithAccessibilityFocus != null) {
+                                if (childWithAccessibilityFocus != child) {
+                                    continue;
+                                }
+                                childWithAccessibilityFocus = null;
+                                i = childrenCount;
+                            }
+
                             if (!child.canReceivePointerEvents()
                                     || !isTransformedTouchPointInView(x, y, child, null)) {
+                                ev.setTargetAccessibilityFocus(false);
                                 continue;
                             }
 
@@ -2753,8 +2757,8 @@ public abstract class ViewGroup extends View implements ViewParent, ViewManager 
                                 } else {
                                     mLastTouchDownIndex = childIndex;
                                 }
-                                mLastTouchDownX = ev.getX();
-                                mLastTouchDownY = ev.getY();
+                                mLastTouchDownX = x;
+                                mLastTouchDownY = y;
                                 newTouchTarget = addTouchTarget(child, idBitsToAssign);
                                 alreadyDispatchedToNewTouchTarget = true;
                                 break;
@@ -3283,7 +3287,7 @@ public abstract class ViewGroup extends View implements ViewParent, ViewManager 
         if (ev.isFromSource(InputDevice.SOURCE_MOUSE)
                 && ev.getAction() == MotionEvent.ACTION_DOWN
                 && ev.isButtonPressed(MotionEvent.BUTTON_PRIMARY)
-                && isOnScrollbarThumb(ev.getX(), ev.getY())) {
+                && isOnScrollbarThumb(ev.getXDispatchLocation(0), ev.getYDispatchLocation(0))) {
             return true;
         }
         return false;
@@ -3328,10 +3332,9 @@ public abstract class ViewGroup extends View implements ViewParent, ViewManager 
                 break;
             }
             default:
-                throw new IllegalStateException(
-                        "descendant focusability must be one of FOCUS_BEFORE_DESCENDANTS,"
-                            + " FOCUS_AFTER_DESCENDANTS, FOCUS_BLOCK_DESCENDANTS but is "
-                                + descendantFocusability);
+                throw new IllegalStateException("descendant focusability must be "
+            + "one of FOCUS_BEFORE_DESCENDANTS, FOCUS_AFTER_DESCENDANTS, FOCUS_BLOCK_DESCENDANTS "
+            + "but is " + descendantFocusability);
         }
         if (result && !isLayoutValid() && ((mPrivateFlags & PFLAG_WANTS_FOCUS) == 0)) {
             mPrivateFlags |= PFLAG_WANTS_FOCUS;
@@ -3530,7 +3533,7 @@ public abstract class ViewGroup extends View implements ViewParent, ViewManager 
     @Override
     public boolean dispatchPopulateAccessibilityEventInternal(AccessibilityEvent event) {
         boolean handled = false;
-        if (includeForAccessibility()) {
+        if (includeForAccessibility(false)) {
             handled = super.dispatchPopulateAccessibilityEventInternal(event);
             if (handled) {
                 return handled;
@@ -3580,7 +3583,9 @@ public abstract class ViewGroup extends View implements ViewParent, ViewManager 
         }
 
         structure.setChildCount(childrenCount);
-        ArrayList<View> preorderedList = buildOrderedChildList();
+        ArrayList<View> tempPreorderedList = buildOrderedChildList();
+        ArrayList<View> preorderedList =
+                tempPreorderedList != null ? new ArrayList<>(tempPreorderedList) : null;
         boolean customOrder = preorderedList == null
                 && isChildrenDrawingOrderEnabled();
         for (int i = 0; i < childrenCount; i++) {
@@ -3589,48 +3594,7 @@ public abstract class ViewGroup extends View implements ViewParent, ViewManager 
                 childIndex = getAndVerifyPreorderedIndex(childrenCount, i, customOrder);
             } catch (IndexOutOfBoundsException e) {
                 childIndex = i;
-                if (mContext.getApplicationInfo().targetSdkVersion < Build.VERSION_CODES.M) {
-                    Log.w(TAG, "Bad getChildDrawingOrder while collecting assist @ "
-                            + i + " of " + childrenCount, e);
-                    // At least one app is failing when we call getChildDrawingOrder
-                    // at this point, so deal semi-gracefully with it by falling back
-                    // on the basic order.
-                    customOrder = false;
-                    if (i > 0) {
-                        // If we failed at the first index, there really isn't
-                        // anything to do -- we will just proceed with the simple
-                        // sequence order.
-                        // Otherwise, we failed in the middle, so need to come up
-                        // with an order for the remaining indices and use that.
-                        // Failed at the first one, easy peasy.
-                        int[] permutation = new int[childrenCount];
-                        SparseBooleanArray usedIndices = new SparseBooleanArray();
-                        // Go back and collected the indices we have done so far.
-                        for (int j = 0; j < i; j++) {
-                            permutation[j] = getChildDrawingOrder(childrenCount, j);
-                            usedIndices.put(permutation[j], true);
-                        }
-                        // Fill in the remaining indices with indices that have not
-                        // yet been used.
-                        int nextIndex = 0;
-                        for (int j = i; j < childrenCount; j++) {
-                            while (usedIndices.get(nextIndex, false)) {
-                                nextIndex++;
-                            }
-                            permutation[j] = nextIndex;
-                            nextIndex++;
-                        }
-                        // Build the final view list.
-                        preorderedList = new ArrayList<>(childrenCount);
-                        for (int j = 0; j < childrenCount; j++) {
-                            final int index = permutation[j];
-                            final View child = mChildren[index];
-                            preorderedList.add(child);
-                        }
-                    }
-                } else {
-                    throw e;
-                }
+                throw e;
             }
             final View child = getAndVerifyPreorderedView(preorderedList, mChildren,
                     childIndex);
@@ -3705,6 +3669,30 @@ public abstract class ViewGroup extends View implements ViewParent, ViewManager 
         return children;
     }
 
+    private AutofillManager getAutofillManager() {
+        return mContext.getSystemService(AutofillManager.class);
+    }
+
+    private boolean shouldIncludeAllChildrenViewWithAutofillTypeNotNone(AutofillManager afm) {
+        if (afm == null) return false;
+        return afm.shouldIncludeAllChildrenViewsWithAutofillTypeNotNoneInAssistStructure();
+    }
+
+    private boolean shouldIncludeAllChildrenViews(AutofillManager afm) {
+        if (afm == null) return false;
+        return afm.shouldIncludeAllChildrenViewInAssistStructure();
+    }
+
+    private boolean shouldAlwaysIncludeWebview(AutofillManager afm) {
+        if (afm == null) return false;
+        return afm.shouldAlwaysIncludeWebviewInAssistStructure();
+    }
+
+    private boolean shouldIncludeInvisibleView(AutofillManager afm) {
+        if (afm == null) return false;
+        return afm.shouldIncludeInvisibleViewInAssistStructure();
+    }
+
     /** @hide */
     private void populateChildrenForAutofill(ArrayList<View> list, @AutofillFlags int flags) {
         final int childrenCount = mChildrenCount;
@@ -3714,12 +3702,28 @@ public abstract class ViewGroup extends View implements ViewParent, ViewManager 
         final ArrayList<View> preorderedList = buildOrderedChildList();
         final boolean customOrder = preorderedList == null
                 && isChildrenDrawingOrderEnabled();
+        final AutofillManager afm = getAutofillManager();
         for (int i = 0; i < childrenCount; i++) {
             final int childIndex = getAndVerifyPreorderedIndex(childrenCount, i, customOrder);
             final View child = (preorderedList == null)
                     ? mChildren[childIndex] : preorderedList.get(childIndex);
             if ((flags & AUTOFILL_FLAG_INCLUDE_NOT_IMPORTANT_VIEWS) != 0
-                    || child.isImportantForAutofill()) {
+                    || child.isImportantForAutofill()
+                    || (child instanceof WebView && shouldAlwaysIncludeWebview(afm))
+                    || (child.isMatchingAutofillableHeuristics()
+                        && !child.isActivityDeniedForAutofillForUnimportantView())
+                    || (shouldIncludeAllChildrenViewWithAutofillTypeNotNone(afm)
+                        && child.getAutofillType() != AUTOFILL_TYPE_NONE)
+                    || shouldIncludeAllChildrenViews(afm)
+                    || (shouldIncludeInvisibleView(afm)
+                    && child instanceof ViewGroup && child.getVisibility() != View.VISIBLE)) {
+                // If the child is a ViewGroup object and its visibility is not visible, include
+                // it as part of the assist structure. The children of these invisible ViewGroup
+                // objects are parsed and included in the assist structure. When the Autofill
+                // Provider determines the visibility of these children, it looks at their
+                // visibility as well as their parent's visibility. Omitting invisible parents
+                // will lead to the Autofill Provider incorrectly assuming that these children
+                // of invisible parents are actually visible.
                 list.add(child);
             } else if (child instanceof ViewGroup) {
                 ((ViewGroup) child).populateChildrenForAutofill(list, flags);
@@ -3768,6 +3772,17 @@ public abstract class ViewGroup extends View implements ViewParent, ViewManager 
             child = children[childIndex];
         }
         return child;
+    }
+
+    /** @hide */
+    @Override
+    public void resetSubtreeAutofillIds() {
+        super.resetSubtreeAutofillIds();
+        View[] children = mChildren;
+        final int childCount = mChildrenCount;
+        for (int i = 0; i < childCount; i++) {
+            children[i].resetSubtreeAutofillIds();
+        }
     }
 
     /** @hide */
@@ -3901,6 +3916,14 @@ public abstract class ViewGroup extends View implements ViewParent, ViewManager 
     @Override
     public boolean onNestedPrePerformAccessibilityAction(View target, int action, Bundle args) {
         return false;
+    }
+
+    @Override
+    void calculateAccessibilityDataSensitive() {
+        super.calculateAccessibilityDataSensitive();
+        for (int i = 0; i < mChildrenCount; i++) {
+            mChildren[i].calculateAccessibilityDataSensitive();
+        }
     }
 
     @Override
@@ -4143,7 +4166,7 @@ public abstract class ViewGroup extends View implements ViewParent, ViewManager 
     /**
      * @hide
      */
-    protected void onDebugDrawMargins(Canvas canvas, Paint paint) {
+    protected void onDebugDrawMargins(@NonNull Canvas canvas, Paint paint) {
         for (int i = 0; i < getChildCount(); i++) {
             View c = getChildAt(i);
             c.getLayoutParams().onDebugDraw(c, canvas, paint);
@@ -4153,7 +4176,7 @@ public abstract class ViewGroup extends View implements ViewParent, ViewManager 
     /**
      * @hide
      */
-    protected void onDebugDraw(Canvas canvas) {
+    protected void onDebugDraw(@NonNull Canvas canvas) {
         Paint paint = getDebugPaint();
 
         // Draw optical bounds
@@ -4201,14 +4224,12 @@ public abstract class ViewGroup extends View implements ViewParent, ViewManager 
     }
 
     @Override
-    protected void dispatchDraw(Canvas canvas) {
-        boolean usingRenderNodeProperties = canvas.isRecordingFor(mRenderNode);
+    protected void dispatchDraw(@NonNull Canvas canvas) {
         final int childrenCount = mChildrenCount;
         final View[] children = mChildren;
         int flags = mGroupFlags;
 
         if ((flags & FLAG_RUN_ANIMATION) != 0 && canAnimate()) {
-            final boolean buildCache = !isHardwareAccelerated();
             for (int i = 0; i < childrenCount; i++) {
                 final View child = children[i];
                 if ((child.mViewFlags & VISIBILITY_MASK) == VISIBLE) {
@@ -4249,12 +4270,12 @@ public abstract class ViewGroup extends View implements ViewParent, ViewManager 
         boolean more = false;
         final long drawingTime = getDrawingTime();
 
-        if (usingRenderNodeProperties) canvas.insertReorderBarrier();
+        canvas.enableZ();
         final int transientCount = mTransientIndices == null ? 0 : mTransientIndices.size();
         int transientIndex = transientCount != 0 ? 0 : -1;
         // Only use the preordered list if not HW accelerated, since the HW pipeline will do the
         // draw reordering internally
-        final ArrayList<View> preorderedList = usingRenderNodeProperties
+        final ArrayList<View> preorderedList = drawsWithRenderNode(canvas)
                 ? null : buildOrderedChildList();
         final boolean customOrder = preorderedList == null
                 && isChildrenDrawingOrderEnabled();
@@ -4301,7 +4322,7 @@ public abstract class ViewGroup extends View implements ViewParent, ViewManager 
                 more |= drawChild(canvas, child, drawingTime);
             }
         }
-        if (usingRenderNodeProperties) canvas.insertInorderBarrier();
+        canvas.disableZ();
 
         if (isShowingLayoutBounds()) {
             onDebugDraw(canvas);
@@ -4387,7 +4408,7 @@ public abstract class ViewGroup extends View implements ViewParent, ViewManager 
      * @param drawingPosition the drawing order position.
      * @return the container position of a child for this drawing order position.
      *
-     * @see #getChildDrawingOrder(int, int)}
+     * @see #getChildDrawingOrder(int, int)
      */
     public final int getChildDrawingOrder(int drawingPosition) {
         return getChildDrawingOrder(getChildCount(), drawingPosition);
@@ -4469,6 +4490,11 @@ public abstract class ViewGroup extends View implements ViewParent, ViewManager 
         final View[] children = mChildren;
         for (int i = 0; i < count; i++) {
             final View child = children[i];
+            if (child == null) {
+                throw new IllegalStateException(getClass().getSimpleName() + " contains null " +
+                        "child at index " + i + " when traversal in dispatchGetDisplayList," +
+                        " the view may have been removed.");
+            }
             if (((child.mViewFlags & VISIBILITY_MASK) == VISIBLE || child.getAnimation() != null)) {
                 recreateChildDisplayList(child);
             }
@@ -4512,7 +4538,7 @@ public abstract class ViewGroup extends View implements ViewParent, ViewManager 
      * @param drawingTime The time at which draw is occurring
      * @return True if an invalidate() was issued
      */
-    protected boolean drawChild(Canvas canvas, View child, long drawingTime) {
+    protected boolean drawChild(@NonNull Canvas canvas, View child, long drawingTime) {
         return child.draw(canvas, this, drawingTime);
     }
 
@@ -4856,7 +4882,7 @@ public abstract class ViewGroup extends View implements ViewParent, ViewManager 
         }
 
         if (mTransientIndices == null) {
-            mTransientIndices = new ArrayList<Integer>();
+            mTransientIndices = new IntArray();
             mTransientViews = new ArrayList<View>();
         }
         final int oldSize = mTransientIndices.size();
@@ -4998,7 +5024,7 @@ public abstract class ViewGroup extends View implements ViewParent, ViewManager 
             params = generateDefaultLayoutParams();
             if (params == null) {
                 throw new IllegalArgumentException(
-                        "generateDefaultLayoutParams() cannot return null");
+                        "generateDefaultLayoutParams() cannot return null  ");
             }
         }
         addView(child, index, params);
@@ -5886,6 +5912,7 @@ public abstract class ViewGroup extends View implements ViewParent, ViewManager 
         child.mPrivateFlags = (child.mPrivateFlags & ~PFLAG_DIRTY_MASK
                         & ~PFLAG_DRAWING_CACHE_VALID)
                 | PFLAG_DRAWN | PFLAG_INVALIDATED;
+        child.setDetached(false);
         this.mPrivateFlags |= PFLAG_INVALIDATED;
 
         if (child.hasFocus()) {
@@ -5914,6 +5941,7 @@ public abstract class ViewGroup extends View implements ViewParent, ViewManager 
      * @see #removeDetachedView(View, boolean)
      */
     protected void detachViewFromParent(View child) {
+        child.setDetached(true);
         removeFromArray(indexOfChild(child));
     }
 
@@ -5935,6 +5963,9 @@ public abstract class ViewGroup extends View implements ViewParent, ViewManager 
      * @see #removeDetachedView(View, boolean)
      */
     protected void detachViewFromParent(int index) {
+        if (index >= 0 && index < mChildrenCount) {
+            mChildren[index].setDetached(true);
+        }
         removeFromArray(index);
     }
 
@@ -5957,6 +5988,11 @@ public abstract class ViewGroup extends View implements ViewParent, ViewManager 
      * @see #removeDetachedView(View, boolean)
      */
     protected void detachViewsFromParent(int start, int count) {
+        start = Math.max(0, start);
+        final int end = Math.min(mChildrenCount, start + count);
+        for (int i = start; i < end; i++) {
+            mChildren[i].setDetached(true);
+        }
         removeFromArray(start, count);
     }
 
@@ -5986,6 +6022,7 @@ public abstract class ViewGroup extends View implements ViewParent, ViewManager 
 
         for (int i = count - 1; i >= 0; i--) {
             children[i].mParent = null;
+            children[i].setDetached(true);
             children[i] = null;
         }
     }
@@ -7031,12 +7068,12 @@ public abstract class ViewGroup extends View implements ViewParent, ViewManager 
             } else if (childDimension == LayoutParams.MATCH_PARENT) {
                 // Child wants to be our size... find out how big it should
                 // be
-                resultSize = View.sUseZeroUnspecifiedMeasureSpec ? 0 : size;
+                resultSize = size;
                 resultMode = MeasureSpec.UNSPECIFIED;
             } else if (childDimension == LayoutParams.WRAP_CONTENT) {
                 // Child wants to determine its own size.... find out how
                 // big it should be
-                resultSize = View.sUseZeroUnspecifiedMeasureSpec ? 0 : size;
+                resultSize = size;
                 resultMode = MeasureSpec.UNSPECIFIED;
             }
             break;
@@ -7307,6 +7344,126 @@ public abstract class ViewGroup extends View implements ViewParent, ViewManager 
         }
     }
 
+    /**
+     * @hide
+     */
+    @Override
+    public boolean getChildLocalHitRegion(@NonNull View child, @NonNull Region region,
+            @NonNull Matrix matrix, boolean isHover) {
+        if (!child.hasIdentityMatrix()) {
+            matrix.preConcat(child.getInverseMatrix());
+        }
+
+        final int dx = child.mLeft - mScrollX;
+        final int dy = child.mTop - mScrollY;
+        matrix.preTranslate(-dx, -dy);
+
+        final int width = mRight - mLeft;
+        final int height = mBottom - mTop;
+
+        // Map the bounds of this view into the region's coordinates and clip the region.
+        final RectF rect = mAttachInfo != null ? mAttachInfo.mTmpTransformRect : new RectF();
+        rect.set(0, 0, width, height);
+        matrix.mapRect(rect);
+
+        boolean notEmpty = region.op(Math.round(rect.left), Math.round(rect.top),
+                Math.round(rect.right), Math.round(rect.bottom), Region.Op.INTERSECT);
+
+        if (isHover) {
+            HoverTarget target = mFirstHoverTarget;
+            boolean childIsHit = false;
+            while (target != null) {
+                final HoverTarget next = target.next;
+                if (target.child == child) {
+                    childIsHit = true;
+                    break;
+                }
+                target = next;
+            }
+            if (!childIsHit && mFirstHoverTarget != null) {
+                target = mFirstHoverTarget;
+                final ArrayList<View> preorderedList = buildTouchDispatchChildList();
+                while (notEmpty && target != null) {
+                    final HoverTarget next = target.next;
+                    final View hoveredView = target.child;
+
+                    if (!isOnTop(child, hoveredView, preorderedList)) {
+                        rect.set(hoveredView.mLeft, hoveredView.mTop, hoveredView.mRight,
+                                hoveredView.mBottom);
+                        matrix.mapRect(rect);
+                        notEmpty = region.op(Math.round(rect.left), Math.round(rect.top),
+                                Math.round(rect.right), Math.round(rect.bottom),
+                                Region.Op.DIFFERENCE);
+                    }
+                    target = next;
+                }
+                if (preorderedList != null) {
+                    preorderedList.clear();
+                }
+            }
+        } else {
+            TouchTarget target = mFirstTouchTarget;
+            boolean childIsHit = false;
+            while (target != null) {
+                final TouchTarget next = target.next;
+                if (target.child == child) {
+                    childIsHit = true;
+                    break;
+                }
+                target = next;
+            }
+            if (!childIsHit && mFirstTouchTarget != null) {
+                target = mFirstTouchTarget;
+                final ArrayList<View> preorderedList = buildOrderedChildList();
+                while (notEmpty && target != null) {
+                    final TouchTarget next = target.next;
+                    final View touchedView = target.child;
+
+                    if (!isOnTop(child, touchedView, preorderedList)) {
+                        rect.set(touchedView.mLeft, touchedView.mTop, touchedView.mRight,
+                                touchedView.mBottom);
+                        matrix.mapRect(rect);
+                        notEmpty = region.op(Math.round(rect.left), Math.round(rect.top),
+                                Math.round(rect.right), Math.round(rect.bottom),
+                                Region.Op.DIFFERENCE);
+                    }
+                    target = next;
+                }
+                if (preorderedList != null) {
+                    preorderedList.clear();
+                }
+            }
+        }
+
+        if (notEmpty && mParent != null) {
+            notEmpty = mParent.getChildLocalHitRegion(this, region, matrix, isHover);
+        }
+        return notEmpty;
+    }
+
+    /**
+     * Return true if the given {@code view} is drawn on top of the {@code otherView}.
+     * Both the {@code view} and {@code otherView} must be children of this ViewGroup.
+     * Otherwise, the returned value is meaningless.
+     */
+    private boolean isOnTop(View view, View otherView, ArrayList<View> preorderedList) {
+        final int childrenCount = mChildrenCount;
+        final boolean customOrder = preorderedList == null && isChildrenDrawingOrderEnabled();
+        final View[] children = mChildren;
+        for (int i = childrenCount - 1; i >= 0; i--) {
+            final int childIndex = getAndVerifyPreorderedIndex(childrenCount, i, customOrder);
+            final View child = getAndVerifyPreorderedView(preorderedList, children, childIndex);
+            if (child == view) {
+                return true;
+            }
+            if (child == otherView) {
+                return false;
+            }
+        }
+        // Can't find the view and otherView in the children list. Return value is meaningless.
+        return false;
+    }
+
     private static void applyOpToRegionByBounds(Region region, View view, Region.Op op) {
         final int[] locationInWindow = new int[2];
         view.getLocationInWindow(locationInWindow);
@@ -7454,92 +7611,68 @@ public abstract class ViewGroup extends View implements ViewParent, ViewManager 
     }
 
     /**
-     * Offsets the given rectangle in parent's local coordinates into child's coordinate space
-     * and clips the result to the child View's bounds, padding and clipRect if appropriate. If the
-     * resulting rectangle is not empty, the request is forwarded to the child.
-     * <p>
-     * Note: This method does not account for any static View transformations which may be
-     * applied to the child view.
-     *
-     * @param child            the child to dispatch to
-     * @param localVisibleRect the visible (clipped) area of this ViewGroup, in local coordinates
-     * @param windowOffset     the offset of localVisibleRect within the window
-     * @param targets          a queue to collect located targets
-     */
-    private void dispatchTransformedScrollCaptureSearch(View child, Rect localVisibleRect,
-            Point windowOffset, Queue<ScrollCaptureTarget> targets) {
-
-        // copy local visible rect for modification and dispatch
-        final Rect childVisibleRect = getTempRect();
-        childVisibleRect.set(localVisibleRect);
-
-        // transform to child coords
-        final Point childWindowOffset = getTempPoint();
-        childWindowOffset.set(windowOffset.x, windowOffset.y);
-
-        final int dx = child.mLeft - mScrollX;
-        final int dy = child.mTop - mScrollY;
-
-        childVisibleRect.offset(-dx, -dy);
-        childWindowOffset.offset(dx, dy);
-
-        boolean rectIsVisible = true;
-        final int width = mRight - mLeft;
-        final int height = mBottom - mTop;
-
-        // Clip to child bounds
-        if (getClipChildren()) {
-            rectIsVisible = childVisibleRect.intersect(0, 0, child.getWidth(), child.getHeight());
-        }
-
-        // Clip to child padding.
-        if (rectIsVisible && (child instanceof ViewGroup)
-                && ((ViewGroup) child).getClipToPadding()) {
-            rectIsVisible = childVisibleRect.intersect(
-                    child.mPaddingLeft, child.mPaddingTop,
-                    child.getWidth() - child.mPaddingRight,
-                    child.getHeight() - child.mPaddingBottom);
-        }
-        // Clip to child clipBounds.
-        if (rectIsVisible && child.mClipBounds != null) {
-            rectIsVisible = childVisibleRect.intersect(child.mClipBounds);
-        }
-        if (rectIsVisible) {
-            child.dispatchScrollCaptureSearch(childVisibleRect, childWindowOffset, targets);
-        }
-    }
-
-    /**
      * Handle the scroll capture search request by checking this view if applicable, then to each
      * child view.
      *
      * @param localVisibleRect the visible area of this ViewGroup in local coordinates, according to
      *                         the parent
      * @param windowOffset     the offset of this view within the window
-     * @param targets          the collected list of scroll capture targets
-     *
-     * @hide
+     * @param targets          accepts potential scroll capture targets; {@link Consumer#accept
+     *                         results.accept} may be called zero or more times on the calling
+     *                         thread before onScrollCaptureSearch returns
      */
     @Override
     public void dispatchScrollCaptureSearch(
             @NonNull Rect localVisibleRect, @NonNull Point windowOffset,
-            @NonNull Queue<ScrollCaptureTarget> targets) {
+            @NonNull Consumer<ScrollCaptureTarget> targets) {
+
+        if (getClipToPadding() && !localVisibleRect.intersect(mPaddingLeft, mPaddingTop,
+                    (mRight - mLeft)  - mPaddingRight, (mBottom - mTop) - mPaddingBottom)) {
+            return;
+        }
 
         // Dispatch to self first.
         super.dispatchScrollCaptureSearch(localVisibleRect, windowOffset, targets);
 
-        // Then dispatch to children, if not excluding descendants.
-        if ((getScrollCaptureHint() & SCROLL_CAPTURE_HINT_EXCLUDE_DESCENDANTS) == 0) {
-            final int childCount = getChildCount();
-            for (int i = 0; i < childCount; i++) {
-                View child = getChildAt(i);
-                // Only visible views can be captured.
-                if (child.getVisibility() != View.VISIBLE) {
-                    continue;
-                }
-                // Transform to child coords and dispatch
-                dispatchTransformedScrollCaptureSearch(child, localVisibleRect, windowOffset,
-                        targets);
+        // Skip children if descendants excluded.
+        if ((getScrollCaptureHint() & SCROLL_CAPTURE_HINT_EXCLUDE_DESCENDANTS) != 0) {
+            return;
+        }
+
+        final Rect tmpRect = getTempRect();
+        final int childCount = getChildCount();
+        for (int i = 0; i < childCount; i++) {
+            View child = getChildAt(i);
+            // Only visible views can be captured.
+            if (child.getVisibility() != View.VISIBLE) {
+                continue;
+            }
+            // Offset the given rectangle (in parent's local coordinates) into child's coordinate
+            // space and clip the result to the child View's bounds, padding and clipRect as needed.
+            // If the resulting rectangle is not empty, the request is forwarded to the child.
+
+            // copy local visible rect for modification and dispatch
+            tmpRect.set(localVisibleRect);
+
+            // transform to child coords
+            final Point childWindowOffset = getTempPoint();
+            childWindowOffset.set(windowOffset.x, windowOffset.y);
+
+            final int dx = child.mLeft - mScrollX;
+            final int dy = child.mTop - mScrollY;
+
+            tmpRect.offset(-dx, -dy);
+            childWindowOffset.offset(dx, dy);
+
+            boolean rectIsVisible = true;
+
+            // Clip to child bounds
+            if (getClipChildren()) {
+                rectIsVisible = tmpRect.intersect(0, 0, child.getWidth(), child.getHeight());
+            }
+
+            if (rectIsVisible) {
+                child.dispatchScrollCaptureSearch(tmpRect, childWindowOffset, targets);
             }
         }
     }
@@ -8488,8 +8621,7 @@ public abstract class ViewGroup extends View implements ViewParent, ViewManager 
             }
 
             final boolean hasRtlSupport = c.getApplicationInfo().hasRtlSupport();
-            final int targetSdkVersion = c.getApplicationInfo().targetSdkVersion;
-            if (targetSdkVersion < JELLY_BEAN_MR1 || !hasRtlSupport) {
+            if (!hasRtlSupport) {
                 mMarginFlags |= RTL_COMPATIBILITY_MODE_MASK;
             }
 
@@ -9200,7 +9332,8 @@ public abstract class ViewGroup extends View implements ViewParent, ViewManager 
         }
     }
 
-    private static void drawRect(Canvas canvas, Paint paint, int x1, int y1, int x2, int y2) {
+    private static void drawRect(@NonNull Canvas canvas, Paint paint, int x1, int y1,
+                                 int x2, int y2) {
         if (sDebugLines== null) {
             // TODO: This won't work with multiple UI threads in a single process
             sDebugLines = new float[16];
@@ -9273,5 +9406,49 @@ public abstract class ViewGroup extends View implements ViewParent, ViewManager 
         if (mParent != null) {
             mParent.onDescendantUnbufferedRequested();
         }
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * The implementation calls {@link #dispatchCreateViewTranslationRequest} for all the child
+     * views.
+     */
+    @Override
+    public void dispatchCreateViewTranslationRequest(@NonNull Map<AutofillId, long[]> viewIds,
+            @NonNull @DataFormat int[] supportedFormats,
+            @Nullable TranslationCapability capability,
+            @NonNull List<ViewTranslationRequest> requests) {
+        super.dispatchCreateViewTranslationRequest(viewIds, supportedFormats, capability, requests);
+        final int childCount = getChildCount();
+        if (childCount == 0) {
+            return;
+        }
+        for (int i = 0; i < childCount; ++i) {
+            final View child = getChildAt(i);
+            child.dispatchCreateViewTranslationRequest(viewIds, supportedFormats, capability,
+                    requests);
+        }
+    }
+
+    /**
+     * Walk up the View hierarchy to find the nearest {@link OnBackInvokedDispatcher}.
+     *
+     * @return The {@link OnBackInvokedDispatcher} from this or the nearest
+     * ancestor, or null if the view is both not attached and have no ancestor providing an
+     * {@link OnBackInvokedDispatcher}.
+     *
+     * @param child The direct child of this view for which to find a dispatcher.
+     * @param requester The requester that will use the dispatcher. Can be the same as child.
+     */
+    @Nullable
+    @Override
+    public OnBackInvokedDispatcher findOnBackInvokedDispatcherForChild(@NonNull View child,
+            @NonNull View requester) {
+        ViewParent parent = getParent();
+        if (parent != null) {
+            return parent.findOnBackInvokedDispatcherForChild(this, requester);
+        }
+        return null;
     }
 }

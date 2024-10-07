@@ -22,6 +22,8 @@
 #include <nativehelper/scoped_utf_chars.h>
 #include <android_runtime/AndroidRuntime.h>
 
+#include "jni_wrappers.h"
+
 // Host targets (layoutlib) do not differentiate between regular and critical native methods,
 // and they need all the JNI methods to have JNIEnv* and jclass/jobject as their first two arguments.
 // The following macro allows to have those arguments when compiling for host while omitting them when
@@ -36,65 +38,10 @@
 
 namespace android {
 
-// Defines some helpful functions.
-
-static inline jclass FindClassOrDie(JNIEnv* env, const char* class_name) {
-    jclass clazz = env->FindClass(class_name);
-    LOG_ALWAYS_FATAL_IF(clazz == NULL, "Unable to find class %s", class_name);
-    return clazz;
-}
-
-static inline jfieldID GetFieldIDOrDie(JNIEnv* env, jclass clazz, const char* field_name,
-                                       const char* field_signature) {
-    jfieldID res = env->GetFieldID(clazz, field_name, field_signature);
-    LOG_ALWAYS_FATAL_IF(res == NULL, "Unable to find field %s with signature %s", field_name,
-                        field_signature);
-    return res;
-}
-
-static inline jmethodID GetMethodIDOrDie(JNIEnv* env, jclass clazz, const char* method_name,
-                                         const char* method_signature) {
-    jmethodID res = env->GetMethodID(clazz, method_name, method_signature);
-    LOG_ALWAYS_FATAL_IF(res == NULL, "Unable to find method %s with signature %s", method_name,
-                        method_signature);
-    return res;
-}
-
-static inline jfieldID GetStaticFieldIDOrDie(JNIEnv* env, jclass clazz, const char* field_name,
-                                             const char* field_signature) {
-    jfieldID res = env->GetStaticFieldID(clazz, field_name, field_signature);
-    LOG_ALWAYS_FATAL_IF(res == NULL, "Unable to find static field %s with signature %s", field_name,
-                        field_signature);
-    return res;
-}
-
-static inline jmethodID GetStaticMethodIDOrDie(JNIEnv* env, jclass clazz, const char* method_name,
-                                               const char* method_signature) {
-    jmethodID res = env->GetStaticMethodID(clazz, method_name, method_signature);
-    LOG_ALWAYS_FATAL_IF(res == NULL, "Unable to find static method %s with signature %s",
-                        method_name, method_signature);
-    return res;
-}
-
-template <typename T>
-static inline T MakeGlobalRefOrDie(JNIEnv* env, T in) {
-    jobject res = env->NewGlobalRef(in);
-    LOG_ALWAYS_FATAL_IF(res == NULL, "Unable to create global reference.");
-    return static_cast<T>(res);
-}
-
-static inline int RegisterMethodsOrDie(JNIEnv* env, const char* className,
-                                       const JNINativeMethod* gMethods, int numMethods) {
-    int res = AndroidRuntime::registerNativeMethods(env, className, gMethods, numMethods);
-    LOG_ALWAYS_FATAL_IF(res < 0, "Unable to register native methods.");
-    return res;
-}
-
-static inline jobject jniGetReferent(JNIEnv* env, jobject ref) {
-    jclass cls = FindClassOrDie(env, "java/lang/ref/Reference");
-    jmethodID get = GetMethodIDOrDie(env, cls, "get", "()Ljava/lang/Object;");
-    return env->CallObjectMethod(ref, get);
-}
+/**
+ * Returns the result of invoking java.lang.ref.Reference.get() on a Reference object.
+ */
+jobject GetReferent(JNIEnv* env, jobject ref);
 
 /**
  * Read the specified field from jobject, and convert to std::string.
@@ -108,6 +55,40 @@ static inline std::string getStringField(JNIEnv* env, jobject obj, jfieldID fiel
         return std::string(chars.c_str());
     }
     return std::string(defaultValue);
+}
+
+static inline JNIEnv* GetJNIEnvironment(JavaVM* vm, jint version = JNI_VERSION_1_4) {
+    JNIEnv* env;
+    if (vm->GetEnv(reinterpret_cast<void**>(&env), version) != JNI_OK) {
+        return nullptr;
+    }
+    return env;
+}
+
+static inline JNIEnv* GetOrAttachJNIEnvironment(JavaVM* jvm, jint version = JNI_VERSION_1_4) {
+    JNIEnv* env = GetJNIEnvironment(jvm, version);
+    if (!env) {
+        int result = jvm->AttachCurrentThread(&env, nullptr);
+        LOG_ALWAYS_FATAL_IF(result != JNI_OK, "JVM thread attach failed.");
+        struct VmDetacher {
+            VmDetacher(JavaVM* vm) : mVm(vm) {}
+            ~VmDetacher() { mVm->DetachCurrentThread(); }
+
+        private:
+            JavaVM* const mVm;
+        };
+        static thread_local VmDetacher detacher(jvm);
+    }
+    return env;
+}
+
+static inline void DieIfException(JNIEnv* env, const char* message) {
+    if (env->ExceptionCheck()) {
+        jnihelp::ExpandableString summary;
+        jnihelp::ExpandableStringInitialize(&summary);
+        jnihelp::GetStackTraceOrSummary(env, nullptr, &summary);
+        LOG_ALWAYS_FATAL("%s\n%s", message, summary.data);
+    }
 }
 
 }  // namespace android

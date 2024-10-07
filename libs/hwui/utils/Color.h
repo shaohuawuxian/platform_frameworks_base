@@ -16,14 +16,14 @@
 #ifndef COLOR_H
 #define COLOR_H
 
-#include <math.h>
-#include <cutils/compiler.h>
-#include <system/graphics.h>
-#include <ui/PixelFormat.h>
-
 #include <SkColor.h>
 #include <SkColorSpace.h>
 #include <SkImageInfo.h>
+#include <cutils/compiler.h>
+#include <math.h>
+#include <system/graphics.h>
+
+#include <optional>
 
 struct ANativeWindow_Buffer;
 struct AHardwareBuffer_Desc;
@@ -92,16 +92,14 @@ static constexpr float EOCF_sRGB(float srgb) {
     return srgb <= 0.04045f ? srgb / 12.92f : powf((srgb + 0.055f) / 1.055f, 2.4f);
 }
 
-#ifdef __ANDROID__ // Layoutlib does not support hardware buffers or native windows
-ANDROID_API SkImageInfo ANativeWindowToImageInfo(const ANativeWindow_Buffer& buffer,
+SkImageInfo ANativeWindowToImageInfo(const ANativeWindow_Buffer& buffer,
                                                  sk_sp<SkColorSpace> colorSpace);
 
 SkImageInfo BufferDescriptionToImageInfo(const AHardwareBuffer_Desc& bufferDesc,
                                          sk_sp<SkColorSpace> colorSpace);
-#endif
 
-android::PixelFormat ColorTypeToPixelFormat(SkColorType colorType);
-ANDROID_API SkColorType PixelFormatToColorType(android::PixelFormat format);
+uint32_t ColorTypeToBufferFormat(SkColorType colorType);
+SkColorType BufferFormatToColorType(uint32_t bufferFormat);
 
 ANDROID_API sk_sp<SkColorSpace> DataSpaceToColorSpace(android_dataspace dataspace);
 
@@ -129,6 +127,9 @@ struct Lab {
 
 Lab sRGBToLab(SkColor color);
 SkColor LabToSRGB(const Lab& lab, SkAlpha alpha);
+skcms_TransferFunction GetPQSkTransferFunction(float sdr_white_level = 0.f);
+skcms_TransferFunction GetExtendedTransferFunction(float sdrHdrRatio);
+std::optional<skcms_TransferFunction> GetHLGScaleTransferFunction();
 
 } /* namespace uirenderer */
 } /* namespace android */

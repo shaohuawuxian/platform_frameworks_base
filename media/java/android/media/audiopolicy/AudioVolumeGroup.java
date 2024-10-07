@@ -17,6 +17,7 @@
 package android.media.audiopolicy;
 
 import android.annotation.NonNull;
+import android.annotation.Nullable;
 import android.annotation.SystemApi;
 import android.media.AudioAttributes;
 import android.media.AudioSystem;
@@ -30,6 +31,7 @@ import com.android.internal.util.Preconditions;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Objects;
 
 /**
  * A class to create the association between different playback attributes
@@ -51,7 +53,7 @@ public final class AudioVolumeGroup implements Parcelable {
     /**
      * human-readable name of this volume group.
      */
-    private final String mName;
+    private final @NonNull String mName;
 
     private final AudioAttributes[] mAudioAttributes;
     private int[] mLegacyStreamTypes;
@@ -107,14 +109,20 @@ public final class AudioVolumeGroup implements Parcelable {
     }
 
     @Override
-    public boolean equals(@NonNull Object o) {
+    public boolean equals(@Nullable Object o) {
         if (this == o) return true;
         if (o == null || getClass() != o.getClass()) return false;
 
         AudioVolumeGroup thatAvg = (AudioVolumeGroup) o;
 
-        return mName == thatAvg.mName && mId == thatAvg.mId
-                && mAudioAttributes.equals(thatAvg.mAudioAttributes);
+        return mName.equals(thatAvg.mName) && mId == thatAvg.mId
+                && Arrays.equals(mAudioAttributes, thatAvg.mAudioAttributes);
+    }
+
+    @Override
+    public int hashCode() {
+        return Objects.hash(mName, mId,
+                Arrays.hashCode(mAudioAttributes), Arrays.hashCode(mLegacyStreamTypes));
     }
 
     /**

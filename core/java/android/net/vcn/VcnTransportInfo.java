@@ -16,16 +16,22 @@
 
 package android.net.vcn;
 
-import static android.net.NetworkCapabilities.REDACT_NONE;
+import static android.net.NetworkCapabilities.REDACT_FOR_NETWORK_SETTINGS;
+import static android.net.vcn.VcnGatewayConnectionConfig.MIN_UDP_PORT_4500_NAT_TIMEOUT_SECONDS;
+import static android.net.vcn.VcnGatewayConnectionConfig.MIN_UDP_PORT_4500_NAT_TIMEOUT_UNSET;
 import static android.telephony.SubscriptionManager.INVALID_SUBSCRIPTION_ID;
 
+import android.annotation.IntRange;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
+import android.net.NetworkCapabilities;
 import android.net.TransportInfo;
 import android.net.wifi.WifiInfo;
 import android.os.Parcel;
 import android.os.Parcelable;
 import android.telephony.SubscriptionManager;
+
+import com.android.internal.util.Preconditions;
 
 import java.util.Objects;
 
@@ -45,21 +51,33 @@ import java.util.Objects;
  *
  * @hide
  */
+// TODO: Do not store WifiInfo and subscription ID in VcnTransportInfo anymore
 public class VcnTransportInfo implements TransportInfo, Parcelable {
     @Nullable private final WifiInfo mWifiInfo;
     private final int mSubId;
+    private final int mMinUdpPort4500NatTimeoutSeconds;
 
     public VcnTransportInfo(@NonNull WifiInfo wifiInfo) {
-        this(wifiInfo, INVALID_SUBSCRIPTION_ID);
+        this(wifiInfo, INVALID_SUBSCRIPTION_ID, MIN_UDP_PORT_4500_NAT_TIMEOUT_UNSET);
+    }
+
+    public VcnTransportInfo(@NonNull WifiInfo wifiInfo, int minUdpPort4500NatTimeoutSeconds) {
+        this(wifiInfo, INVALID_SUBSCRIPTION_ID, minUdpPort4500NatTimeoutSeconds);
     }
 
     public VcnTransportInfo(int subId) {
-        this(null /* wifiInfo */, subId);
+        this(null /* wifiInfo */, subId, MIN_UDP_PORT_4500_NAT_TIMEOUT_UNSET);
     }
 
-    private VcnTransportInfo(@Nullable WifiInfo wifiInfo, int subId) {
+    public VcnTransportInfo(int subId, int minUdpPort4500NatTimeoutSeconds) {
+        this(null /* wifiInfo */, subId, minUdpPort4500NatTimeoutSeconds);
+    }
+
+    private VcnTransportInfo(
+            @Nullable WifiInfo wifiInfo, int subId, int minUdpPort4500NatTimeoutSeconds) {
         mWifiInfo = wifiInfo;
         mSubId = subId;
+        mMinUdpPort4500NatTimeoutSeconds = minUdpPort4500NatTimeoutSeconds;
     }
 
     /**
@@ -87,16 +105,28 @@ public class VcnTransportInfo implements TransportInfo, Parcelable {
         return mSubId;
     }
 
+    /**
+     * Get the VCN provided UDP port 4500 NAT timeout
+     *
+     * @return the UDP 4500 NAT timeout, or
+     *     VcnGatewayConnectionConfig.MIN_UDP_PORT_4500_NAT_TIMEOUT_UNSET if not set.
+     */
+    public int getMinUdpPort4500NatTimeoutSeconds() {
+        return mMinUdpPort4500NatTimeoutSeconds;
+    }
+
     @Override
     public int hashCode() {
-        return Objects.hash(mWifiInfo, mSubId);
+        return Objects.hash(mWifiInfo, mSubId, mMinUdpPort4500NatTimeoutSeconds);
     }
 
     @Override
     public boolean equals(Object o) {
         if (!(o instanceof VcnTransportInfo)) return false;
         final VcnTransportInfo that = (VcnTransportInfo) o;
-        return Objects.equals(mWifiInfo, that.mWifiInfo) && mSubId == that.mSubId;
+        return Objects.equals(mWifiInfo, that.mWifiInfo)
+                && mSubId == that.mSubId
+                && mMinUdpPort4500NatTimeoutSeconds == that.mMinUdpPort4500NatTimeoutSeconds;
     }
 
     /** {@inheritDoc} */
@@ -108,13 +138,27 @@ public class VcnTransportInfo implements TransportInfo, Parcelable {
     @Override
     @NonNull
     public TransportInfo makeCopy(long redactions) {
+        if ((redactions & NetworkCapabilities.REDACT_FOR_NETWORK_SETTINGS) != 0) {
+            return new VcnTransportInfo(
+                    null, INVALID_SUBSCRIPTION_ID, MIN_UDP_PORT_4500_NAT_TIMEOUT_UNSET);
+        }
+
         return new VcnTransportInfo(
-                (mWifiInfo == null) ? null : mWifiInfo.makeCopy(redactions), mSubId);
+                (mWifiInfo == null) ? null : mWifiInfo.makeCopy(redactions),
+                mSubId,
+                mMinUdpPort4500NatTimeoutSeconds);
     }
 
     @Override
     public long getApplicableRedactions() {
-        return (mWifiInfo == null) ? REDACT_NONE : mWifiInfo.getApplicableRedactions();
+        long redactions = REDACT_FOR_NETWORK_SETTINGS;
+
+        // Add additional wifi redactions if necessary
+        if (mWifiInfo != null) {
+            redactions |= mWifiInfo.getApplicableRedactions();
+        }
+
+        return redactions;
     }
 
     /** {@inheritDoc} */
@@ -122,6 +166,7 @@ public class VcnTransportInfo implements TransportInfo, Parcelable {
     public void writeToParcel(@NonNull Parcel dest, int flags) {
         dest.writeInt(mSubId);
         dest.writeParcelable(mWifiInfo, flags);
+        dest.writeInt(mMinUdpPort4500NatTimeoutSeconds);
     }
 
     @Override
@@ -134,12 +179,63 @@ public class VcnTransportInfo implements TransportInfo, Parcelable {
             new Creator<VcnTransportInfo>() {
                 public VcnTransportInfo createFromParcel(Parcel in) {
                     final int subId = in.readInt();
-                    final WifiInfo wifiInfo = in.readParcelable(null);
-                    return new VcnTransportInfo(wifiInfo, subId);
+                    final WifiInfo wifiInfo =
+                            in.readParcelable(null, android.net.wifi.WifiInfo.class);
+                    final int minUdpPort4500NatTimeoutSeconds = in.readInt();
+
+                    // If all fields are their null values, return null TransportInfo to avoid
+                    // leaking information about this being a VCN Network (instead of macro
+                    // cellular, etc)
+                    if (wifiInfo == null
+                            && subId == INVALID_SUBSCRIPTION_ID
+                            && minUdpPort4500NatTimeoutSeconds
+                                    == MIN_UDP_PORT_4500_NAT_TIMEOUT_UNSET) {
+                        return null;
+                    }
+
+                    return new VcnTransportInfo(wifiInfo, subId, minUdpPort4500NatTimeoutSeconds);
                 }
 
                 public VcnTransportInfo[] newArray(int size) {
                     return new VcnTransportInfo[size];
                 }
             };
+
+    /** This class can be used to construct a {@link VcnTransportInfo}. */
+    public static final class Builder {
+        private int mMinUdpPort4500NatTimeoutSeconds = MIN_UDP_PORT_4500_NAT_TIMEOUT_UNSET;
+
+        /** Construct Builder */
+        public Builder() {}
+
+        /**
+         * Sets the maximum supported IKEv2/IPsec NATT keepalive timeout.
+         *
+         * <p>This is used as a power-optimization hint for other IKEv2/IPsec use cases (e.g. VPNs,
+         * or IWLAN) to reduce the necessary keepalive frequency, thus conserving power and data.
+         *
+         * @param minUdpPort4500NatTimeoutSeconds the maximum keepalive timeout supported by the VCN
+         *     Gateway Connection, generally the minimum duration a NAT mapping is cached on the VCN
+         *     Gateway.
+         * @return this {@link Builder} instance, for chaining
+         */
+        @NonNull
+        public Builder setMinUdpPort4500NatTimeoutSeconds(
+                @IntRange(from = MIN_UDP_PORT_4500_NAT_TIMEOUT_SECONDS)
+                        int minUdpPort4500NatTimeoutSeconds) {
+            Preconditions.checkArgument(
+                    minUdpPort4500NatTimeoutSeconds >= MIN_UDP_PORT_4500_NAT_TIMEOUT_SECONDS,
+                    "Timeout must be at least 120s");
+
+            mMinUdpPort4500NatTimeoutSeconds = minUdpPort4500NatTimeoutSeconds;
+            return Builder.this;
+        }
+
+        /** Build a VcnTransportInfo instance */
+        @NonNull
+        public VcnTransportInfo build() {
+            return new VcnTransportInfo(
+                    null /* wifiInfo */, INVALID_SUBSCRIPTION_ID, mMinUdpPort4500NatTimeoutSeconds);
+        }
+    }
 }

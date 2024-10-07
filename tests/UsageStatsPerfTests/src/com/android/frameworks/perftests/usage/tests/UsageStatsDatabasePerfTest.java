@@ -62,12 +62,13 @@ public class UsageStatsDatabasePerfTest {
     private static final StatCombiner<UsageEvents.Event> sUsageStatsCombiner =
             new StatCombiner<UsageEvents.Event>() {
                 @Override
-                public void combine(IntervalStats stats, boolean mutable,
+                public boolean combine(IntervalStats stats, boolean mutable,
                         List<UsageEvents.Event> accResult) {
                     final int size = stats.events.size();
                     for (int i = 0; i < size; i++) {
                         accResult.add(stats.events.get(i));
                     }
+                    return true;
                 }
             };
 
@@ -121,7 +122,7 @@ public class UsageStatsDatabasePerfTest {
         while (benchmarkState.keepRunning(elapsedTimeNs)) {
             final long startTime = SystemClock.elapsedRealtimeNanos();
             List<UsageEvents.Event> temp = sUsageStatsDatabase.queryUsageStats(
-                    UsageStatsManager.INTERVAL_DAILY, 0, 2, sUsageStatsCombiner);
+                    UsageStatsManager.INTERVAL_DAILY, 0, 2, sUsageStatsCombiner, false);
             final long endTime = SystemClock.elapsedRealtimeNanos();
             elapsedTimeNs = endTime - startTime;
             assertEquals(packageCount * eventsPerPackage, temp.size());

@@ -16,70 +16,39 @@
 
 package com.android.systemui.biometrics;
 
-import android.annotation.IntDef;
-import android.annotation.NonNull;
-import android.annotation.Nullable;
-import android.os.Bundle;
+import android.hardware.biometrics.BiometricAuthenticator.Modality;
 import android.view.WindowManager;
 
-import java.lang.annotation.Retention;
-import java.lang.annotation.RetentionPolicy;
+import com.android.systemui.Dumpable;
+import com.android.systemui.biometrics.ui.viewmodel.PromptViewModel;
 
 /**
  * Interface for the biometric dialog UI.
+ *
+ * TODO(b/287311775): remove along with legacy controller once flag is removed
  */
-public interface AuthDialog {
-
-    String KEY_CONTAINER_STATE = "container_state";
-    String KEY_BIOMETRIC_SHOWING = "biometric_showing";
-    String KEY_CREDENTIAL_SHOWING = "credential_showing";
-
-    String KEY_BIOMETRIC_TRY_AGAIN_VISIBILITY = "try_agian_visibility";
-    String KEY_BIOMETRIC_STATE = "state";
-    String KEY_BIOMETRIC_INDICATOR_STRING = "indicator_string"; // error / help / hint
-    String KEY_BIOMETRIC_INDICATOR_ERROR_SHOWING = "error_is_temporary";
-    String KEY_BIOMETRIC_INDICATOR_HELP_SHOWING = "hint_is_temporary";
-    String KEY_BIOMETRIC_DIALOG_SIZE = "size";
-
-    int SIZE_UNKNOWN = 0;
-    /**
-     * Minimal UI, showing only biometric icon.
-     */
-    int SIZE_SMALL = 1;
-    /**
-     * Normal-sized biometric UI, showing title, icon, buttons, etc.
-     */
-    int SIZE_MEDIUM = 2;
-    /**
-     * Full-screen credential UI.
-     */
-    int SIZE_LARGE = 3;
-    @Retention(RetentionPolicy.SOURCE)
-    @IntDef({SIZE_UNKNOWN, SIZE_SMALL, SIZE_MEDIUM, SIZE_LARGE})
-    @interface DialogSize {}
+@Deprecated
+public interface AuthDialog extends Dumpable {
 
     /**
-     * Animation duration, from small to medium dialog, including back panel, icon translation, etc
+     * Parameters used when laying out {@link AuthBiometricView}, its subclasses, and
+     * {@link AuthPanelController}.
      */
-    int ANIMATE_SMALL_TO_MEDIUM_DURATION_MS = 150;
-    /**
-     * Animation duration from medium to large dialog, including biometric fade out, back panel, etc
-     */
-    int ANIMATE_MEDIUM_TO_LARGE_DURATION_MS = 450;
-    /**
-     * Delay before notifying {@link AuthCredentialView} to start animating in.
-     */
-    int ANIMATE_CREDENTIAL_START_DELAY_MS = ANIMATE_MEDIUM_TO_LARGE_DURATION_MS * 2 / 3;
-    /**
-     * Animation duration when sliding in credential UI
-     */
-    int ANIMATE_CREDENTIAL_INITIAL_DURATION_MS = 150;
+    class LayoutParams {
+        public final int mMediumHeight;
+        public final int mMediumWidth;
+
+        public LayoutParams(int mediumWidth, int mediumHeight) {
+            mMediumWidth = mediumWidth;
+            mMediumHeight = mediumHeight;
+        }
+    }
 
     /**
      * Show the dialog.
      * @param wm
      */
-    void show(WindowManager wm, @Nullable Bundle savedState);
+    void show(WindowManager wm);
 
     /**
      * Dismiss the dialog without sending a callback.
@@ -94,44 +63,57 @@ public interface AuthDialog {
     /**
      * Biometric authenticated. May be pending user confirmation, or completed.
      */
-    void onAuthenticationSucceeded();
+    void onAuthenticationSucceeded(@Modality int modality);
 
     /**
      * Authentication failed (reject, timeout). Dialog stays showing.
-     * @param failureReason
+     * @param modality sensor modality that triggered the error
+     * @param failureReason message
      */
-    void onAuthenticationFailed(String failureReason);
+    void onAuthenticationFailed(@Modality int modality, String failureReason);
 
     /**
      * Authentication rejected, or help message received.
-     * @param help
+     * @param modality sensor modality that triggered the help message
+     * @param help message
      */
-    void onHelp(String help);
+    void onHelp(@Modality int modality, String help);
 
     /**
      * Authentication failed. Dialog going away.
-     * @param error
+     * @param modality sensor modality that triggered the error
+     * @param error message
      */
-    void onError(String error);
+    void onError(@Modality int modality, String error);
 
-    /**
-     * Save the current state.
-     * @param outState
-     */
-    void onSaveState(@NonNull Bundle outState);
+    /** UDFPS pointer down event. */
+    void onPointerDown();
 
     /**
      * Get the client's package name
      */
     String getOpPackageName();
 
+    /** The requestId of the underlying operation within the framework. */
+    long getRequestId();
+
     /**
      * Animate to credential UI. Typically called after biometric is locked out.
      */
-    void animateToCredentialUI();
+    void animateToCredentialUI(boolean isError);
 
     /**
      * @return true if device credential is allowed.
      */
     boolean isAllowDeviceCredentials();
+
+    /**
+     * Called when the device's orientation changed and the dialog may need to do another
+     * layout. This is most relevant to UDFPS since configuration changes are not sent by
+     * the framework in equivalent cases (landscape to reverse landscape) but the dialog
+     * must remain fixed on the physical sensor location.
+     */
+    void onOrientationChanged();
+
+    PromptViewModel getViewModel();
 }

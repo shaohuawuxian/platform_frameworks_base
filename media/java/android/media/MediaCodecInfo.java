@@ -18,7 +18,16 @@ package android.media;
 
 import static android.media.Utils.intersectSortedDistinctRanges;
 import static android.media.Utils.sortDistinctRanges;
+import static android.media.codec.Flags.FLAG_DYNAMIC_COLOR_ASPECTS;
+import static android.media.codec.Flags.FLAG_HLG_EDITING;
+import static android.media.codec.Flags.FLAG_IN_PROCESS_SW_AUDIO_CODEC;
+import static android.media.codec.Flags.FLAG_NULL_OUTPUT_SURFACE;
+import static android.media.codec.Flags.FLAG_REGION_OF_INTEREST;
+import static android.media.MediaCodec.GetFlag;
 
+import android.annotation.FlaggedApi;
+import android.annotation.IntDef;
+import android.annotation.IntRange;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.annotation.SuppressLint;
@@ -27,12 +36,15 @@ import android.compat.annotation.UnsupportedAppUsage;
 import android.os.Build;
 import android.os.Process;
 import android.os.SystemProperties;
+import android.sysprop.MediaProperties;
 import android.util.Log;
 import android.util.Pair;
 import android.util.Range;
 import android.util.Rational;
 import android.util.Size;
 
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -180,10 +192,15 @@ public final class MediaCodecInfo {
         public String mName;
         public int mValue;
         public boolean mDefault;
+        public boolean mInternal;
         public Feature(String name, int value, boolean def) {
+            this(name, value, def, false /* internal */);
+        }
+        public Feature(String name, int value, boolean def, boolean internal) {
             mName = name;
             mValue = value;
             mDefault = def;
+            mInternal = internal;
         }
     }
 
@@ -195,12 +212,19 @@ public final class MediaCodecInfo {
     private static final Range<Rational> POSITIVE_RATIONALS =
             Range.create(new Rational(1, Integer.MAX_VALUE),
                          new Rational(Integer.MAX_VALUE, 1));
-    private static final Range<Integer> SIZE_RANGE =
-            Process.is64Bit() ? Range.create(1, 32768) : Range.create(1, 4096);
     private static final Range<Integer> FRAME_RATE_RANGE = Range.create(0, 960);
     private static final Range<Integer> BITRATE_RANGE = Range.create(0, 500000000);
     private static final int DEFAULT_MAX_SUPPORTED_INSTANCES = 32;
     private static final int MAX_SUPPORTED_INSTANCES_LIMIT = 256;
+
+    private static final class LazyHolder {
+        private static final Range<Integer> SIZE_RANGE = Process.is64Bit()
+                ? Range.create(1, 32768)
+                : Range.create(1, MediaProperties.resolution_limit_32bit().orElse(4096));
+    }
+    private static Range<Integer> getSizeRange() {
+        return LazyHolder.SIZE_RANGE;
+    }
 
     // found stuff that is not supported by framework (=> this should not happen)
     private static final int ERROR_UNRECOGNIZED   = (1 << 0);
@@ -412,11 +436,56 @@ public final class MediaCodecInfo {
         /** @deprecated Use {@link #COLOR_Format32bitABGR8888}. */
         public static final int COLOR_Format24BitABGR6666           = 43;
 
+        /**
+         * P010 is 10-bit-per component 4:2:0 YCbCr semiplanar format.
+         * <p>
+         * This format uses 24 allocated bits per pixel with 15 bits of
+         * data per pixel. Chroma planes are subsampled by 2 both
+         * horizontally and vertically. Each chroma and luma component
+         * has 16 allocated bits in little-endian configuration with 10
+         * MSB of actual data.
+         *
+         * <pre>
+         *            byte                   byte
+         *  <--------- i --------> | <------ i + 1 ------>
+         * +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+         * |     UNUSED      |      Y/Cb/Cr                |
+         * +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+         *  0               5 6   7 0                    7
+         * bit
+         * </pre>
+         *
+         * Use this format with {@link Image}. This format corresponds
+         * to {@link android.graphics.ImageFormat#YCBCR_P010}.
+         * <p>
+         */
+        @SuppressLint("AllUpper")
+        public static final int COLOR_FormatYUVP010                 = 54;
+
         /** @deprecated Use {@link #COLOR_FormatYUV420Flexible}. */
         public static final int COLOR_TI_FormatYUV420PackedSemiPlanar = 0x7f000100;
         // COLOR_FormatSurface indicates that the data will be a GraphicBuffer metadata reference.
         // Note: in OMX this is called OMX_COLOR_FormatAndroidOpaque.
         public static final int COLOR_FormatSurface                   = 0x7F000789;
+
+        /**
+         * 64 bits per pixel RGBA color format, with 16-bit signed
+         * floating point red, green, blue, and alpha components.
+         * <p>
+         *
+         * <pre>
+         *         byte              byte             byte              byte
+         *  <-- i -->|<- i+1 ->|<- i+2 ->|<- i+3 ->|<- i+4 ->|<- i+5 ->|<- i+6 ->|<- i+7 ->
+         * +---------+---------+-------------------+---------+---------+---------+---------+
+         * |        RED        |       GREEN       |       BLUE        |       ALPHA       |
+         * +---------+---------+-------------------+---------+---------+---------+---------+
+         *  0       7 0       7 0       7 0       7 0       7 0       7 0       7 0       7
+         * </pre>
+         *
+         * This corresponds to {@link android.graphics.PixelFormat#RGBA_F16}.
+         */
+        @SuppressLint("AllUpper")
+        public static final int COLOR_Format64bitABGRFloat            = 0x7F000F16;
 
         /**
          * 32 bits per pixel RGBA color format, with 8-bit red, green, blue, and alpha components.
@@ -434,6 +503,26 @@ public final class MediaCodecInfo {
          * This corresponds to {@link android.graphics.PixelFormat#RGBA_8888}.
          */
         public static final int COLOR_Format32bitABGR8888             = 0x7F00A000;
+
+        /**
+         * 32 bits per pixel RGBA color format, with 10-bit red, green,
+         * blue, and 2-bit alpha components.
+         * <p>
+         * Using 32-bit little-endian representation, colors stored as
+         * Red 9:0, Green 19:10, Blue 29:20, and Alpha 31:30.
+         * <pre>
+         *         byte              byte             byte              byte
+         *  <------ i -----> | <---- i+1 ----> | <---- i+2 ----> | <---- i+3 ----->
+         * +-----------------+---+-------------+-------+---------+-----------+-----+
+         * |       RED           |      GREEN          |       BLUE          |ALPHA|
+         * +-----------------+---+-------------+-------+---------+-----------+-----+
+         *  0               7 0 1 2           7 0     3 4       7 0         5 6   7
+         * </pre>
+         *
+         * This corresponds to {@link android.graphics.PixelFormat#RGBA_1010102}.
+         */
+        @SuppressLint("AllUpper")
+        public static final int COLOR_Format32bitABGR2101010          = 0x7F00AAA2;
 
         /**
          * Flexible 12 bits per pixel, subsampled YUV color format with 8-bit chroma and luma
@@ -570,6 +659,142 @@ public final class MediaCodecInfo {
         public static final String FEATURE_LowLatency = "low-latency";
 
         /**
+         * Do not include in REGULAR_CODECS list in MediaCodecList.
+         */
+        private static final String FEATURE_SpecialCodec = "special-codec";
+
+        /**
+         * <b>video encoder only</b>: codec supports quantization parameter bounds.
+         * @see MediaFormat#KEY_VIDEO_QP_MAX
+         * @see MediaFormat#KEY_VIDEO_QP_MIN
+         */
+        @SuppressLint("AllUpper")
+        public static final String FEATURE_QpBounds = "qp-bounds";
+
+        /**
+         * <b>video encoder only</b>: codec supports exporting encoding statistics.
+         * Encoders with this feature can provide the App clients with the encoding statistics
+         * information about the frame.
+         * The scope of encoding statistics is controlled by
+         * {@link MediaFormat#KEY_VIDEO_ENCODING_STATISTICS_LEVEL}.
+         *
+         * @see MediaFormat#KEY_VIDEO_ENCODING_STATISTICS_LEVEL
+         */
+        @SuppressLint("AllUpper") // for consistency with other FEATURE_* constants
+        public static final String FEATURE_EncodingStatistics = "encoding-statistics";
+
+        /**
+         * <b>video encoder only</b>: codec supports HDR editing.
+         * <p>
+         * HDR editing support means that the codec accepts 10-bit HDR
+         * input surface, and it is capable of generating any HDR
+         * metadata required from both YUV and RGB input when the
+         * metadata is not present. This feature is only meaningful when
+         * using an HDR capable profile (and 10-bit HDR input).
+         * <p>
+         * This feature implies that the codec is capable of encoding at
+         * least one HDR format, and that it supports RGBA_1010102 as
+         * well as P010, and optionally RGBA_FP16 input formats, and
+         * that the encoder can generate HDR metadata for all supported
+         * HDR input formats.
+         */
+        @SuppressLint("AllUpper")
+        public static final String FEATURE_HdrEditing = "hdr-editing";
+
+        /**
+         * <b>video encoder only</b>: codec supports HLG editing.
+         * <p>
+         * HLG editing support means that the codec accepts 10-bit HDR
+         * input surface in both YUV and RGB pixel format. This feature
+         * is only meaningful when using a 10-bit (HLG) profile and
+         * 10-bit input.
+         * <p>
+         * This feature implies that the codec is capable of encoding
+         * 10-bit format, and that it supports RGBA_1010102 as
+         * well as P010, and optionally RGBA_FP16 input formats.
+         * <p>
+         * The difference between this feature and {@link
+         * FEATURE_HdrEditing} is that HLG does not require the
+         * generation of HDR metadata and does not use an explicit HDR
+         * profile.
+         */
+        @SuppressLint("AllUpper")
+        @FlaggedApi(FLAG_HLG_EDITING)
+        public static final String FEATURE_HlgEditing = "hlg-editing";
+
+        /**
+         * <b>video decoder only</b>: codec supports dynamically
+         * changing color aspects.
+         * <p>
+         * If true, the codec can propagate color aspect changes during
+         * decoding. This is only meaningful at session boundaries, e.g.
+         * upon processing Picture Parameter Sets prior to a new IDR.
+         * The color aspects may come from the bitstream, or may be
+         * provided using {@link MediaCodec#setParameters} calls.
+         * <p>
+         * If the codec supports both 8-bit and 10-bit profiles, this
+         * feature means that the codec can dynamically switch between 8
+         * and 10-bit profiles, but this is restricted to Surface mode
+         * only.
+         * <p>
+         * If the device supports HDR transfer functions, switching
+         * between SDR and HDR transfer is also supported. Together with
+         * the previous clause this means that switching between SDR and
+         * HDR sessions are supported in Surface mode, as SDR is
+         * typically encoded at 8-bit and HDR at 10-bit.
+         */
+        @SuppressLint("AllUpper")
+        @FlaggedApi(FLAG_DYNAMIC_COLOR_ASPECTS)
+        public static final String FEATURE_DynamicColorAspects = "dynamic-color-aspects";
+
+        /**
+         * <b>video encoder only</b>: codec supports region of interest encoding.
+         * <p>
+         * RoI encoding support means the codec accepts information that specifies the relative
+         * importance of different portions of each video frame. This allows the encoder to
+         * separate a video frame into critical and non-critical regions, and use more bits
+         * (better quality) to represent the critical regions and de-prioritize non-critical
+         * regions. In other words, the encoder chooses a negative qp bias for the critical
+         * portions and a zero or positive qp bias for the non-critical portions.
+         * <p>
+         * At a basic level, if the encoder decides to encode each frame with a uniform
+         * quantization value 'qpFrame' and a 'qpBias' is chosen/suggested for an LCU of the
+         * frame, then the actual qp of the LCU will be 'qpFrame + qpBias', although this value
+         * can be clamped basing on the min-max configured qp bounds for the current encoding
+         * session.
+         * <p>
+         * In a shot, if a group of LCUs pan out quickly they can be marked as non-critical
+         * thereby enabling the encoder to reserve fewer bits during their encoding. Contrarily,
+         * LCUs that remain in shot for a prolonged duration can be encoded at better quality in
+         * one frame thereby setting-up an excellent long-term reference for all future frames.
+         * <p>
+         * Note that by offsetting the quantization of each LCU, the overall bit allocation will
+         * differ from the originally estimated bit allocation, and the encoder will adjust the
+         * frame quantization for subsequent frames to meet the bitrate target. An effective
+         * selection of critical regions can set-up a golden reference and this can compensate
+         * for the bit burden that was introduced due to encoding RoI's at better quality.
+         * On the other hand, an ineffective choice of critical regions might increase the
+         * quality of certain parts of the image but this can hamper quality in subsequent frames.
+         * <p>
+         * @see MediaCodec#PARAMETER_KEY_QP_OFFSET_MAP
+         * @see MediaCodec#PARAMETER_KEY_QP_OFFSET_RECTS
+         */
+        @SuppressLint("AllUpper")
+        @FlaggedApi(FLAG_REGION_OF_INTEREST)
+        public static final String FEATURE_Roi = "region-of-interest";
+
+        /**
+         * <b>video decoder only</b>: codec supports detaching the
+         * output surface when in Surface mode.
+         * <p> If true, the codec can be configured in Surface mode
+         * without an actual surface (in detached surface mode).
+         * @see MediaCodec#CONFIGURE_FLAG_DETACHED_SURFACE
+         */
+        @SuppressLint("AllUpper")
+        @FlaggedApi(FLAG_NULL_OUTPUT_SURFACE)
+        public static final String FEATURE_DetachedSurface = "detached-surface";
+
+        /**
          * Query codec feature capabilities.
          * <p>
          * These features are supported to be used by the codec.  These
@@ -590,38 +815,81 @@ public final class MediaCodecInfo {
             return checkFeature(name, mFlagsRequired);
         }
 
-        private static final Feature[] decoderFeatures = {
-            new Feature(FEATURE_AdaptivePlayback, (1 << 0), true),
-            new Feature(FEATURE_SecurePlayback,   (1 << 1), false),
-            new Feature(FEATURE_TunneledPlayback, (1 << 2), false),
-            new Feature(FEATURE_PartialFrame,     (1 << 3), false),
-            new Feature(FEATURE_FrameParsing,     (1 << 4), false),
-            new Feature(FEATURE_MultipleFrames,   (1 << 5), false),
-            new Feature(FEATURE_DynamicTimestamp, (1 << 6), false),
-            new Feature(FEATURE_LowLatency,       (1 << 7), true),
-        };
+        // Flags are used for feature list creation so separate this into a private
+        // static class to delay reading the flags only when constructing the list.
+        private static class FeatureList {
+            private static Feature[] getDecoderFeatures() {
+                ArrayList<Feature> features = new ArrayList();
+                features.add(new Feature(FEATURE_AdaptivePlayback, (1 << 0), true));
+                features.add(new Feature(FEATURE_SecurePlayback,   (1 << 1), false));
+                features.add(new Feature(FEATURE_TunneledPlayback, (1 << 2), false));
+                features.add(new Feature(FEATURE_PartialFrame,     (1 << 3), false));
+                features.add(new Feature(FEATURE_FrameParsing,     (1 << 4), false));
+                features.add(new Feature(FEATURE_MultipleFrames,   (1 << 5), false));
+                features.add(new Feature(FEATURE_DynamicTimestamp, (1 << 6), false));
+                features.add(new Feature(FEATURE_LowLatency,       (1 << 7), true));
+                if (GetFlag(() -> android.media.codec.Flags.dynamicColorAspects())) {
+                    features.add(new Feature(FEATURE_DynamicColorAspects, (1 << 8), true));
+                }
+                if (GetFlag(() -> android.media.codec.Flags.nullOutputSurface())) {
+                    features.add(new Feature(FEATURE_DetachedSurface,     (1 << 9), true));
+                }
 
-        private static final Feature[] encoderFeatures = {
-            new Feature(FEATURE_IntraRefresh, (1 << 0), false),
-            new Feature(FEATURE_MultipleFrames, (1 << 1), false),
-            new Feature(FEATURE_DynamicTimestamp, (1 << 2), false),
-        };
+                // feature to exclude codec from REGULAR codec list
+                features.add(new Feature(FEATURE_SpecialCodec,     (1 << 30), false, true));
+
+                return features.toArray(new Feature[0]);
+            };
+
+            private static Feature[] decoderFeatures = getDecoderFeatures();
+
+            private static Feature[] getEncoderFeatures() {
+                ArrayList<Feature> features = new ArrayList();
+
+                features.add(new Feature(FEATURE_IntraRefresh, (1 << 0), false));
+                features.add(new Feature(FEATURE_MultipleFrames, (1 << 1), false));
+                features.add(new Feature(FEATURE_DynamicTimestamp, (1 << 2), false));
+                features.add(new Feature(FEATURE_QpBounds, (1 << 3), false));
+                features.add(new Feature(FEATURE_EncodingStatistics, (1 << 4), false));
+                features.add(new Feature(FEATURE_HdrEditing, (1 << 5), false));
+                if (GetFlag(() -> android.media.codec.Flags.hlgEditing())) {
+                    features.add(new Feature(FEATURE_HlgEditing, (1 << 6), true));
+                }
+                if (GetFlag(() -> android.media.codec.Flags.regionOfInterest())) {
+                    features.add(new Feature(FEATURE_Roi, (1 << 7), true));
+                }
+
+                // feature to exclude codec from REGULAR codec list
+                features.add(new Feature(FEATURE_SpecialCodec,     (1 << 30), false, true));
+
+                return features.toArray(new Feature[0]);
+            };
+
+            private static Feature[] encoderFeatures = getEncoderFeatures();
+
+            public static Feature[] getFeatures(boolean isEncoder) {
+                if (isEncoder) {
+                    return encoderFeatures;
+                } else {
+                    return decoderFeatures;
+                }
+            }
+        }
 
         /** @hide */
         public String[] validFeatures() {
             Feature[] features = getValidFeatures();
             String[] res = new String[features.length];
             for (int i = 0; i < res.length; i++) {
-                res[i] = features[i].mName;
+                if (!features[i].mInternal) {
+                    res[i] = features[i].mName;
+                }
             }
             return res;
         }
 
         private Feature[] getValidFeatures() {
-            if (!isEncoder()) {
-                return decoderFeatures;
-            }
-            return encoderFeatures;
+            return FeatureList.getFeatures(isEncoder());
         }
 
         private boolean checkFeature(String name, int flags) {
@@ -760,6 +1028,10 @@ public final class MediaCodecInfo {
 
             // check feature support
             for (Feature feat: getValidFeatures()) {
+                if (feat.mInternal) {
+                    continue;
+                }
+
                 Integer yesNo = (Integer)map.get(MediaFormat.KEY_FEATURE_ + feat.mName);
                 if (yesNo == null) {
                     continue;
@@ -799,13 +1071,25 @@ public final class MediaCodecInfo {
                     }
                 }
                 levelCaps = createFromProfileLevel(mMime, profile, maxLevel);
-                // remove profile from this format otherwise levelCaps.isFormatSupported will
-                // get into this same conditon and loop forever.
-                Map<String, Object> mapWithoutProfile = new HashMap<>(map);
-                mapWithoutProfile.remove(MediaFormat.KEY_PROFILE);
-                MediaFormat formatWithoutProfile = new MediaFormat(mapWithoutProfile);
-                if (levelCaps != null && !levelCaps.isFormatSupported(formatWithoutProfile)) {
-                    return false;
+                // We must remove the profile from this format otherwise levelCaps.isFormatSupported
+                // will get into this same condition and loop forever. Furthermore, since levelCaps
+                // does not contain features and bitrate specific keys, keep only keys relevant for
+                // a level check.
+                Map<String, Object> levelCriticalFormatMap = new HashMap<>(map);
+                final Set<String> criticalKeys =
+                    isVideo() ? VideoCapabilities.VIDEO_LEVEL_CRITICAL_FORMAT_KEYS :
+                    isAudio() ? AudioCapabilities.AUDIO_LEVEL_CRITICAL_FORMAT_KEYS :
+                    null;
+
+                // critical keys will always contain KEY_MIME, but should also contain others to be
+                // meaningful
+                if (criticalKeys != null && criticalKeys.size() > 1 && levelCaps != null) {
+                    levelCriticalFormatMap.keySet().retainAll(criticalKeys);
+
+                    MediaFormat levelCriticalFormat = new MediaFormat(levelCriticalFormatMap);
+                    if (!levelCaps.isFormatSupported(levelCriticalFormat)) {
+                        return false;
+                    }
                 }
             }
             if (mAudioCaps != null && !mAudioCaps.supportsFormat(format)) {
@@ -846,8 +1130,20 @@ public final class MediaCodecInfo {
                     continue;
                 }
 
-                // AAC does not use levels
-                if (level == null || mMime.equalsIgnoreCase(MediaFormat.MIMETYPE_AUDIO_AAC)) {
+                // No specific level requested
+                if (level == null) {
+                    return true;
+                }
+
+                // AAC doesn't use levels
+                if (mMime.equalsIgnoreCase(MediaFormat.MIMETYPE_AUDIO_AAC)) {
+                    return true;
+                }
+
+                // DTS doesn't use levels
+                if (mMime.equalsIgnoreCase(MediaFormat.MIMETYPE_AUDIO_DTS)
+                        || mMime.equalsIgnoreCase(MediaFormat.MIMETYPE_AUDIO_DTS_HD)
+                        || mMime.equalsIgnoreCase(MediaFormat.MIMETYPE_AUDIO_DTS_UHD)) {
                     return true;
                 }
 
@@ -1073,7 +1369,9 @@ public final class MediaCodecInfo {
                     mFlagsRequired |= feat.mValue;
                 }
                 mFlagsSupported |= feat.mValue;
-                mDefaultFormat.setInteger(key, 1);
+                if (!feat.mInternal) {
+                    mDefaultFormat.setInteger(key, 1);
+                }
                 // TODO restrict features by mFlagsVerified once all codecs reliably verify them
             }
         }
@@ -1089,7 +1387,7 @@ public final class MediaCodecInfo {
 
         private int[] mSampleRates;
         private Range<Integer>[] mSampleRateRanges;
-        private int mMaxInputChannelCount;
+        private Range<Integer>[] mInputChannelRanges;
 
         private static final int MAX_INPUT_CHANNEL_COUNT = 30;
 
@@ -1119,11 +1417,63 @@ public final class MediaCodecInfo {
         }
 
         /**
-         * Returns the maximum number of input channels supported.  The codec
-         * supports any number of channels between 1 and this maximum value.
+         * Returns the maximum number of input channels supported.
+         *
+         * Through {@link android.os.Build.VERSION_CODES#R}, this method indicated support
+         * for any number of input channels between 1 and this maximum value.
+         *
+         * As of {@link android.os.Build.VERSION_CODES#S},
+         * the implied lower limit of 1 channel is no longer valid.
+         * As of {@link android.os.Build.VERSION_CODES#S}, {@link #getMaxInputChannelCount} is
+         * superseded by {@link #getInputChannelCountRanges},
+         * which returns an array of ranges of channels.
+         * The {@link #getMaxInputChannelCount} method will return the highest value
+         * in the ranges returned by {@link #getInputChannelCountRanges}
+         *
          */
+        @IntRange(from = 1, to = 255)
         public int getMaxInputChannelCount() {
-            return mMaxInputChannelCount;
+            int overall_max = 0;
+            for (int i = mInputChannelRanges.length - 1; i >= 0; i--) {
+                int lmax = mInputChannelRanges[i].getUpper();
+                if (lmax > overall_max) {
+                    overall_max = lmax;
+                }
+            }
+            return overall_max;
+        }
+
+        /**
+         * Returns the minimum number of input channels supported.
+         * This is often 1, but does vary for certain mime types.
+         *
+         * This returns the lowest channel count in the ranges returned by
+         * {@link #getInputChannelCountRanges}.
+         */
+        @IntRange(from = 1, to = 255)
+        public int getMinInputChannelCount() {
+            int overall_min = MAX_INPUT_CHANNEL_COUNT;
+            for (int i = mInputChannelRanges.length - 1; i >= 0; i--) {
+                int lmin = mInputChannelRanges[i].getLower();
+                if (lmin < overall_min) {
+                    overall_min = lmin;
+                }
+            }
+            return overall_min;
+        }
+
+        /*
+         * Returns an array of ranges representing the number of input channels supported.
+         * The codec supports any number of input channels within this range.
+         *
+         * This supersedes the {@link #getMaxInputChannelCount} method.
+         *
+         * For many codecs, this will be a single range [1..N], for some N.
+         */
+        @SuppressLint("ArrayReturn")
+        @NonNull
+        public Range<Integer>[] getInputChannelCountRanges() {
+            return Arrays.copyOf(mInputChannelRanges, mInputChannelRanges.length);
         }
 
         /* no public constructor */
@@ -1146,7 +1496,7 @@ public final class MediaCodecInfo {
 
         private void initWithPlatformLimits() {
             mBitrateRange = Range.create(0, Integer.MAX_VALUE);
-            mMaxInputChannelCount = MAX_INPUT_CHANNEL_COUNT;
+            mInputChannelRanges = new Range[] {Range.create(1, MAX_INPUT_CHANNEL_COUNT)};
             // mBitrateRange = Range.create(1, 320000);
             final int minSampleRate = SystemProperties.
                 getInt("ro.mediacodec.min_sample_rate", 7350);
@@ -1158,9 +1508,12 @@ public final class MediaCodecInfo {
 
         private boolean supports(Integer sampleRate, Integer inputChannels) {
             // channels and sample rates are checked orthogonally
-            if (inputChannels != null &&
-                    (inputChannels < 1 || inputChannels > mMaxInputChannelCount)) {
-                return false;
+            if (inputChannels != null) {
+                int ix = Utils.binarySearchDistinctRanges(
+                        mInputChannelRanges, inputChannels);
+                if (ix < 0) {
+                    return false;
+                }
             }
             if (sampleRate != null) {
                 int ix = Utils.binarySearchDistinctRanges(
@@ -1218,6 +1571,7 @@ public final class MediaCodecInfo {
             int[] sampleRates = null;
             Range<Integer> sampleRateRange = null, bitRates = null;
             int maxChannels = MAX_INPUT_CHANNEL_COUNT;
+            CodecProfileLevel[] profileLevels = mParent.profileLevels;
             String mime = mParent.getMimeType();
 
             if (mime.equalsIgnoreCase(MediaFormat.MIMETYPE_AUDIO_MPEG)) {
@@ -1253,7 +1607,7 @@ public final class MediaCodecInfo {
                 sampleRates = new int[] { 8000, 12000, 16000, 24000, 48000 };
                 maxChannels = 255;
             } else if (mime.equalsIgnoreCase(MediaFormat.MIMETYPE_AUDIO_RAW)) {
-                sampleRateRange = Range.create(1, 96000);
+                sampleRateRange = Range.create(1, 192000);
                 bitRates = Range.create(1, 10000000);
                 maxChannels = AudioSystem.OUT_CHANNEL_COUNT_MAX;
             } else if (mime.equalsIgnoreCase(MediaFormat.MIMETYPE_AUDIO_FLAC)) {
@@ -1281,6 +1635,53 @@ public final class MediaCodecInfo {
                 sampleRates = new int[] { 44100, 48000, 96000, 192000 };
                 bitRates = Range.create(16000, 2688000);
                 maxChannels = 24;
+            } else if (mime.equalsIgnoreCase(MediaFormat.MIMETYPE_AUDIO_DTS)) {
+                sampleRates = new int[] { 44100, 48000 };
+                bitRates = Range.create(96000, 1524000);
+                maxChannels = 6;
+            } else if (mime.equalsIgnoreCase(MediaFormat.MIMETYPE_AUDIO_DTS_HD)) {
+                for (CodecProfileLevel profileLevel: profileLevels) {
+                    switch (profileLevel.profile) {
+                        case CodecProfileLevel.DTS_HDProfileLBR:
+                            sampleRates = new int[]{ 22050, 24000, 44100, 48000 };
+                            bitRates = Range.create(32000, 768000);
+                            break;
+                        case CodecProfileLevel.DTS_HDProfileHRA:
+                        case CodecProfileLevel.DTS_HDProfileMA:
+                            sampleRates = new int[]{ 44100, 48000, 88200, 96000, 176400, 192000 };
+                            bitRates = Range.create(96000, 24500000);
+                            break;
+                        default:
+                            Log.w(TAG, "Unrecognized profile "
+                                    + profileLevel.profile + " for " + mime);
+                            mParent.mError |= ERROR_UNRECOGNIZED;
+                            sampleRates = new int[]{ 44100, 48000, 88200, 96000, 176400, 192000 };
+                            bitRates = Range.create(96000, 24500000);
+                    }
+                }
+                maxChannels = 8;
+            } else if (mime.equalsIgnoreCase(MediaFormat.MIMETYPE_AUDIO_DTS_UHD)) {
+                for (CodecProfileLevel profileLevel: profileLevels) {
+                    switch (profileLevel.profile) {
+                        case CodecProfileLevel.DTS_UHDProfileP2:
+                            sampleRates = new int[]{ 48000 };
+                            bitRates = Range.create(96000, 768000);
+                            maxChannels = 10;
+                            break;
+                        case CodecProfileLevel.DTS_UHDProfileP1:
+                            sampleRates = new int[]{ 44100, 48000, 88200, 96000, 176400, 192000 };
+                            bitRates = Range.create(96000, 24500000);
+                            maxChannels = 32;
+                            break;
+                        default:
+                            Log.w(TAG, "Unrecognized profile "
+                                    + profileLevel.profile + " for " + mime);
+                            mParent.mError |= ERROR_UNRECOGNIZED;
+                            sampleRates = new int[]{ 44100, 48000, 88200, 96000, 176400, 192000 };
+                            bitRates = Range.create(96000, 24500000);
+                            maxChannels = 32;
+                    }
+                }
             } else {
                 Log.w(TAG, "Unsupported mime " + mime);
                 mParent.mError |= ERROR_UNSUPPORTED;
@@ -1292,12 +1693,28 @@ public final class MediaCodecInfo {
             } else if (sampleRateRange != null) {
                 limitSampleRates(new Range[] { sampleRateRange });
             }
-            applyLimits(maxChannels, bitRates);
+
+            Range<Integer> channelRange = Range.create(1, maxChannels);
+
+            applyLimits(new Range[] { channelRange }, bitRates);
         }
 
-        private void applyLimits(int maxInputChannels, Range<Integer> bitRates) {
-            mMaxInputChannelCount = Range.create(1, mMaxInputChannelCount)
-                    .clamp(maxInputChannels);
+        private void applyLimits(Range<Integer>[] inputChannels, Range<Integer> bitRates) {
+
+            // clamp & make a local copy
+            Range<Integer>[] myInputChannels = new Range[inputChannels.length];
+            for (int i = 0; i < inputChannels.length; i++) {
+                int lower = inputChannels[i].clamp(1);
+                int upper = inputChannels[i].clamp(MAX_INPUT_CHANNEL_COUNT);
+                myInputChannels[i] = Range.create(lower, upper);
+            }
+
+            // sort, intersect with existing, & save channel list
+            sortDistinctRanges(myInputChannels);
+            Range<Integer>[] joinedChannelList =
+                            intersectSortedDistinctRanges(myInputChannels, mInputChannelRanges);
+            mInputChannelRanges = joinedChannelList;
+
             if (bitRates != null) {
                 mBitrateRange = mBitrateRange.intersect(bitRates);
             }
@@ -1305,6 +1722,7 @@ public final class MediaCodecInfo {
 
         private void parseFromInfo(MediaFormat info) {
             int maxInputChannels = MAX_INPUT_CHANNEL_COUNT;
+            Range<Integer>[] channels = new Range[] { Range.create(1, maxInputChannels)};
             Range<Integer> bitRates = POSITIVE_INTEGERS;
 
             if (info.containsKey("sample-rate-ranges")) {
@@ -1315,17 +1733,38 @@ public final class MediaCodecInfo {
                 }
                 limitSampleRates(rateRanges);
             }
-            if (info.containsKey("max-channel-count")) {
+
+            // we will prefer channel-ranges over max-channel-count
+            if (info.containsKey("channel-ranges")) {
+                String[] channelStrings = info.getString("channel-ranges").split(",");
+                Range<Integer>[] channelRanges = new Range[channelStrings.length];
+                for (int i = 0; i < channelStrings.length; i++) {
+                    channelRanges[i] = Utils.parseIntRange(channelStrings[i], null);
+                }
+                channels = channelRanges;
+            } else if (info.containsKey("channel-range")) {
+                Range<Integer> oneRange = Utils.parseIntRange(info.getString("channel-range"),
+                                                              null);
+                channels = new Range[] { oneRange };
+            } else if (info.containsKey("max-channel-count")) {
                 maxInputChannels = Utils.parseIntSafely(
                         info.getString("max-channel-count"), maxInputChannels);
+                if (maxInputChannels == 0) {
+                    channels = new Range[] {Range.create(0, 0)};
+                } else {
+                    channels = new Range[] {Range.create(1, maxInputChannels)};
+                }
             } else if ((mParent.mError & ERROR_UNSUPPORTED) != 0) {
                 maxInputChannels = 0;
+                channels = new Range[] {Range.create(0, 0)};
             }
+
             if (info.containsKey("bitrate-range")) {
                 bitRates = bitRates.intersect(
                         Utils.parseIntRange(info.getString("bitrate-range"), bitRates));
             }
-            applyLimits(maxInputChannels, bitRates);
+
+            applyLimits(channels, bitRates);
         }
 
         /** @hide */
@@ -1334,7 +1773,7 @@ public final class MediaCodecInfo {
             if (mBitrateRange.getLower().equals(mBitrateRange.getUpper())) {
                 format.setInteger(MediaFormat.KEY_BIT_RATE, mBitrateRange.getLower());
             }
-            if (mMaxInputChannelCount == 1) {
+            if (getMaxInputChannelCount() == 1) {
                 // mono-only format
                 format.setInteger(MediaFormat.KEY_CHANNEL_COUNT, 1);
             }
@@ -1342,6 +1781,16 @@ public final class MediaCodecInfo {
                 format.setInteger(MediaFormat.KEY_SAMPLE_RATE, mSampleRates[0]);
             }
         }
+
+        /* package private */
+        // must not contain KEY_PROFILE
+        static final Set<String> AUDIO_LEVEL_CRITICAL_FORMAT_KEYS = Set.of(
+                // We don't set level-specific limits for audio codecs today. Key candidates would
+                // be sample rate, bit rate or channel count.
+                // MediaFormat.KEY_SAMPLE_RATE,
+                // MediaFormat.KEY_CHANNEL_COUNT,
+                // MediaFormat.KEY_BIT_RATE,
+                MediaFormat.KEY_MIME);
 
         /** @hide */
         public boolean supportsFormat(MediaFormat format) {
@@ -1362,6 +1811,55 @@ public final class MediaCodecInfo {
             // KEY_IS_ADTS:      required feature for all AAC decoders
             return true;
         }
+    }
+
+    /** @hide */
+    @IntDef(prefix = {"SECURITY_MODEL_"}, value = {
+        SECURITY_MODEL_SANDBOXED,
+        SECURITY_MODEL_MEMORY_SAFE,
+        SECURITY_MODEL_TRUSTED_CONTENT_ONLY,
+    })
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface SecurityModel {}
+
+    /**
+     * In this model the codec is running in a sandboxed process. Even if a
+     * malicious content was fed to the codecs in this model, the impact will
+     * be contained in the sandboxed process.
+     */
+    @FlaggedApi(FLAG_IN_PROCESS_SW_AUDIO_CODEC)
+    public static final int SECURITY_MODEL_SANDBOXED = 0;
+    /**
+     * In this model the codec is not running in a sandboxed process, but
+     * written in a memory-safe way. It typically means that the software
+     * implementation of the codec is written in a memory-safe language such
+     * as Rust.
+     */
+    @FlaggedApi(FLAG_IN_PROCESS_SW_AUDIO_CODEC)
+    public static final int SECURITY_MODEL_MEMORY_SAFE = 1;
+    /**
+     * In this model the codec is suitable only for trusted content where
+     * the input can be verified to be well-formed and no malicious actor
+     * can alter it. For example, codecs in this model are not suitable
+     * for arbitrary media downloaded from the internet or present in a user
+     * directory. On the other hand, they could be suitable for media encoded
+     * in the backend that the app developer wholly controls.
+     * <p>
+     * Codecs with this security model is not included in
+     * {@link MediaCodecList#REGULAR_CODECS}, but included in
+     * {@link MediaCodecList#ALL_CODECS}.
+     */
+    @FlaggedApi(FLAG_IN_PROCESS_SW_AUDIO_CODEC)
+    public static final int SECURITY_MODEL_TRUSTED_CONTENT_ONLY = 2;
+
+    /**
+     * Query the security model of the codec.
+     */
+    @FlaggedApi(FLAG_IN_PROCESS_SW_AUDIO_CODEC)
+    @SecurityModel
+    public int getSecurityModel() {
+        // TODO b/297922713 --- detect security model of out-of-sandbox codecs
+        return SECURITY_MODEL_SANDBOXED;
     }
 
     /**
@@ -2067,6 +2565,15 @@ public final class MediaCodecInfo {
             return ok;
         }
 
+        /* package private */
+        // must not contain KEY_PROFILE
+        static final Set<String> VIDEO_LEVEL_CRITICAL_FORMAT_KEYS = Set.of(
+                MediaFormat.KEY_WIDTH,
+                MediaFormat.KEY_HEIGHT,
+                MediaFormat.KEY_FRAME_RATE,
+                MediaFormat.KEY_BIT_RATE,
+                MediaFormat.KEY_MIME);
+
         /**
          * @hide
          * @throws java.lang.ClassCastException */
@@ -2131,12 +2638,12 @@ public final class MediaCodecInfo {
         private void initWithPlatformLimits() {
             mBitrateRange = BITRATE_RANGE;
 
-            mWidthRange  = SIZE_RANGE;
-            mHeightRange = SIZE_RANGE;
+            mWidthRange  = getSizeRange();
+            mHeightRange = getSizeRange();
             mFrameRateRange = FRAME_RATE_RANGE;
 
-            mHorizontalBlockRange = SIZE_RANGE;
-            mVerticalBlockRange   = SIZE_RANGE;
+            mHorizontalBlockRange = getSizeRange();
+            mVerticalBlockRange   = getSizeRange();
 
             // full positive ranges are supported as these get calculated
             mBlockCountRange      = POSITIVE_INTEGERS;
@@ -2145,12 +2652,11 @@ public final class MediaCodecInfo {
             mBlockAspectRatioRange = POSITIVE_RATIONALS;
             mAspectRatioRange      = POSITIVE_RATIONALS;
 
-            // YUV 4:2:0 requires 2:2 alignment
-            mWidthAlignment = 2;
-            mHeightAlignment = 2;
-            mBlockWidth = 2;
-            mBlockHeight = 2;
-            mSmallerDimensionUpperLimit = SIZE_RANGE.getUpper();
+            mWidthAlignment = 1;
+            mHeightAlignment = 1;
+            mBlockWidth = 1;
+            mBlockHeight = 1;
+            mSmallerDimensionUpperLimit = getSizeRange().getUpper();
         }
 
         private @Nullable List<PerformancePoint> getPerformancePoints(Map<String, Object> map) {
@@ -2177,12 +2683,6 @@ public final class MediaCodecInfo {
                 Size size = Utils.parseSize(sizeStr, null);
                 if (size == null || size.getWidth() * size.getHeight() <= 0) {
                     continue;
-                }
-                if (size.getWidth() > SIZE_RANGE.getUpper()
-                        || size.getHeight() > SIZE_RANGE.getUpper()) {
-                    size = new Size(
-                            Math.min(size.getWidth(), SIZE_RANGE.getUpper()),
-                            Math.min(size.getHeight(), SIZE_RANGE.getUpper()));
                 }
                 Range<Long> range = Utils.parseLongRange(map.get(key), null);
                 if (range == null || range.getLower() < 0 || range.getUpper() < 0) {
@@ -2397,10 +2897,10 @@ public final class MediaCodecInfo {
                 // codec supports profiles that we don't know.
                 // Use supplied values clipped to platform limits
                 if (widths != null) {
-                    mWidthRange = SIZE_RANGE.intersect(widths);
+                    mWidthRange = getSizeRange().intersect(widths);
                 }
                 if (heights != null) {
-                    mHeightRange = SIZE_RANGE.intersect(heights);
+                    mHeightRange = getSizeRange().intersect(heights);
                 }
                 if (counts != null) {
                     mBlockCountRange = POSITIVE_INTEGERS.intersect(
@@ -3340,11 +3840,14 @@ public final class MediaCodecInfo {
         public static final int BITRATE_MODE_VBR = 1;
         /** Constant bitrate mode */
         public static final int BITRATE_MODE_CBR = 2;
+        /** Constant bitrate mode with frame drops */
+        public static final int BITRATE_MODE_CBR_FD =  3;
 
         private static final Feature[] bitrates = new Feature[] {
             new Feature("VBR", BITRATE_MODE_VBR, true),
             new Feature("CBR", BITRATE_MODE_CBR, false),
-            new Feature("CQ",  BITRATE_MODE_CQ,  false)
+            new Feature("CQ",  BITRATE_MODE_CQ,  false),
+            new Feature("CBR-FD", BITRATE_MODE_CBR_FD, false)
         };
 
         private static int parseBitrateMode(String mode) {
@@ -3426,6 +3929,7 @@ public final class MediaCodecInfo {
                         .parseIntRange(info.getString("quality-range"), mQualityRange);
             }
             if (info.containsKey("feature-bitrate-modes")) {
+                mBitControl = 0;
                 for (String mode: info.getString("feature-bitrate-modes").split(",")) {
                     mBitControl |= (1 << parseBitrateMode(mode));
                 }
@@ -3817,6 +4321,12 @@ public final class MediaCodecInfo {
         public static final int DolbyVisionLevelUhd30   = 0x40;
         public static final int DolbyVisionLevelUhd48   = 0x80;
         public static final int DolbyVisionLevelUhd60   = 0x100;
+        @SuppressLint("AllUpper")
+        public static final int DolbyVisionLevelUhd120  = 0x200;
+        @SuppressLint("AllUpper")
+        public static final int DolbyVisionLevel8k30    = 0x400;
+        @SuppressLint("AllUpper")
+        public static final int DolbyVisionLevel8k60    = 0x800;
 
         // Profiles and levels for AV1 Codec, corresponding to the definitions in
         // "AV1 Bitstream & Decoding Process Specification", Annex A
@@ -3871,6 +4381,93 @@ public final class MediaCodecInfo {
         public static final int AV1Level71      = 0x200000;
         public static final int AV1Level72      = 0x400000;
         public static final int AV1Level73      = 0x800000;
+
+        /** DTS codec profile for DTS HRA. */
+        @SuppressLint("AllUpper")
+        public static final int DTS_HDProfileHRA = 0x1;
+        /** DTS codec profile for DTS Express. */
+        @SuppressLint("AllUpper")
+        public static final int DTS_HDProfileLBR = 0x2;
+        /** DTS codec profile for DTS-HD Master Audio */
+        @SuppressLint("AllUpper")
+        public static final int DTS_HDProfileMA = 0x4;
+        /** DTS codec profile for DTS:X Profile 1 */
+        @SuppressLint("AllUpper")
+        public static final int DTS_UHDProfileP1 = 0x1;
+        /** DTS codec profile for DTS:X Profile 2 */
+        @SuppressLint("AllUpper")
+        public static final int DTS_UHDProfileP2 = 0x2;
+
+        // Profiles and levels for AC-4 Codec, corresponding to the definitions in
+        // "The MIME codecs parameter", Annex E.13
+        // found at https://www.etsi.org/deliver/etsi_ts/103100_103199/10319002/01.02.01_60/ts_10319002v010201p.pdf
+        // profile = ((1 << bitstream_version) << 8) | (1 << presentation_version);
+        // level = 1 << mdcompat;
+
+        @SuppressLint("AllUpper")
+        private static final int AC4BitstreamVersion0 = 0x01;
+        @SuppressLint("AllUpper")
+        private static final int AC4BitstreamVersion1 = 0x02;
+        @SuppressLint("AllUpper")
+        private static final int AC4BitstreamVersion2 = 0x04;
+
+        @SuppressLint("AllUpper")
+        private static final int AC4PresentationVersion0 = 0x01;
+        @SuppressLint("AllUpper")
+        private static final int AC4PresentationVersion1 = 0x02;
+        @SuppressLint("AllUpper")
+        private static final int AC4PresentationVersion2 = 0x04;
+
+        /**
+         * AC-4 codec profile with bitstream_version 0 and presentation_version 0
+         * as per ETSI TS 103 190-2 v1.2.1
+         */
+        @SuppressLint("AllUpper")
+        public static final int AC4Profile00 = AC4BitstreamVersion0 << 8 | AC4PresentationVersion0;
+
+        /**
+         * AC-4 codec profile with bitstream_version 1 and presentation_version 0
+         * as per ETSI TS 103 190-2 v1.2.1
+         */
+        @SuppressLint("AllUpper")
+        public static final int AC4Profile10 = AC4BitstreamVersion1 << 8 | AC4PresentationVersion0;
+
+        /**
+         * AC-4 codec profile with bitstream_version 1 and presentation_version 1
+         * as per ETSI TS 103 190-2 v1.2.1
+         */
+        @SuppressLint("AllUpper")
+        public static final int AC4Profile11 = AC4BitstreamVersion1 << 8 | AC4PresentationVersion1;
+
+        /**
+         * AC-4 codec profile with bitstream_version 2 and presentation_version 1
+         * as per ETSI TS 103 190-2 v1.2.1
+         */
+        @SuppressLint("AllUpper")
+        public static final int AC4Profile21 = AC4BitstreamVersion2 << 8 | AC4PresentationVersion1;
+
+        /**
+         * AC-4 codec profile with bitstream_version 2 and presentation_version 2
+         * as per ETSI TS 103 190-2 v1.2.1
+         */
+        @SuppressLint("AllUpper")
+        public static final int AC4Profile22 = AC4BitstreamVersion2 << 8 | AC4PresentationVersion2;
+
+        /** AC-4 codec level corresponding to mdcompat 0 as per ETSI TS 103 190-2 v1.2.1 */
+        @SuppressLint("AllUpper")
+        public static final int AC4Level0       = 0x01;
+        /** AC-4 codec level corresponding to mdcompat 1 as per ETSI TS 103 190-2 v1.2.1 */
+        @SuppressLint("AllUpper")
+        public static final int AC4Level1       = 0x02;
+        /** AC-4 codec level corresponding to mdcompat 2 as per ETSI TS 103 190-2 v1.2.1 */
+        @SuppressLint("AllUpper")
+        public static final int AC4Level2       = 0x04;
+        /** AC-4 codec level corresponding to mdcompat 3 as per ETSI TS 103 190-2 v1.2.1 */
+        @SuppressLint("AllUpper")
+        public static final int AC4Level3       = 0x08;
+        /** AC-4 codec level corresponding to mdcompat 4 as per ETSI TS 103 190-2 v1.2.1 */
+        @SuppressLint("AllUpper")
+        public static final int AC4Level4       = 0x10;
 
         /**
          * The profile of the media content. Depending on the type of media this can be

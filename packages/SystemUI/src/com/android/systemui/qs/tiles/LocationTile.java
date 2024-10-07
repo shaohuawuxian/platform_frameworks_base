@@ -24,17 +24,23 @@ import android.provider.Settings;
 import android.service.quicksettings.Tile;
 import android.widget.Switch;
 
+import androidx.annotation.Nullable;
+
 import com.android.internal.logging.MetricsLogger;
 import com.android.internal.logging.nano.MetricsProto.MetricsEvent;
-import com.android.systemui.R;
+import com.android.systemui.animation.Expandable;
 import com.android.systemui.dagger.qualifiers.Background;
 import com.android.systemui.dagger.qualifiers.Main;
 import com.android.systemui.plugins.ActivityStarter;
+import com.android.systemui.plugins.FalsingManager;
 import com.android.systemui.plugins.qs.QSTile.BooleanState;
 import com.android.systemui.plugins.statusbar.StatusBarStateController;
 import com.android.systemui.qs.QSHost;
+import com.android.systemui.qs.QsEventLogger;
 import com.android.systemui.qs.logging.QSLogger;
+import com.android.systemui.qs.pipeline.domain.interactor.PanelInteractor;
 import com.android.systemui.qs.tileimpl.QSTileImpl;
+import com.android.systemui.res.R;
 import com.android.systemui.statusbar.policy.KeyguardStateController;
 import com.android.systemui.statusbar.policy.LocationController;
 import com.android.systemui.statusbar.policy.LocationController.LocationChangeCallback;
@@ -44,28 +50,33 @@ import javax.inject.Inject;
 /** Quick settings tile: Location **/
 public class LocationTile extends QSTileImpl<BooleanState> {
 
-    private final Icon mIcon = ResourceIcon.get(R.drawable.ic_location);
+    public static final String TILE_SPEC = "location";
 
     private final LocationController mController;
     private final KeyguardStateController mKeyguard;
+    private final PanelInteractor mPanelInteractor;
     private final Callback mCallback = new Callback();
 
     @Inject
     public LocationTile(
             QSHost host,
+            QsEventLogger uiEventLogger,
             @Background Looper backgroundLooper,
             @Main Handler mainHandler,
+            FalsingManager falsingManager,
             MetricsLogger metricsLogger,
             StatusBarStateController statusBarStateController,
             ActivityStarter activityStarter,
             QSLogger qsLogger,
             LocationController locationController,
-            KeyguardStateController keyguardStateController
+            KeyguardStateController keyguardStateController,
+            PanelInteractor panelInteractor
     ) {
-        super(host, backgroundLooper, mainHandler, metricsLogger, statusBarStateController,
-                activityStarter, qsLogger);
+        super(host, uiEventLogger, backgroundLooper, mainHandler, falsingManager, metricsLogger,
+                statusBarStateController, activityStarter, qsLogger);
         mController = locationController;
         mKeyguard = keyguardStateController;
+        mPanelInteractor = panelInteractor;
         mController.observe(this, mCallback);
         mKeyguard.observe(this, mCallback);
     }
@@ -81,11 +92,11 @@ public class LocationTile extends QSTileImpl<BooleanState> {
     }
 
     @Override
-    protected void handleClick() {
+    protected void handleClick(@Nullable Expandable expandable) {
         if (mKeyguard.isMethodSecure() && mKeyguard.isShowing()) {
             mActivityStarter.postQSRunnableDismissingKeyguard(() -> {
                 final boolean wasEnabled = mState.value;
-                mHost.openPanels();
+                mPanelInteractor.openPanels();
                 mController.setLocationEnabled(!wasEnabled);
             });
             return;
@@ -101,9 +112,6 @@ public class LocationTile extends QSTileImpl<BooleanState> {
 
     @Override
     protected void handleUpdateState(BooleanState state, Object arg) {
-        if (state.slash == null) {
-            state.slash = new SlashState();
-        }
         final boolean locationEnabled =  mController.isLocationEnabled();
 
         // Work around for bug 15916487: don't show location tile on top of lock screen. After the
@@ -114,8 +122,8 @@ public class LocationTile extends QSTileImpl<BooleanState> {
         if (state.disabledByPolicy == false) {
             checkIfRestrictionEnforcedByAdminOnly(state, UserManager.DISALLOW_CONFIG_LOCATION);
         }
-        state.icon = mIcon;
-        state.slash.isSlashed = !state.value;
+        state.icon = ResourceIcon.get(state.value
+                ? R.drawable.qs_location_icon_on : R.drawable.qs_location_icon_off);
         state.label = mContext.getString(R.string.quick_settings_location_label);
         state.contentDescription = state.label;
         state.state = state.value ? Tile.STATE_ACTIVE : Tile.STATE_INACTIVE;
@@ -125,15 +133,6 @@ public class LocationTile extends QSTileImpl<BooleanState> {
     @Override
     public int getMetricsCategory() {
         return MetricsEvent.QS_LOCATION;
-    }
-
-    @Override
-    protected String composeChangeAnnouncement() {
-        if (mState.value) {
-            return mContext.getString(R.string.accessibility_quick_settings_location_changed_on);
-        } else {
-            return mContext.getString(R.string.accessibility_quick_settings_location_changed_off);
-        }
     }
 
     private final class Callback implements LocationChangeCallback,

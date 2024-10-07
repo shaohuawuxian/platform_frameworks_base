@@ -18,19 +18,20 @@ package android.view;
 
 import static org.junit.Assert.assertTrue;
 
+import android.app.UiAutomation;
 import android.content.Context;
 import android.graphics.Color;
 import android.graphics.drawable.ColorDrawable;
-import android.perftests.utils.BenchmarkState;
-import android.perftests.utils.PerfStatusReporter;
 import android.perftests.utils.PerfTestActivity;
 import android.view.View.MeasureSpec;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 
-import androidx.test.InstrumentationRegistry;
+import androidx.benchmark.BenchmarkState;
+import androidx.benchmark.junit4.BenchmarkRule;
 import androidx.test.filters.LargeTest;
+import androidx.test.platform.app.InstrumentationRegistry;
 import androidx.test.rule.ActivityTestRule;
 
 import org.junit.Rule;
@@ -50,7 +51,7 @@ public class ViewShowHidePerfTest {
             new ActivityTestRule<>(PerfTestActivity.class);
 
     @Rule
-    public PerfStatusReporter mPerfStatusReporter = new PerfStatusReporter();
+    public final BenchmarkRule mBenchmarkRule = new BenchmarkRule();
 
     public Context getContext() {
         return InstrumentationRegistry.getInstrumentation().getTargetContext();
@@ -142,8 +143,12 @@ public class ViewShowHidePerfTest {
     }
 
     private void testParentWithChild(TestCallback callback) throws Throwable {
+        // Make sure that a11y is disabled to prevent the test affected by accessibility events.
+        InstrumentationRegistry.getInstrumentation()
+                .getUiAutomation(UiAutomation.FLAG_DONT_USE_ACCESSIBILITY);
+
         mActivityRule.runOnUiThread(() -> {
-            final BenchmarkState state = mPerfStatusReporter.getBenchmarkState();
+            final BenchmarkState state = mBenchmarkRule.getState();
 
             FrameLayout parent = new FrameLayout(getContext());
             mActivityRule.getActivity().setContentView(parent);

@@ -122,8 +122,8 @@ public class KeySyncTask implements Runnable {
      * @param recoverableKeyStoreDb Database where the keys are stored.
      * @param userId The uid of the user whose profile has been unlocked.
      * @param credentialType The type of credential as defined in {@code LockPatternUtils}
-     * @param credential The credential, encoded as a {@link String}.
-     * @param credentialUpdated signals weather credentials were updated.
+     * @param credential The credential, encoded as a byte array
+     * @param credentialUpdated indicates credentials change.
      * @param platformKeyManager platform key manager
      * @param testOnlyInsecureCertificateHelper utility class used for end-to-end tests
      */
@@ -143,7 +143,7 @@ public class KeySyncTask implements Runnable {
         mRecoverableKeyStoreDb = recoverableKeyStoreDb;
         mUserId = userId;
         mCredentialType = credentialType;
-        mCredential = credential;
+        mCredential = credential != null ? Arrays.copyOf(credential, credential.length) : null;
         mCredentialUpdated = credentialUpdated;
         mPlatformKeyManager = platformKeyManager;
         mRecoverySnapshotStorage = snapshotStorage;
@@ -160,16 +160,22 @@ public class KeySyncTask implements Runnable {
             }
         } catch (Exception e) {
             Log.e(TAG, "Unexpected exception thrown during KeySyncTask", e);
+        } finally {
+            if (mCredential != null) {
+                Arrays.fill(mCredential, (byte) 0); // no longer needed.
+            }
         }
     }
 
     private void syncKeys() throws RemoteException {
+        if (mCredentialUpdated && mRecoverableKeyStoreDb.getBadRemoteGuessCounter(mUserId) != 0) {
+            mRecoverableKeyStoreDb.setBadRemoteGuessCounter(mUserId, 0);
+        }
         int generation = mPlatformKeyManager.getGenerationId(mUserId);
         if (mCredentialType == LockPatternUtils.CREDENTIAL_TYPE_NONE) {
             // Application keys for the user will not be available for sync.
             Log.w(TAG, "Credentials are not set for user " + mUserId);
-            if (generation < PlatformKeyManager.MIN_GENERATION_ID_FOR_UNLOCKED_DEVICE_REQUIRED
-                    || mUserId != UserHandle.USER_SYSTEM) {
+            if (generation < PlatformKeyManager.MIN_GENERATION_ID_FOR_UNLOCKED_DEVICE_REQUIRED) {
                 // Only invalidate keys with legacy protection param.
                 mPlatformKeyManager.invalidatePlatformKey(mUserId, generation);
             }
@@ -178,8 +184,7 @@ public class KeySyncTask implements Runnable {
         if (isCustomLockScreen()) {
             Log.w(TAG, "Unsupported credential type " + mCredentialType + " for user " + mUserId);
             // Keys will be synced when user starts using non custom screen lock.
-            if (generation < PlatformKeyManager.MIN_GENERATION_ID_FOR_UNLOCKED_DEVICE_REQUIRED
-                    || mUserId != UserHandle.USER_SYSTEM) {
+            if (generation < PlatformKeyManager.MIN_GENERATION_ID_FOR_UNLOCKED_DEVICE_REQUIRED) {
                 mRecoverableKeyStoreDb.invalidateKeysForUserIdOnCustomScreenLock(mUserId);
             }
             return;

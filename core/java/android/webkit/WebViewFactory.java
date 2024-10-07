@@ -16,7 +16,11 @@
 
 package android.webkit;
 
+import static android.webkit.Flags.updateServiceV2;
+
+import android.annotation.NonNull;
 import android.annotation.SystemApi;
+import android.annotation.UptimeMillisLong;
 import android.app.ActivityManager;
 import android.app.AppGlobals;
 import android.app.Application;
@@ -26,13 +30,17 @@ import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
 import android.content.pm.Signature;
+import android.content.res.Resources;
 import android.os.Build;
 import android.os.RemoteException;
 import android.os.ServiceManager;
+import android.os.SystemClock;
 import android.os.Trace;
+import android.text.TextUtils;
 import android.util.AndroidRuntimeException;
 import android.util.ArraySet;
 import android.util.Log;
+import android.util.Slog;
 
 import java.io.File;
 import java.lang.reflect.Method;
@@ -48,7 +56,7 @@ public final class WebViewFactory {
     // visible for WebViewZygoteInit to look up the class by reflection and call preloadInZygote.
     /** @hide */
     private static final String CHROMIUM_WEBVIEW_FACTORY =
-            "com.android.webview.chromium.WebViewChromiumFactoryProviderForR";
+            "com.android.webview.chromium.WebViewChromiumFactoryProviderForT";
 
     private static final String CHROMIUM_WEBVIEW_FACTORY_METHOD = "create";
 
@@ -87,6 +95,100 @@ public final class WebViewFactory {
     // error for namespace lookup
     public static final int LIBLOAD_FAILED_TO_FIND_NAMESPACE = 10;
 
+    // generic error for future use
+    static final int LIBLOAD_FAILED_OTHER = 11;
+
+    /**
+     * Stores the timestamps at which various WebView startup events occurred in this process.
+     */
+    public static class StartupTimestamps {
+        long mWebViewLoadStart;
+        long mCreateContextStart;
+        long mCreateContextEnd;
+        long mAddAssetsStart;
+        long mAddAssetsEnd;
+        long mGetClassLoaderStart;
+        long mGetClassLoaderEnd;
+        long mNativeLoadStart;
+        long mNativeLoadEnd;
+        long mProviderClassForNameStart;
+        long mProviderClassForNameEnd;
+
+        StartupTimestamps() {}
+
+        /** When the overall WebView provider load began. */
+        @UptimeMillisLong
+        public long getWebViewLoadStart() {
+            return mWebViewLoadStart;
+        }
+
+        /** Before creating the WebView APK Context. */
+        @UptimeMillisLong
+        public long getCreateContextStart() {
+            return mCreateContextStart;
+        }
+
+        /** After creating the WebView APK Context. */
+        @UptimeMillisLong
+        public long getCreateContextEnd() {
+            return mCreateContextEnd;
+        }
+
+        /** Before adding WebView assets to AssetManager. */
+        @UptimeMillisLong
+        public long getAddAssetsStart() {
+            return mAddAssetsStart;
+        }
+
+        /** After adding WebView assets to AssetManager. */
+        @UptimeMillisLong
+        public long getAddAssetsEnd() {
+            return mAddAssetsEnd;
+        }
+
+        /** Before creating the WebView ClassLoader. */
+        @UptimeMillisLong
+        public long getGetClassLoaderStart() {
+            return mGetClassLoaderStart;
+        }
+
+        /** After creating the WebView ClassLoader. */
+        @UptimeMillisLong
+        public long getGetClassLoaderEnd() {
+            return mGetClassLoaderEnd;
+        }
+
+        /** Before preloading the WebView native library. */
+        @UptimeMillisLong
+        public long getNativeLoadStart() {
+            return mNativeLoadStart;
+        }
+
+        /** After preloading the WebView native library. */
+        @UptimeMillisLong
+        public long getNativeLoadEnd() {
+            return mNativeLoadEnd;
+        }
+
+        /** Before looking up the WebView provider class. */
+        @UptimeMillisLong
+        public long getProviderClassForNameStart() {
+            return mProviderClassForNameStart;
+        }
+
+        /** After looking up the WebView provider class. */
+        @UptimeMillisLong
+        public long getProviderClassForNameEnd() {
+            return mProviderClassForNameEnd;
+        }
+    }
+
+    static final StartupTimestamps sTimestamps = new StartupTimestamps();
+
+    @NonNull
+    static StartupTimestamps getStartupTimestamps() {
+        return sTimestamps;
+    }
 
     private static String getWebViewPreparationErrorReason(int error) {
         switch (error) {
@@ -188,10 +290,16 @@ public final class WebViewFactory {
             return LIBLOAD_WRONG_PACKAGE_NAME;
         }
 
+        Application initialApplication = AppGlobals.getInitialApplication();
         WebViewProviderResponse response = null;
         try {
-            response = getUpdateService().waitForAndGetProvider();
-        } catch (RemoteException e) {
+            if (Flags.updateServiceIpcWrapper()) {
+                response = initialApplication.getSystemService(WebViewUpdateManager.class)
+                        .waitForAndGetProvider();
+            } else {
+                response = getUpdateService().waitForAndGetProvider();
+            }
+        } catch (Exception e) {
             Log.e(LOGTAG, "error waiting for relro creation", e);
             return LIBLOAD_FAILED_WAITING_FOR_WEBVIEW_REASON_UNKNOWN;
         }
@@ -205,7 +313,7 @@ public final class WebViewFactory {
             return LIBLOAD_WRONG_PACKAGE_NAME;
         }
 
-        PackageManager packageManager = AppGlobals.getInitialApplication().getPackageManager();
+        PackageManager packageManager = initialApplication.getPackageManager();
         String libraryFileName;
         try {
             PackageInfo packageInfo = packageManager.getPackageInfo(packageName,
@@ -230,6 +338,7 @@ public final class WebViewFactory {
             // us honest and minimize usage of WebView internals when binding the proxy.
             if (sProviderInstance != null) return sProviderInstance;
 
+            sTimestamps.mWebViewLoadStart = SystemClock.uptimeMillis();
             final int uid = android.os.Process.myUid();
             if (uid == android.os.Process.ROOT_UID || uid == android.os.Process.SYSTEM_UID
                     || uid == android.os.Process.PHONE_UID || uid == android.os.Process.NFC_UID
@@ -251,15 +360,8 @@ public final class WebViewFactory {
             Trace.traceBegin(Trace.TRACE_TAG_WEBVIEW, "WebViewFactory.getProvider()");
             try {
                 Class<WebViewFactoryProvider> providerClass = getProviderClass();
-                Method staticFactory = null;
-                try {
-                    staticFactory = providerClass.getMethod(
+                Method staticFactory = providerClass.getMethod(
                         CHROMIUM_WEBVIEW_FACTORY_METHOD, WebViewDelegate.class);
-                } catch (Exception e) {
-                    if (DEBUG) {
-                        Log.w(LOGTAG, "error instantiating provider with static factory method", e);
-                    }
-                }
 
                 Trace.traceBegin(Trace.TRACE_TAG_WEBVIEW, "WebViewFactoryProvider invocation");
                 try {
@@ -267,12 +369,12 @@ public final class WebViewFactory {
                             staticFactory.invoke(null, new WebViewDelegate());
                     if (DEBUG) Log.v(LOGTAG, "Loaded provider: " + sProviderInstance);
                     return sProviderInstance;
-                } catch (Exception e) {
-                    Log.e(LOGTAG, "error instantiating provider", e);
-                    throw new AndroidRuntimeException(e);
                 } finally {
                     Trace.traceEnd(Trace.TRACE_TAG_WEBVIEW);
                 }
+            } catch (Exception e) {
+                Log.e(LOGTAG, "error instantiating provider", e);
+                throw new AndroidRuntimeException(e);
             } finally {
                 Trace.traceEnd(Trace.TRACE_TAG_WEBVIEW);
             }
@@ -322,6 +424,21 @@ public final class WebViewFactory {
         }
     }
 
+    // Returns whether the given package is enabled.
+    // This state can be changed by the user from Settings->Apps
+    private static boolean isEnabledPackage(PackageInfo packageInfo) {
+        if (packageInfo == null) return false;
+        return packageInfo.applicationInfo.enabled;
+    }
+
+    // Return {@code true} if the package is installed and not hidden
+    private static boolean isInstalledPackage(PackageInfo packageInfo) {
+        if (packageInfo == null) return false;
+        return (((packageInfo.applicationInfo.flags & ApplicationInfo.FLAG_INSTALLED) != 0)
+                && ((packageInfo.applicationInfo.privateFlags & ApplicationInfo.PRIVATE_FLAG_HIDDEN)
+                        == 0));
+    }
+
     @UnsupportedAppUsage
     private static Context getWebViewContextAndSetProvider() throws MissingWebViewPackageException {
         Application initialApplication = AppGlobals.getInitialApplication();
@@ -330,7 +447,12 @@ public final class WebViewFactory {
             Trace.traceBegin(Trace.TRACE_TAG_WEBVIEW,
                     "WebViewUpdateService.waitForAndGetProvider()");
             try {
-                response = getUpdateService().waitForAndGetProvider();
+                if (Flags.updateServiceIpcWrapper()) {
+                    response = initialApplication.getSystemService(WebViewUpdateManager.class)
+                            .waitForAndGetProvider();
+                } else {
+                    response = getUpdateService().waitForAndGetProvider();
+                }
             } finally {
                 Trace.traceEnd(Trace.TRACE_TAG_WEBVIEW);
             }
@@ -368,6 +490,21 @@ public final class WebViewFactory {
                 Trace.traceEnd(Trace.TRACE_TAG_WEBVIEW);
             }
 
+            if (updateServiceV2() && !isInstalledPackage(newPackageInfo)) {
+                throw new MissingWebViewPackageException(
+                        TextUtils.formatSimple(
+                                "Current WebView Package (%s) is not installed for the current "
+                                + "user",
+                                newPackageInfo.packageName));
+            }
+
+            if (updateServiceV2() && !isEnabledPackage(newPackageInfo)) {
+                throw new MissingWebViewPackageException(
+                        TextUtils.formatSimple(
+                                "Current WebView Package (%s) is not enabled for the current user",
+                                newPackageInfo.packageName));
+            }
+
             // Validate the newly fetched package info, throws MissingWebViewPackageException on
             // failure
             verifyPackageInfo(response.packageInfo, newPackageInfo);
@@ -376,6 +513,7 @@ public final class WebViewFactory {
 
             Trace.traceBegin(Trace.TRACE_TAG_WEBVIEW,
                     "initialApplication.createApplicationContext");
+            sTimestamps.mCreateContextStart = SystemClock.uptimeMillis();
             try {
                 // Construct an app context to load the Java code into the current app.
                 Context webViewContext = initialApplication.createApplicationContext(
@@ -384,6 +522,7 @@ public final class WebViewFactory {
                 sPackageInfo = newPackageInfo;
                 return webViewContext;
             } finally {
+                sTimestamps.mCreateContextEnd = SystemClock.uptimeMillis();
                 Trace.traceEnd(Trace.TRACE_TAG_WEBVIEW);
             }
         } catch (RemoteException | PackageManager.NameNotFoundException e) {
@@ -409,20 +548,32 @@ public final class WebViewFactory {
 
             Trace.traceBegin(Trace.TRACE_TAG_WEBVIEW, "WebViewFactory.getChromiumProviderClass()");
             try {
-                for (String newAssetPath : webViewContext.getApplicationInfo().getAllApkPaths()) {
-                    initialApplication.getAssets().addAssetPathAsSharedLibrary(newAssetPath);
+                sTimestamps.mAddAssetsStart = SystemClock.uptimeMillis();
+                if (android.content.res.Flags.registerResourcePaths()) {
+                    Resources.registerResourcePaths(webViewContext.getPackageName(),
+                            webViewContext.getApplicationInfo());
+                } else {
+                    for (String newAssetPath : webViewContext.getApplicationInfo()
+                            .getAllApkPaths()) {
+                        initialApplication.getAssets().addAssetPathAsSharedLibrary(newAssetPath);
+                    }
                 }
+                sTimestamps.mAddAssetsEnd = sTimestamps.mGetClassLoaderStart =
+                        SystemClock.uptimeMillis();
                 ClassLoader clazzLoader = webViewContext.getClassLoader();
-
                 Trace.traceBegin(Trace.TRACE_TAG_WEBVIEW, "WebViewFactory.loadNativeLibrary()");
+                sTimestamps.mGetClassLoaderEnd = sTimestamps.mNativeLoadStart =
+                        SystemClock.uptimeMillis();
                 WebViewLibraryLoader.loadNativeLibrary(clazzLoader,
                         getWebViewLibrary(sPackageInfo.applicationInfo));
                 Trace.traceEnd(Trace.TRACE_TAG_WEBVIEW);
-
                 Trace.traceBegin(Trace.TRACE_TAG_WEBVIEW, "Class.forName()");
+                sTimestamps.mNativeLoadEnd = sTimestamps.mProviderClassForNameStart =
+                        SystemClock.uptimeMillis();
                 try {
                     return getWebViewProviderClass(clazzLoader);
                 } finally {
+                    sTimestamps.mProviderClassForNameEnd = SystemClock.uptimeMillis();
                     Trace.traceEnd(Trace.TRACE_TAG_WEBVIEW);
                 }
             } catch (ClassNotFoundException e) {
@@ -459,7 +610,7 @@ public final class WebViewFactory {
             startedRelroProcesses = WebViewLibraryLoader.prepareNativeLibraries(packageInfo);
         } catch (Throwable t) {
             // Log and discard errors at this stage as we must not crash the system server.
-            Log.e(LOGTAG, "error preparing webview native library", t);
+            Slog.wtf(LOGTAG, "error preparing webview native library", t);
         }
 
         WebViewZygote.onWebViewProviderChanged(packageInfo);

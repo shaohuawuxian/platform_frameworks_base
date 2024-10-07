@@ -43,7 +43,7 @@ import java.util.Set;
  * Immutable class to store the recommended stream configurations to set up
  * {@link android.view.Surface Surfaces} for creating a
  * {@link android.hardware.camera2.CameraCaptureSession capture session} with
- * {@link android.hardware.camera2.CameraDevice#createCaptureSession}.
+ * {@link android.hardware.camera2.CameraDevice#createCaptureSession(SessionConfiguration)}.
  *
  * <p>The recommended list does not replace or deprecate the exhaustive complete list found in
  * {@link StreamConfigurationMap}. It is a suggestion about available power and performance
@@ -68,7 +68,7 @@ import java.util.Set;
  * }</code></pre>
  *
  * @see CameraCharacteristics#getRecommendedStreamConfigurationMap
- * @see CameraDevice#createCaptureSession
+ * @see CameraDevice#createCaptureSession(SessionConfiguration)
  */
 public final class RecommendedStreamConfigurationMap {
 
@@ -149,6 +149,16 @@ public final class RecommendedStreamConfigurationMap {
     public static final int USECASE_LOW_LATENCY_SNAPSHOT = 0x6;
 
     /**
+     * If supported, the recommended 10-bit output stream configurations must include
+     * a subset of the advertised {@link android.graphics.ImageFormat#YCBCR_P010} and
+     * {@link android.graphics.ImageFormat#PRIVATE} outputs that are optimized for power
+     * and performance when registered along with a supported 10-bit dynamic range profile.
+     * {@see android.hardware.camera2.params.OutputConfiguration#setDynamicRangeProfile} for
+     * details.
+     */
+     public static final int USECASE_10BIT_OUTPUT = 0x8;
+
+    /**
      * Device specific use cases.
      * @hide
      */
@@ -163,7 +173,8 @@ public final class RecommendedStreamConfigurationMap {
         USECASE_SNAPSHOT,
         USECASE_ZSL,
         USECASE_RAW,
-        USECASE_LOW_LATENCY_SNAPSHOT})
+        USECASE_LOW_LATENCY_SNAPSHOT,
+        USECASE_10BIT_OUTPUT})
      public @interface RecommendedUsecase {};
 
     /**
@@ -269,7 +280,7 @@ public final class RecommendedStreamConfigurationMap {
 
     /**
      * Determine whether or not output surfaces with a particular user-defined format can be passed
-     * {@link CameraDevice#createCaptureSession createCaptureSession}.
+     * {@link CameraDevice#createCaptureSession(SessionConfiguration) createCaptureSession}.
      *
      * <p>
      * For further information refer to {@link StreamConfigurationMap#isOutputSupportedFor}.
@@ -279,7 +290,7 @@ public final class RecommendedStreamConfigurationMap {
      * @param format an image format from either {@link ImageFormat} or {@link PixelFormat}
      * @return
      *          {@code true} if using a {@code surface} with this {@code format} will be
-     *          supported with {@link CameraDevice#createCaptureSession}
+     *          supported with {@link CameraDevice#createCaptureSession(SessionConfiguration)}
      *
      * @throws IllegalArgumentException
      *          if the image format was not a defined named constant
@@ -495,8 +506,10 @@ public final class RecommendedStreamConfigurationMap {
     }
 
     /**
-     * Determine whether or not the {@code surface} in its current state is suitable to be included
-     * in a {@link CameraDevice#createCaptureSession capture session} as an output.
+     * Determine whether or not the {@code surface} in its current
+     * state is suitable to be included in a {@link
+     * CameraDevice#createCaptureSession(SessionConfiguration) capture
+     * session} as an output.
      *
      * <p>For more information refer to {@link StreamConfigurationMap#isOutputSupportedFor}.
      * </p>

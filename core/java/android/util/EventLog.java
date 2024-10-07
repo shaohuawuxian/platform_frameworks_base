@@ -21,6 +21,10 @@ import android.annotation.Nullable;
 import android.annotation.SystemApi;
 import android.compat.annotation.UnsupportedAppUsage;
 import android.os.Build;
+import android.ravenwood.annotation.RavenwoodKeepWholeClass;
+import android.ravenwood.annotation.RavenwoodRedirect;
+import android.ravenwood.annotation.RavenwoodRedirectionClass;
+import android.ravenwood.annotation.RavenwoodThrow;
 
 import java.io.BufferedReader;
 import java.io.FileReader;
@@ -48,6 +52,8 @@ import java.util.regex.Pattern;
  * They carry a payload of one or more int, long, or String values.  The
  * event-log-tags file defines the payload contents for each type code.
  */
+@RavenwoodKeepWholeClass
+@RavenwoodRedirectionClass("EventLog_host")
 public class EventLog {
     /** @hide */ public EventLog() {}
 
@@ -308,7 +314,7 @@ public class EventLog {
          * @hide
          */
         @Override
-        public boolean equals(Object o) {
+        public boolean equals(@Nullable Object o) {
             // Not using ByteBuffer.equals since it takes buffer position into account and we
             // always use absolute positions here.
             if (this == o) return true;
@@ -336,6 +342,7 @@ public class EventLog {
      * @param value A value to log
      * @return The number of bytes written
      */
+    @RavenwoodRedirect
     public static native int writeEvent(int tag, int value);
 
     /**
@@ -344,6 +351,7 @@ public class EventLog {
      * @param value A value to log
      * @return The number of bytes written
      */
+    @RavenwoodRedirect
     public static native int writeEvent(int tag, long value);
 
     /**
@@ -352,6 +360,7 @@ public class EventLog {
      * @param value A value to log
      * @return The number of bytes written
      */
+    @RavenwoodRedirect
     public static native int writeEvent(int tag, float value);
 
     /**
@@ -360,6 +369,7 @@ public class EventLog {
      * @param str A value to log
      * @return The number of bytes written
      */
+    @RavenwoodRedirect
     public static native int writeEvent(int tag, String str);
 
     /**
@@ -368,6 +378,7 @@ public class EventLog {
      * @param list A list of values to log
      * @return The number of bytes written
      */
+    @RavenwoodRedirect
     public static native int writeEvent(int tag, Object... list);
 
     /**
@@ -376,6 +387,7 @@ public class EventLog {
      * @param output container to add events into
      * @throws IOException if something goes wrong reading events
      */
+    @RavenwoodThrow
     public static native void readEvents(int[] tags, Collection<Event> output)
             throws IOException;
 
@@ -388,6 +400,7 @@ public class EventLog {
      * @hide
      */
     @SystemApi
+    @RavenwoodThrow
     public static native void readEventsOnWrapping(int[] tags, long timestamp,
             Collection<Event> output)
             throws IOException;
@@ -416,6 +429,7 @@ public class EventLog {
     /**
      * Read TAGS_FILE, populating sTagCodes and sTagNames, if not already done.
      */
+    @android.ravenwood.annotation.RavenwoodReplace
     private static synchronized void readTagsFile() {
         if (sTagCodes != null && sTagNames != null) return;
 
@@ -441,8 +455,7 @@ public class EventLog {
                 try {
                     int num = Integer.parseInt(m.group(1));
                     String name = m.group(2);
-                    sTagCodes.put(name, num);
-                    sTagNames.put(num, name);
+                    registerTagLocked(num, name);
                 } catch (NumberFormatException e) {
                     Log.wtf(TAG, "Error in " + TAGS_FILE + ": " + line, e);
                 }
@@ -453,5 +466,21 @@ public class EventLog {
         } finally {
             try { if (reader != null) reader.close(); } catch (IOException e) {}
         }
+    }
+
+    private static void registerTagLocked(int num, String name) {
+        sTagCodes.put(name, num);
+        sTagNames.put(num, name);
+    }
+
+    private static synchronized void readTagsFile$ravenwood() {
+        // TODO: restore parsing logic once we carry into runtime
+        sTagCodes = new HashMap<String, Integer>();
+        sTagNames = new HashMap<Integer, String>();
+
+        // Hard-code a few common tags
+        registerTagLocked(524288, "sysui_action");
+        registerTagLocked(524290, "sysui_count");
+        registerTagLocked(524291, "sysui_histogram");
     }
 }

@@ -15,26 +15,30 @@
  */
 package com.android.settingslib.testutils.shadow;
 
-import android.annotation.NonNull;
 import android.media.MediaRoute2Info;
 import android.media.MediaRouter2Manager;
 import android.media.RoutingSessionInfo;
+
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
 
 import org.robolectric.RuntimeEnvironment;
 import org.robolectric.annotation.Implementation;
 import org.robolectric.annotation.Implements;
 import org.robolectric.shadow.api.Shadow;
 
+import java.util.ArrayList;
 import java.util.List;
 
 @Implements(MediaRouter2Manager.class)
 public class ShadowRouter2Manager {
 
-    private List<MediaRoute2Info> mAvailableRoutes;
+    private List<MediaRoute2Info> mAvailableRoutes = new ArrayList<>();
     private List<MediaRoute2Info> mAllRoutes;
     private List<MediaRoute2Info> mDeselectableRoutes;
-    private List<RoutingSessionInfo> mActiveSessions;
+    private List<RoutingSessionInfo> mRemoteSessions;
     private List<RoutingSessionInfo> mRoutingSessions;
+    private RoutingSessionInfo mSystemRoutingSession;
 
     @Implementation
     protected List<MediaRoute2Info> getAvailableRoutes(String packageName) {
@@ -55,12 +59,12 @@ public class ShadowRouter2Manager {
     }
 
     @Implementation
-    protected List<RoutingSessionInfo> getActiveSessions() {
-        return mActiveSessions;
+    protected List<RoutingSessionInfo> getRemoteSessions() {
+        return mRemoteSessions;
     }
 
-    public void setActiveSessions(List<RoutingSessionInfo> infos) {
-        mActiveSessions = infos;
+    public void setRemoteSessions(List<RoutingSessionInfo> infos) {
+        mRemoteSessions = infos;
     }
 
     @Implementation
@@ -70,6 +74,15 @@ public class ShadowRouter2Manager {
 
     public void setRoutingSessions(List<RoutingSessionInfo> infos) {
         mRoutingSessions = infos;
+    }
+
+    @Implementation
+    public RoutingSessionInfo getSystemRoutingSession(@Nullable String packageName) {
+        return mSystemRoutingSession;
+    }
+
+    public void setSystemRoutingSession(RoutingSessionInfo sessionInfo) {
+        mSystemRoutingSession = sessionInfo;
     }
 
     @Implementation
@@ -84,5 +97,14 @@ public class ShadowRouter2Manager {
     public static ShadowRouter2Manager getShadow() {
         return (ShadowRouter2Manager) Shadow.extract(
                 MediaRouter2Manager.getInstance(RuntimeEnvironment.application));
+    }
+
+    @Implementation
+    protected List<MediaRoute2Info> getTransferableRoutes(String packageName) {
+        return mAvailableRoutes;
+    }
+
+    public void setTransferableRoutes(List<MediaRoute2Info> infos) {
+        mAvailableRoutes = infos;
     }
 }

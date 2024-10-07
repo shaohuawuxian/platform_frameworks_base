@@ -29,7 +29,6 @@ import android.graphics.Rect;
 import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.Drawable;
 import android.os.Build;
-import android.util.ArraySet;
 import android.view.NotificationHeaderView;
 import android.view.View;
 import android.view.ViewGroup;
@@ -38,9 +37,12 @@ import android.widget.TextView;
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.graphics.ColorUtils;
 import com.android.internal.util.ContrastColorUtil;
-import com.android.internal.widget.ConversationLayout;
+import com.android.internal.widget.CachingIconView;
+import com.android.settingslib.Utils;
 import com.android.systemui.statusbar.CrossFadeHelper;
 import com.android.systemui.statusbar.TransformableView;
+import com.android.systemui.statusbar.notification.FeedbackIcon;
+import com.android.systemui.statusbar.notification.NotificationFadeAware;
 import com.android.systemui.statusbar.notification.TransformState;
 import com.android.systemui.statusbar.notification.row.ExpandableNotificationRow;
 
@@ -67,12 +69,20 @@ public abstract class NotificationViewWrapper implements TransformableView {
             } else if ("messaging".equals(v.getTag())) {
                 return new NotificationMessagingTemplateViewWrapper(ctx, v, row);
             } else if ("conversation".equals(v.getTag())) {
-                return new NotificationConversationTemplateViewWrapper(ctx, (ConversationLayout) v,
-                        row);
+                return new NotificationConversationTemplateViewWrapper(ctx, v, row);
+            } else if ("call".equals(v.getTag())) {
+                return new NotificationCallTemplateViewWrapper(ctx, v, row);
+            } else if ("compactHUN".equals((v.getTag()))) {
+                return new NotificationCompactHeadsUpTemplateViewWrapper(ctx, v, row);
+            } else if ("compactMessagingHUN".equals((v.getTag()))) {
+                return new NotificationCompactMessagingTemplateViewWrapper(ctx, v, row);
             }
-            Class<? extends Notification.Style> style =
-                    row.getEntry().getSbn().getNotification().getNotificationStyle();
-            if (Notification.DecoratedCustomViewStyle.class.equals(style)) {
+
+            if (row.getEntry().getSbn().getNotification().isStyle(
+                    Notification.DecoratedCustomViewStyle.class)) {
+                return new NotificationDecoratedCustomViewWrapper(ctx, v, row);
+            }
+            if (NotificationDecoratedCustomViewWrapper.hasCustomView(v)) {
                 return new NotificationDecoratedCustomViewWrapper(ctx, v, row);
             }
             return new NotificationTemplateViewWrapper(ctx, v, row);
@@ -96,12 +106,8 @@ public abstract class NotificationViewWrapper implements TransformableView {
     public void onContentUpdated(ExpandableNotificationRow row) {
     }
 
-    /**
-     * Show a set of app opp icons in the layout.
-     *
-     * @param appOps which app ops to show
-     */
-    public void showAppOpsIcons(ArraySet<Integer> appOps) {
+    /** Shows the given feedback icon, or hides the icon if null. */
+    public void setFeedbackIcon(@Nullable FeedbackIcon icon) {
     }
 
     public void onReinflated() {
@@ -230,8 +236,13 @@ public abstract class NotificationViewWrapper implements TransformableView {
      *
      * @param expandable should this view be expandable
      * @param onClickListener the listener to invoke when the expand affordance is clicked on
+     * @param requestLayout the expandability changed during onLayout, so a requestLayout required
      */
-    public void updateExpandability(boolean expandable, View.OnClickListener onClickListener) {}
+    public void updateExpandability(boolean expandable, View.OnClickListener onClickListener,
+            boolean requestLayout) {}
+
+    /** Set the expanded state on the view wrapper */
+    public void setExpanded(boolean expanded) {}
 
     /**
      * @return the notification header if it exists
@@ -243,7 +254,16 @@ public abstract class NotificationViewWrapper implements TransformableView {
     /**
      * @return the expand button if it exists
      */
-    public @Nullable View getExpandButton() {
+    @Nullable
+    public View getExpandButton() {
+        return null;
+    }
+
+    /**
+     * @return the icon if it exists
+     */
+    @Nullable
+    public CachingIconView getIcon() {
         return null;
     }
 
@@ -257,11 +277,6 @@ public abstract class NotificationViewWrapper implements TransformableView {
     public @Nullable View getShelfTransformationTarget() {
         return null;
     }
-
-    /**
-     * Set the shelf icon to be visible and hide our own icons.
-     */
-    public void setShelfIconVisible(boolean shelfIconVisible) {}
 
     public int getHeaderTranslation(boolean forceNoHeader) {
         return 0;
@@ -301,6 +316,17 @@ public abstract class NotificationViewWrapper implements TransformableView {
     }
 
     /**
+     * Called when the user-visibility of this content wrapper has changed.
+     *
+     * @param shown true if the content of this wrapper is user-visible, meaning that the wrapped
+     *              view and all of its ancestors are visible.
+     *
+     * @see View#isShown()
+     */
+    public void onContentShown(boolean shown) {
+    }
+
+    /**
      * Called to indicate this view is removed
      */
     public void setRemoved() {
@@ -316,8 +342,9 @@ public abstract class NotificationViewWrapper implements TransformableView {
         if (customBackgroundColor != 0) {
             return customBackgroundColor;
         }
-        return mView.getContext().getColor(
-                com.android.internal.R.color.notification_material_background_color);
+        return Utils.getColorAttr(mView.getContext(),
+                        com.android.internal.R.attr.materialColorSurfaceContainerHigh)
+                .getDefaultColor();
     }
 
     public void setLegacy(boolean legacy) {
@@ -383,5 +410,22 @@ public abstract class NotificationViewWrapper implements TransformableView {
      * Set the view to have recently visibly alerted.
      */
     public void setRecentlyAudiblyAlerted(boolean audiblyAlerted) {
+    }
+
+    /**
+     * Apply the faded state as a layer type change to the views which need to have overlapping
+     * contents render precisely.
+     */
+    public void setNotificationFaded(boolean faded) {
+        NotificationFadeAware.setLayerTypeForFaded(getIcon(), faded);
+        NotificationFadeAware.setLayerTypeForFaded(getExpandButton(), faded);
+    }
+
+    /**
+     * Starts or stops the animations in any drawables contained in this Notification.
+     *
+     * @param running Whether the animations should be set to run.
+     */
+    public void setAnimationsRunning(boolean running) {
     }
 }

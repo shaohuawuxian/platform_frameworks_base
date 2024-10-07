@@ -28,10 +28,12 @@
 #include <meminfo/sysmeminfo.h>
 #include <processgroup/processgroup.h>
 #include <processgroup/sched_policy.h>
+#include <android-base/logging.h>
 #include <android-base/unique_fd.h>
 
 #include <algorithm>
 #include <array>
+#include <cstring>
 #include <limits>
 #include <memory>
 #include <string>
@@ -49,7 +51,6 @@
 #include <inttypes.h>
 #include <pwd.h>
 #include <signal.h>
-#include <string.h>
 #include <sys/epoll.h>
 #include <sys/errno.h>
 #include <sys/pidfd.h>
@@ -72,13 +73,13 @@ static constexpr bool kDebugProc = false;
 // readProcFile() are reading files under this threshold, e.g.,
 // /proc/pid/stat.  /proc/pid/time_in_state ends up being about 520
 // bytes, so use 1024 for the stack to provide a bit of slack.
-static constexpr ssize_t kProcReadStackBufferSize = 1024;
+static constexpr size_t kProcReadStackBufferSize = 1024;
 
 // The other files we read from proc tend to be a bit larger (e.g.,
 // /proc/stat is about 3kB), so once we exhaust the stack buffer,
 // retry with a relatively large heap-allocated buffer.  We double
 // this size and retry until the whole file fits.
-static constexpr ssize_t kProcReadMinHeapBufferSize = 4096;
+static constexpr size_t kProcReadMinHeapBufferSize = 4096;
 
 #if GUARD_THREAD_PRIORITY
 Mutex gKeyCreateMutex;
@@ -148,7 +149,7 @@ jint android_os_Process_getUidForName(JNIEnv* env, jobject clazz, jstring name)
 
     const size_t N = name8.size();
     if (N > 0) {
-        const char* str = name8.string();
+        const char* str = name8.c_str();
         for (size_t i=0; i<N; i++) {
             if (str[i] < '0' || str[i] > '9') {
                 struct passwd* pwd = getpwnam(str);
@@ -180,7 +181,7 @@ jint android_os_Process_getGidForName(JNIEnv* env, jobject clazz, jstring name)
 
     const size_t N = name8.size();
     if (N > 0) {
-        const char* str = name8.string();
+        const char* str = name8.c_str();
         for (size_t i=0; i<N; i++) {
             if (str[i] < '0' || str[i] > '9') {
                 struct group* grp = getgrnam(str);
@@ -232,12 +233,35 @@ void android_os_Process_setThreadGroupAndCpuset(JNIEnv* env, jobject clazz, int 
     }
 }
 
+// Look up the user ID of a process in /proc/${pid}/status. The Uid: line is present in
+// /proc/${pid}/status since at least kernel v2.5.
+static int uid_from_pid(int pid)
+{
+    int uid = -1;
+    std::array<char, 64> path;
+    int res = snprintf(path.data(), path.size(), "/proc/%d/status", pid);
+    if (res < 0 || res >= static_cast<int>(path.size())) {
+        DCHECK(false);
+        return uid;
+    }
+    FILE* f = fopen(path.data(), "r");
+    if (!f) {
+        return uid;
+    }
+    char line[256];
+    while (fgets(line, sizeof(line), f)) {
+        if (sscanf(line, "Uid: %d", &uid) == 1) {
+            break;
+        }
+    }
+    fclose(f);
+    return uid;
+}
+
 void android_os_Process_setProcessGroup(JNIEnv* env, jobject clazz, int pid, jint grp)
 {
     ALOGV("%s pid=%d grp=%" PRId32, __func__, pid, grp);
-    DIR *d;
     char proc_path[255];
-    struct dirent *de;
 
     if (!verifyGroup(env, grp)) {
         return;
@@ -248,10 +272,8 @@ void android_os_Process_setProcessGroup(JNIEnv* env, jobject clazz, int pid, jin
         return;
     }
 
-    bool isDefault = false;
     if (grp < 0) {
         grp = SP_FOREGROUND;
-        isDefault = true;
     }
 
     if (kDebugPolicy) {
@@ -263,8 +285,12 @@ void android_os_Process_setProcessGroup(JNIEnv* env, jobject clazz, int pid, jin
         sprintf(proc_path, "/proc/%d/cmdline", pid);
         fd = open(proc_path, O_RDONLY | O_CLOEXEC);
         if (fd >= 0) {
-            int rc = read(fd, cmdline, sizeof(cmdline)-1);
-            cmdline[rc] = 0;
+            ssize_t rc = read(fd, cmdline, sizeof(cmdline) - 1);
+            if (rc < 0) {
+                ALOGE("read /proc/%d/cmdline (%s)", pid, strerror(errno));
+            } else {
+                cmdline[rc] = 0;
+            }
             close(fd);
         }
 
@@ -275,65 +301,23 @@ void android_os_Process_setProcessGroup(JNIEnv* env, jobject clazz, int pid, jin
         }
     }
 
-    sprintf(proc_path, "/proc/%d/task", pid);
-    if (!(d = opendir(proc_path))) {
-        // If the process exited on us, don't generate an exception
-        if (errno != ENOENT)
-            signalExceptionForGroupError(env, errno, pid);
+    const int uid = uid_from_pid(pid);
+    if (uid < 0) {
+        signalExceptionForGroupError(env, ESRCH, pid);
         return;
     }
-
-    while ((de = readdir(d))) {
-        int t_pid;
-        int t_pri;
-        int err;
-
-        if (de->d_name[0] == '.')
-            continue;
-        t_pid = atoi(de->d_name);
-
-        if (!t_pid) {
-            ALOGE("Error getting pid for '%s'\n", de->d_name);
-            continue;
-        }
-
-        t_pri = getpriority(PRIO_PROCESS, t_pid);
-
-        if (t_pri <= ANDROID_PRIORITY_AUDIO) {
-            int scheduler = sched_getscheduler(t_pid) & ~SCHED_RESET_ON_FORK;
-            if ((scheduler == SCHED_FIFO) || (scheduler == SCHED_RR)) {
-                // This task wants to stay in its current audio group so it can keep its budget
-                // don't update its cpuset or cgroup
-                continue;
-            }
-        }
-
-        if (isDefault) {
-            if (t_pri >= ANDROID_PRIORITY_BACKGROUND) {
-                // This task wants to stay at background
-                // update its cpuset so it doesn't only run on bg core(s)
-                err = SetTaskProfiles(t_pid, {get_cpuset_policy_profile_name((SchedPolicy)grp)}, true) ? 0 : -1;
-                if (err != NO_ERROR) {
-                    signalExceptionForGroupError(env, -err, t_pid);
-                    break;
-                }
-                continue;
-            }
-        }
-
-        err = SetTaskProfiles(t_pid, {get_cpuset_policy_profile_name((SchedPolicy)grp)}, true) ? 0 : -1;
-        if (err != NO_ERROR) {
-            signalExceptionForGroupError(env, -err, t_pid);
-            break;
-        }
-
-    }
-    closedir(d);
+    if (!SetProcessProfilesCached(uid, pid, {get_cpuset_policy_profile_name((SchedPolicy)grp)}))
+        signalExceptionForGroupError(env, errno ? errno : EPERM, pid);
 }
 
 void android_os_Process_setProcessFrozen(
         JNIEnv *env, jobject clazz, jint pid, jint uid, jboolean freeze)
 {
+    if (uid < 0) {
+        jniThrowExceptionFmt(env, "java/lang/IllegalArgumentException", "uid is negative: %d", uid);
+        return;
+    }
+
     bool success = true;
 
     if (freeze) {
@@ -354,6 +338,15 @@ jint android_os_Process_getProcessGroup(JNIEnv* env, jobject clazz, jint pid)
         signalExceptionForGroupError(env, errno, pid);
     }
     return (int) sp;
+}
+
+jint android_os_Process_createProcessGroup(JNIEnv* env, jobject clazz, jint uid, jint pid) {
+    if (uid < 0) {
+        return jniThrowExceptionFmt(env, "java/lang/IllegalArgumentException",
+                                    "uid is negative: %d", uid);
+    }
+
+    return createProcessGroup(uid, pid);
 }
 
 /** Sample CPUset list format:
@@ -631,19 +624,28 @@ void android_os_Process_setArgV0(JNIEnv* env, jobject clazz, jstring name)
         env->ReleaseStringCritical(name, str);
     }
 
-    if (!name8.isEmpty()) {
-        AndroidRuntime::getRuntime()->setArgv0(name8.string(), true /* setProcName */);
+    if (!name8.empty()) {
+        AndroidRuntime::getRuntime()->setArgv0(name8.c_str(), true /* setProcName */);
     }
 }
 
 jint android_os_Process_setUid(JNIEnv* env, jobject clazz, jint uid)
 {
+    if (uid < 0) {
+        return jniThrowExceptionFmt(env, "java/lang/IllegalArgumentException",
+                                    "uid is negative: %d", uid);
+    }
+
     return setuid(uid) == 0 ? 0 : errno;
 }
 
-jint android_os_Process_setGid(JNIEnv* env, jobject clazz, jint uid)
-{
-    return setgid(uid) == 0 ? 0 : errno;
+jint android_os_Process_setGid(JNIEnv* env, jobject clazz, jint gid) {
+    if (gid < 0) {
+        return jniThrowExceptionFmt(env, "java/lang/IllegalArgumentException",
+                                    "gid is negative: %d", gid);
+    }
+
+    return setgid(gid) == 0 ? 0 : errno;
 }
 
 static int pid_compare(const void* v1, const void* v2)
@@ -738,7 +740,7 @@ void android_os_Process_readProcLines(JNIEnv* env, jobject clazz, jstring fileSt
         return;
     }
 
-    int fd = open(file.string(), O_RDONLY | O_CLOEXEC);
+    int fd = open(file.c_str(), O_RDONLY | O_CLOEXEC);
 
     if (fd >= 0) {
         //ALOGI("Clearing %" PRId32 " sizes", count);
@@ -752,7 +754,7 @@ void android_os_Process_readProcLines(JNIEnv* env, jobject clazz, jstring fileSt
         close(fd);
 
         if (len < 0) {
-            ALOGW("Unable to read %s", file.string());
+            ALOGW("Unable to read %s", file.c_str());
             len = 0;
         }
         buffer[len] = 0;
@@ -765,7 +767,7 @@ void android_os_Process_readProcLines(JNIEnv* env, jobject clazz, jstring fileSt
             //ALOGI("Parsing at: %s", p);
             for (i=0; i<count; i++) {
                 const String8& field = fields[i];
-                if (strncmp(p, field.string(), field.length()) == 0) {
+                if (strncmp(p, field.c_str(), field.length()) == 0) {
                     p += field.length();
                     while (*p == ' ' || *p == '\t') p++;
                     char* num = p;
@@ -777,7 +779,7 @@ void android_os_Process_readProcLines(JNIEnv* env, jobject clazz, jstring fileSt
                     }
                     char* end;
                     sizesArray[i] = strtoll(num, &end, 10);
-                    //ALOGI("Field %s = %" PRId64, field.string(), sizesArray[i]);
+                    // ALOGI("Field %s = %" PRId64, field.c_str(), sizesArray[i]);
                     foundCount++;
                     break;
                 }
@@ -794,7 +796,7 @@ void android_os_Process_readProcLines(JNIEnv* env, jobject clazz, jstring fileSt
 
         free(buffer);
     } else {
-        ALOGW("Unable to open %s", file.string());
+        ALOGW("Unable to open %s", file.c_str());
     }
 
     //ALOGI("Done!");
@@ -816,7 +818,6 @@ jintArray android_os_Process_getPids(JNIEnv* env, jobject clazz,
     }
 
     DIR* dirp = opendir(file8);
-
     env->ReleaseStringUTFChars(file, file8);
 
     if(dirp == NULL) {
@@ -849,6 +850,7 @@ jintArray android_os_Process_getPids(JNIEnv* env, jobject clazz,
             jintArray newArray = env->NewIntArray(newCount);
             if (newArray == NULL) {
                 closedir(dirp);
+                if (curData) env->ReleaseIntArrayElements(lastArray, curData, 0);
                 jniThrowException(env, "java/lang/OutOfMemoryError", NULL);
                 return NULL;
             }
@@ -961,7 +963,7 @@ jboolean android_os_Process_parseProcLineArray(JNIEnv* env, jobject clazz,
             end = i;
             i++;
         } else if ((mode&PROC_QUOTES) != 0) {
-            while (buffer[i] != '"' && i < endIndex) {
+            while (i < endIndex && buffer[i] != '"') {
                 i++;
             }
             end = i;
@@ -1045,68 +1047,71 @@ jboolean android_os_Process_readProcFile(JNIEnv* env, jobject clazz,
         return JNI_FALSE;
     }
 
-    const char* file8 = env->GetStringUTFChars(file, NULL);
-    if (file8 == NULL) {
+    auto releaser = [&](const char* jniStr) { env->ReleaseStringUTFChars(file, jniStr); };
+    std::unique_ptr<const char[], decltype(releaser)> file8(env->GetStringUTFChars(file, NULL),
+                                                            releaser);
+    if (!file8) {
         jniThrowException(env, "java/lang/OutOfMemoryError", NULL);
         return JNI_FALSE;
     }
 
-    ::android::base::unique_fd fd(open(file8, O_RDONLY | O_CLOEXEC));
+    ::android::base::unique_fd fd(open(file8.get(), O_RDONLY | O_CLOEXEC));
     if (!fd.ok()) {
         if (kDebugProc) {
-            ALOGW("Unable to open process file: %s\n", file8);
+            ALOGW("Unable to open process file: %s\n", file8.get());
         }
-        env->ReleaseStringUTFChars(file, file8);
         return JNI_FALSE;
     }
-    env->ReleaseStringUTFChars(file, file8);
 
-    // Most proc files we read are small, so we only go through the
-    // loop once and use the stack buffer.  We allocate a buffer big
-    // enough for the whole file.
+    // Most proc files we read are small, so we go through the loop
+    // with the stack buffer first. We allocate a buffer big enough
+    // for most files.
 
-    char readBufferStack[kProcReadStackBufferSize];
-    std::unique_ptr<char[]> readBufferHeap;
-    char* readBuffer = &readBufferStack[0];
-    ssize_t readBufferSize = kProcReadStackBufferSize;
-    ssize_t numberBytesRead;
-    for (;;) {
-        // By using pread, we can avoid an lseek to rewind the FD
-        // before retry, saving a system call.
-        numberBytesRead = pread(fd, readBuffer, readBufferSize, 0);
-        if (numberBytesRead < 0 && errno == EINTR) {
-            continue;
-        }
-        if (numberBytesRead < 0) {
+    char stackBuf[kProcReadStackBufferSize];
+    std::vector<char> heapBuf;
+    char* buf = stackBuf;
+
+    size_t remaining = sizeof(stackBuf);
+    off_t offset = 0;
+    ssize_t numBytesRead;
+
+    do {
+        numBytesRead = TEMP_FAILURE_RETRY(pread(fd, buf + offset, remaining, offset));
+        if (numBytesRead < 0) {
             if (kDebugProc) {
-                ALOGW("Unable to open process file: %s fd=%d\n", file8, fd.get());
+                ALOGW("Unable to read process file err: %s file: %s fd=%d\n",
+                      strerror_r(errno, stackBuf, sizeof(stackBuf)), file8.get(), fd.get());
             }
             return JNI_FALSE;
         }
-        if (numberBytesRead < readBufferSize) {
-            break;
-        }
-        if (readBufferSize > std::numeric_limits<ssize_t>::max() / 2) {
-            if (kDebugProc) {
-                ALOGW("Proc file too big: %s fd=%d\n", file8, fd.get());
+
+        offset += numBytesRead;
+        remaining -= numBytesRead;
+
+        if (numBytesRead && !remaining) {
+            if (buf == stackBuf) {
+                heapBuf.resize(kProcReadMinHeapBufferSize);
+                static_assert(kProcReadMinHeapBufferSize > sizeof(stackBuf));
+                std::memcpy(heapBuf.data(), stackBuf, sizeof(stackBuf));
+            } else {
+                constexpr size_t MAX_READABLE_PROCFILE_SIZE = 64 << 20;
+                if (heapBuf.size() >= MAX_READABLE_PROCFILE_SIZE) {
+                    if (kDebugProc) {
+                        ALOGW("Proc file too big: %s fd=%d size=%zu\n",
+                              file8.get(), fd.get(), heapBuf.size());
+                    }
+                    return JNI_FALSE;
+                }
+                heapBuf.resize(2 * heapBuf.size());
             }
-            return JNI_FALSE;
+            buf = heapBuf.data();
+            remaining = heapBuf.size() - offset;
         }
-        readBufferSize = std::max(readBufferSize * 2,
-                                  kProcReadMinHeapBufferSize);
-        readBufferHeap.reset();  // Free address space before getting more.
-        readBufferHeap = std::make_unique<char[]>(readBufferSize);
-        if (!readBufferHeap) {
-            jniThrowException(env, "java/lang/OutOfMemoryError", NULL);
-            return JNI_FALSE;
-        }
-        readBuffer = readBufferHeap.get();
-    }
+    } while (numBytesRead != 0);
 
     // parseProcLineArray below modifies the buffer while parsing!
     return android_os_Process_parseProcLineArray(
-        env, clazz, readBuffer, 0, numberBytesRead,
-        format, outStrings, outLongs, outFloats);
+        env, clazz, buf, 0, offset, format, outStrings, outLongs, outFloats);
 }
 
 void android_os_Process_setApplicationObject(JNIEnv* env, jobject clazz,
@@ -1132,6 +1137,41 @@ void android_os_Process_sendSignalQuiet(JNIEnv* env, jobject clazz, jint pid, ji
 {
     if (pid > 0) {
         kill(pid, sig);
+    }
+}
+
+void android_os_Process_sendSignalThrows(JNIEnv* env, jobject clazz, jint pid, jint sig) {
+    if (pid <= 0) {
+        jniThrowExceptionFmt(env, "java/lang/IllegalArgumentException", "Invalid argument: pid(%d)",
+                             pid);
+        return;
+    }
+    int ret = kill(pid, sig);
+    if (ret < 0) {
+        if (errno == ESRCH) {
+            jniThrowExceptionFmt(env, "java/util/NoSuchElementException",
+                                 "Process with pid %d not found", pid);
+        } else {
+            signalExceptionForError(env, errno, pid);
+        }
+    }
+}
+
+void android_os_Process_sendTgSignalThrows(JNIEnv* env, jobject clazz, jint tgid, jint tid,
+                                           jint sig) {
+    if (tgid <= 0 || tid <= 0) {
+        jniThrowExceptionFmt(env, "java/lang/IllegalArgumentException",
+                             "Invalid argument: tgid(%d), tid(%d)", tid, tgid);
+        return;
+    }
+    int ret = tgkill(tgid, tid, sig);
+    if (ret < 0) {
+        if (errno == ESRCH) {
+            jniThrowExceptionFmt(env, "java/util/NoSuchElementException",
+                                 "Process with tid %d and tgid %d not found", tid, tgid);
+        } else {
+            signalExceptionForError(env, errno, tid);
+        }
     }
 }
 
@@ -1163,12 +1203,11 @@ static jlong android_os_Process_getPss(JNIEnv* env, jobject clazz, jint pid)
 
 static jlongArray android_os_Process_getRss(JNIEnv* env, jobject clazz, jint pid)
 {
-    // total, file, anon, swap
-    jlong rss[4] = {0, 0, 0, 0};
+    // total, file, anon, swap, shmem
+    jlong rss[5] = {0, 0, 0, 0, 0};
     std::string status_path =
             android::base::StringPrintf("/proc/%d/status", pid);
     UniqueFile file = MakeUniqueFile(status_path.c_str(), "re");
-
     char line[256];
     while (file != nullptr && fgets(line, sizeof(line), file.get())) {
         jlong v;
@@ -1180,17 +1219,18 @@ static jlongArray android_os_Process_getRss(JNIEnv* env, jobject clazz, jint pid
             rss[2] = v;
         } else if ( sscanf(line, "VmSwap: %" SCNd64 " kB", &v) == 1) {
             rss[3] = v;
+        } else if ( sscanf(line, "RssShmem: %" SCNd64 " kB", &v) == 1) {
+            rss[4] = v;
         }
     }
 
-    jlongArray rssArray = env->NewLongArray(4);
+    jlongArray rssArray = env->NewLongArray(5);
     if (rssArray == NULL) {
         jniThrowException(env, "java/lang/OutOfMemoryError", NULL);
         return NULL;
     }
 
-    env->SetLongArrayRegion(rssArray, 0, 4, rss);
-
+    env->SetLongArrayRegion(rssArray, 0, 5, rss);
     return rssArray;
 }
 
@@ -1283,12 +1323,27 @@ jintArray android_os_Process_getPidsForCommands(JNIEnv* env, jobject clazz,
 
 jint android_os_Process_killProcessGroup(JNIEnv* env, jobject clazz, jint uid, jint pid)
 {
+    if (uid < 0) {
+        return jniThrowExceptionFmt(env, "java/lang/IllegalArgumentException",
+                                    "uid is negative: %d", uid);
+    }
+
     return killProcessGroup(uid, pid, SIGKILL);
+}
+
+jboolean android_os_Process_sendSignalToProcessGroup(JNIEnv* env, jobject clazz, jint uid, jint pid,
+                                                 jint signal) {
+    if (uid < 0) {
+        return jniThrowExceptionFmt(env, "java/lang/IllegalArgumentException",
+                                    "uid is negative: %d", uid);
+    }
+
+    return sendSignalToProcessGroup(uid, pid, signal);
 }
 
 void android_os_Process_removeAllProcessGroups(JNIEnv* env, jobject clazz)
 {
-    return removeAllProcessGroups();
+    return removeAllEmptyProcessGroups();
 }
 
 static jint android_os_Process_nativePidFdOpen(JNIEnv* env, jobject, jint pid, jint flags) {
@@ -1298,6 +1353,25 @@ static jint android_os_Process_nativePidFdOpen(JNIEnv* env, jobject, jint pid, j
         return -1;
     }
     return fd;
+}
+
+void android_os_Process_freezeCgroupUID(JNIEnv* env, jobject clazz, jint uid, jboolean freeze) {
+    if (uid < 0) {
+        jniThrowExceptionFmt(env, "java/lang/IllegalArgumentException", "uid is negative: %d", uid);
+        return;
+    }
+
+    bool success = true;
+
+    if (freeze) {
+        success = SetUserProfiles(uid, {"Frozen"});
+    } else {
+        success = SetUserProfiles(uid, {"Unfrozen"});
+    }
+
+    if (!success) {
+        jniThrowRuntimeException(env, "Could not apply user profile");
+    }
 }
 
 static const JNINativeMethod methods[] = {
@@ -1313,13 +1387,16 @@ static const JNINativeMethod methods[] = {
         {"setThreadGroupAndCpuset", "(II)V", (void*)android_os_Process_setThreadGroupAndCpuset},
         {"setProcessGroup", "(II)V", (void*)android_os_Process_setProcessGroup},
         {"getProcessGroup", "(I)I", (void*)android_os_Process_getProcessGroup},
+        {"createProcessGroup", "(II)I", (void*)android_os_Process_createProcessGroup},
         {"getExclusiveCores", "()[I", (void*)android_os_Process_getExclusiveCores},
         {"setSwappiness", "(IZ)Z", (void*)android_os_Process_setSwappiness},
-        {"setArgV0", "(Ljava/lang/String;)V", (void*)android_os_Process_setArgV0},
+        {"setArgV0Native", "(Ljava/lang/String;)V", (void*)android_os_Process_setArgV0},
         {"setUid", "(I)I", (void*)android_os_Process_setUid},
         {"setGid", "(I)I", (void*)android_os_Process_setGid},
         {"sendSignal", "(II)V", (void*)android_os_Process_sendSignal},
         {"sendSignalQuiet", "(II)V", (void*)android_os_Process_sendSignalQuiet},
+        {"sendSignalThrows", "(II)V", (void*)android_os_Process_sendSignalThrows},
+        {"sendTgSignalThrows", "(III)V", (void*)android_os_Process_sendTgSignalThrows},
         {"setProcessFrozen", "(IIZ)V", (void*)android_os_Process_setProcessFrozen},
         {"getFreeMemory", "()J", (void*)android_os_Process_getFreeMemory},
         {"getTotalMemory", "()J", (void*)android_os_Process_getTotalMemory},
@@ -1338,8 +1415,10 @@ static const JNINativeMethod methods[] = {
         //{"setApplicationObject", "(Landroid/os/IBinder;)V",
         //(void*)android_os_Process_setApplicationObject},
         {"killProcessGroup", "(II)I", (void*)android_os_Process_killProcessGroup},
+        {"sendSignalToProcessGroup", "(III)Z", (void*)android_os_Process_sendSignalToProcessGroup},
         {"removeAllProcessGroups", "()V", (void*)android_os_Process_removeAllProcessGroups},
         {"nativePidFdOpen", "(II)I", (void*)android_os_Process_nativePidFdOpen},
+        {"freezeCgroupUid", "(IZ)V", (void*)android_os_Process_freezeCgroupUID},
 };
 
 int register_android_os_Process(JNIEnv* env)

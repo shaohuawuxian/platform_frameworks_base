@@ -44,8 +44,12 @@ public class RecoverySystemShellCommand extends ShellCommand {
                     return requestLskf();
                 case "clear-lskf":
                     return clearLskf();
+                case "is-lskf-captured":
+                    return isLskfCaptured();
                 case "reboot-and-apply":
                     return rebootAndApply();
+                case "wipe":
+                    return wipe();
                 default:
                     return handleDefaultCommands(cmd);
             }
@@ -54,6 +58,18 @@ public class RecoverySystemShellCommand extends ShellCommand {
             e.printStackTrace(getErrPrintWriter());
             return -1;
         }
+    }
+
+    private int wipe() throws RemoteException {
+        PrintWriter pw = getOutPrintWriter();
+        String newFsType = getNextArg();
+        String command = "--wipe_data";
+        if (newFsType != null && !newFsType.isEmpty()) {
+            command += "\n--reformat_data=" + newFsType;
+        }
+        pw.println("Rebooting into recovery with " + command.replaceAll("\n", " "));
+        mService.rebootRecoveryWithCommand(command);
+        return 0;
     }
 
     private int requestLskf() throws RemoteException {
@@ -74,6 +90,14 @@ public class RecoverySystemShellCommand extends ShellCommand {
         return 0;
     }
 
+    private int isLskfCaptured() throws RemoteException {
+        String packageName = getNextArgRequired();
+        boolean captured = mService.isLskfCaptured(packageName);
+        PrintWriter pw = getOutPrintWriter();
+        pw.printf("%s LSKF capture status: %s\n", packageName, captured ? "true" : "false");
+        return 0;
+    }
+
     private int rebootAndApply() throws RemoteException {
         String packageName = getNextArgRequired();
         String rebootReason = getNextArgRequired();
@@ -90,8 +114,10 @@ public class RecoverySystemShellCommand extends ShellCommand {
     public void onHelp() {
         PrintWriter pw = getOutPrintWriter();
         pw.println("Recovery system commands:");
-        pw.println("  request-lskf <token>");
+        pw.println("  request-lskf <package_name>");
         pw.println("  clear-lskf");
-        pw.println("  reboot-and-apply <token> <reason>");
+        pw.println("  is-lskf-captured <package_name>");
+        pw.println("  reboot-and-apply <package_name> <reason>");
+        pw.println("  wipe <new filesystem type ext4/f2fs>");
     }
 }

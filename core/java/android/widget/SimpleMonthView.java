@@ -16,6 +16,10 @@
 
 package android.widget;
 
+import static android.view.flags.Flags.enableArrowIconOnHoverWhenClickable;
+import static android.view.flags.Flags.FLAG_ENABLE_ARROW_ICON_ON_HOVER_WHEN_CLICKABLE;
+
+import android.annotation.FlaggedApi;
 import android.annotation.Nullable;
 import android.content.Context;
 import android.content.res.ColorStateList;
@@ -39,6 +43,7 @@ import android.util.AttributeSet;
 import android.util.IntArray;
 import android.util.MathUtils;
 import android.util.StateSet;
+import android.view.InputDevice;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.PointerIcon;
@@ -186,7 +191,11 @@ class SimpleMonthView extends View {
     private void updateMonthYearLabel() {
         final String format = DateFormat.getBestDateTimePattern(mLocale, MONTH_YEAR_FORMAT);
         final SimpleDateFormat formatter = new SimpleDateFormat(format, mLocale);
-        formatter.setContext(DisplayContext.CAPITALIZATION_FOR_STANDALONE);
+        // The use of CAPITALIZATION_FOR_BEGINNING_OF_SENTENCE instead of
+        // CAPITALIZATION_FOR_STANDALONE is to address
+        // https://unicode-org.atlassian.net/browse/ICU-21631
+        // TODO(b/229287642): Switch back to CAPITALIZATION_FOR_STANDALONE
+        formatter.setContext(DisplayContext.CAPITALIZATION_FOR_BEGINNING_OF_SENTENCE);
         mMonthYearLabel = formatter.format(mCalendar.getTime());
     }
 
@@ -1032,17 +1041,24 @@ class SimpleMonthView extends View {
         return true;
     }
 
+    @FlaggedApi(FLAG_ENABLE_ARROW_ICON_ON_HOVER_WHEN_CLICKABLE)
     @Override
     public PointerIcon onResolvePointerIcon(MotionEvent event, int pointerIndex) {
         if (!isEnabled()) {
             return null;
         }
-        // Add 0.5f to event coordinates to match the logic in onTouchEvent.
-        final int x = (int) (event.getX() + 0.5f);
-        final int y = (int) (event.getY() + 0.5f);
-        final int dayUnderPointer = getDayAtLocation(x, y);
-        if (dayUnderPointer >= 0) {
-            return PointerIcon.getSystemIcon(getContext(), PointerIcon.TYPE_HAND);
+
+        if (event.isFromSource(InputDevice.SOURCE_MOUSE)) {
+            // Add 0.5f to event coordinates to match the logic in onTouchEvent.
+            final int x = (int) (event.getX() + 0.5f);
+            final int y = (int) (event.getY() + 0.5f);
+            final int dayUnderPointer = getDayAtLocation(x, y);
+            if (dayUnderPointer >= 0) {
+                int pointerIcon = enableArrowIconOnHoverWhenClickable()
+                        ? PointerIcon.TYPE_ARROW
+                        : PointerIcon.TYPE_HAND;
+                return PointerIcon.getSystemIcon(getContext(), pointerIcon);
+            }
         }
         return super.onResolvePointerIcon(event, pointerIndex);
     }

@@ -16,10 +16,11 @@
 
 package com.android.internal.inputmethod;
 
-import android.annotation.AnyThread;
-import android.annotation.NonNull;
+import android.annotation.Nullable;
+import android.view.View;
 import android.view.WindowManager;
 import android.view.WindowManager.LayoutParams.SoftInputModeFlags;
+import android.view.inputmethod.HandwritingGesture;
 
 import java.util.StringJoiner;
 
@@ -46,10 +47,10 @@ public final class InputMethodDebug {
                 return "UNSPECIFIED";
             case StartInputReason.WINDOW_FOCUS_GAIN:
                 return "WINDOW_FOCUS_GAIN";
-            case StartInputReason.WINDOW_FOCUS_GAIN_REPORT_WITH_CONNECTION:
-                return "WINDOW_FOCUS_GAIN_REPORT_WITH_CONNECTION";
-            case StartInputReason.WINDOW_FOCUS_GAIN_REPORT_WITHOUT_CONNECTION:
-                return "WINDOW_FOCUS_GAIN_REPORT_WITHOUT_CONNECTION";
+            case StartInputReason.WINDOW_FOCUS_GAIN_REPORT_ONLY:
+                return "WINDOW_FOCUS_GAIN_REPORT_ONLY";
+            case StartInputReason.SCHEDULED_CHECK_FOCUS:
+                return "SCHEDULED_CHECK_FOCUS";
             case StartInputReason.APP_CALLED_RESTART_INPUT_API:
                 return "APP_CALLED_RESTART_INPUT_API";
             case StartInputReason.CHECK_FOCUS:
@@ -64,6 +65,8 @@ public final class InputMethodDebug {
                 return "DEACTIVATED_BY_IMMS";
             case StartInputReason.SESSION_CREATED_BY_IME:
                 return "SESSION_CREATED_BY_IME";
+            case StartInputReason.BOUND_ACCESSIBILITY_SESSION_TO_IMMS:
+                return "BOUND_ACCESSIBILITY_SESSION_TO_IMMS";
             default:
                 return "Unknown=" + reason;
         }
@@ -186,16 +189,18 @@ public final class InputMethodDebug {
      */
     public static String softInputDisplayReasonToString(@SoftInputShowHideReason int reason) {
         switch (reason) {
+            case SoftInputShowHideReason.NOT_SET:
+                return "NOT_SET";
             case SoftInputShowHideReason.SHOW_SOFT_INPUT:
                 return "SHOW_SOFT_INPUT";
             case SoftInputShowHideReason.ATTACH_NEW_INPUT:
                 return "ATTACH_NEW_INPUT";
-            case SoftInputShowHideReason.SHOW_MY_SOFT_INPUT:
-                return "SHOW_MY_SOFT_INPUT";
+            case SoftInputShowHideReason.SHOW_SOFT_INPUT_FROM_IME:
+                return "SHOW_SOFT_INPUT_FROM_IME";
             case SoftInputShowHideReason.HIDE_SOFT_INPUT:
                 return "HIDE_SOFT_INPUT";
-            case SoftInputShowHideReason.HIDE_MY_SOFT_INPUT:
-                return "HIDE_MY_SOFT_INPUT";
+            case SoftInputShowHideReason.HIDE_SOFT_INPUT_FROM_IME:
+                return "HIDE_SOFT_INPUT_FROM_IME";
             case SoftInputShowHideReason.SHOW_AUTO_EDITOR_FORWARD_NAV:
                 return "SHOW_AUTO_EDITOR_FORWARD_NAV";
             case SoftInputShowHideReason.SHOW_STATE_VISIBLE_FORWARD_NAV:
@@ -224,28 +229,130 @@ public final class InputMethodDebug {
                 return "HIDE_DOCKED_STACK_ATTACHED";
             case SoftInputShowHideReason.HIDE_RECENTS_ANIMATION:
                 return "HIDE_RECENTS_ANIMATION";
+            case SoftInputShowHideReason.HIDE_BUBBLES:
+                return "HIDE_BUBBLES";
             case SoftInputShowHideReason.HIDE_SAME_WINDOW_FOCUSED_WITHOUT_EDITOR:
                 return "HIDE_SAME_WINDOW_FOCUSED_WITHOUT_EDITOR";
+            case SoftInputShowHideReason.HIDE_REMOVE_CLIENT:
+                return "HIDE_REMOVE_CLIENT";
+            case SoftInputShowHideReason.SHOW_RESTORE_IME_VISIBILITY:
+                return "SHOW_RESTORE_IME_VISIBILITY";
+            case SoftInputShowHideReason.SHOW_TOGGLE_SOFT_INPUT:
+                return "SHOW_TOGGLE_SOFT_INPUT";
+            case SoftInputShowHideReason.HIDE_TOGGLE_SOFT_INPUT:
+                return "HIDE_TOGGLE_SOFT_INPUT";
+            case SoftInputShowHideReason.SHOW_SOFT_INPUT_BY_INSETS_API:
+                return "SHOW_SOFT_INPUT_BY_INSETS_API";
+            case SoftInputShowHideReason.HIDE_DISPLAY_IME_POLICY_HIDE:
+                return "HIDE_DISPLAY_IME_POLICY_HIDE";
+            case SoftInputShowHideReason.HIDE_SOFT_INPUT_BY_INSETS_API:
+                return "HIDE_SOFT_INPUT_BY_INSETS_API";
+            case SoftInputShowHideReason.HIDE_SOFT_INPUT_BY_BACK_KEY:
+                return "HIDE_SOFT_INPUT_BY_BACK_KEY";
+            case SoftInputShowHideReason.HIDE_SOFT_INPUT_IME_TOGGLE_SOFT_INPUT:
+                return "HIDE_SOFT_INPUT_IME_TOGGLE_SOFT_INPUT";
+            case SoftInputShowHideReason.HIDE_SOFT_INPUT_EXTRACT_INPUT_CHANGED:
+                return "HIDE_SOFT_INPUT_EXTRACT_INPUT_CHANGED";
+            case SoftInputShowHideReason.HIDE_SOFT_INPUT_IMM_DEPRECATION:
+                return "HIDE_SOFT_INPUT_IMM_DEPRECATION";
+            case SoftInputShowHideReason.HIDE_WINDOW_GAINED_FOCUS_WITHOUT_EDITOR:
+                return "HIDE_WINDOW_GAINED_FOCUS_WITHOUT_EDITOR";
+            case SoftInputShowHideReason.SHOW_IME_SCREENSHOT_FROM_IMMS:
+                return "SHOW_IME_SCREENSHOT_FROM_IMMS";
+            case SoftInputShowHideReason.REMOVE_IME_SCREENSHOT_FROM_IMMS:
+                return "REMOVE_IME_SCREENSHOT_FROM_IMMS";
+            case SoftInputShowHideReason.HIDE_WHEN_INPUT_TARGET_INVISIBLE:
+                return "HIDE_WHEN_INPUT_TARGET_INVISIBLE";
+            case SoftInputShowHideReason.HIDE_CLOSE_CURRENT_SESSION:
+                return "HIDE_SOFT_INPUT_CLOSE_CURRENT_SESSION";
+            case SoftInputShowHideReason.HIDE_SOFT_INPUT_FROM_VIEW:
+                return "HIDE_SOFT_INPUT_FROM_VIEW";
+            case SoftInputShowHideReason.SHOW_SOFT_INPUT_LEGACY_DIRECT:
+                return "SHOW_SOFT_INPUT_LEGACY_DIRECT";
+            case SoftInputShowHideReason.HIDE_SOFT_INPUT_LEGACY_DIRECT:
+                return "HIDE_SOFT_INPUT_LEGACY_DIRECT";
+            case SoftInputShowHideReason.SHOW_WINDOW_LEGACY_DIRECT:
+                return "SHOW_WINDOW_LEGACY_DIRECT";
+            case SoftInputShowHideReason.HIDE_WINDOW_LEGACY_DIRECT:
+                return "HIDE_WINDOW_LEGACY_DIRECT";
+            case SoftInputShowHideReason.RESET_NEW_CONFIGURATION:
+                return "RESET_NEW_CONFIGURATION";
+            case SoftInputShowHideReason.UPDATE_CANDIDATES_VIEW_VISIBILITY:
+                return "UPDATE_CANDIDATES_VIEW_VISIBILITY";
+            case SoftInputShowHideReason.CONTROLS_CHANGED:
+                return "CONTROLS_CHANGED";
+            case SoftInputShowHideReason.DISPLAY_CONFIGURATION_CHANGED:
+                return "DISPLAY_CONFIGURATION_CHANGED";
+            case SoftInputShowHideReason.DISPLAY_INSETS_CHANGED:
+                return "DISPLAY_INSETS_CHANGED";
+            case SoftInputShowHideReason.DISPLAY_CONTROLS_CHANGED:
+                return "DISPLAY_CONTROLS_CHANGED";
+            case SoftInputShowHideReason.UNBIND_CURRENT_METHOD:
+                return "UNBIND_CURRENT_METHOD";
+            case SoftInputShowHideReason.HIDE_SOFT_INPUT_ON_ANIMATION_STATE_CHANGED:
+                return "HIDE_SOFT_INPUT_ON_ANIMATION_STATE_CHANGED";
+            case SoftInputShowHideReason.HIDE_SOFT_INPUT_REQUEST_HIDE_WITH_CONTROL:
+                return "HIDE_SOFT_INPUT_REQUEST_HIDE_WITH_CONTROL";
+            case SoftInputShowHideReason.SHOW_SOFT_INPUT_IME_TOGGLE_SOFT_INPUT:
+                return "SHOW_SOFT_INPUT_IME_TOGGLE_SOFT_INPUT";
+            case SoftInputShowHideReason.SHOW_SOFT_INPUT_IMM_DEPRECATION:
+                return "SHOW_SOFT_INPUT_IMM_DEPRECATION";
+            case SoftInputShowHideReason.CONTROL_WINDOW_INSETS_ANIMATION:
+                return "CONTROL_WINDOW_INSETS_ANIMATION";
             default:
                 return "Unknown=" + reason;
         }
     }
 
     /**
-     * Return a fixed size string of the object.
-     * TODO(b/151575861): Take & return with StringBuilder to make more memory efficient.
+     * Converts {@link HandwritingGesture.GestureTypeFlags} to {@link String} for debug logging.
+     *
+     * @param gestureTypeFlags integer constant for {@link HandwritingGesture.GestureTypeFlags}.
+     * @return {@link String} message corresponds for the given {@code gestureTypeFlags}.
      */
-    @NonNull
-    @AnyThread
-    public static String objToString(Object obj) {
-        if (obj == null) {
+    public static String handwritingGestureTypeFlagsToString(
+            @HandwritingGesture.GestureTypeFlags int gestureTypeFlags) {
+        final StringJoiner joiner = new StringJoiner("|");
+        if ((gestureTypeFlags & HandwritingGesture.GESTURE_TYPE_SELECT) != 0) {
+            joiner.add("SELECT");
+        }
+        if ((gestureTypeFlags & HandwritingGesture.GESTURE_TYPE_SELECT_RANGE) != 0) {
+            joiner.add("SELECT_RANGE");
+        }
+        if ((gestureTypeFlags & HandwritingGesture.GESTURE_TYPE_INSERT) != 0) {
+            joiner.add("INSERT");
+        }
+        if ((gestureTypeFlags & HandwritingGesture.GESTURE_TYPE_DELETE) != 0) {
+            joiner.add("DELETE");
+        }
+        if ((gestureTypeFlags & HandwritingGesture.GESTURE_TYPE_DELETE_RANGE) != 0) {
+            joiner.add("DELETE_RANGE");
+        }
+        if ((gestureTypeFlags & HandwritingGesture.GESTURE_TYPE_REMOVE_SPACE) != 0) {
+            joiner.add("REMOVE_SPACE");
+        }
+        if ((gestureTypeFlags & HandwritingGesture.GESTURE_TYPE_JOIN_OR_SPLIT) != 0) {
+            joiner.add("JOIN_OR_SPLIT");
+        }
+        return joiner.setEmptyValue("(none)").toString();
+    }
+
+    /**
+     * Dumps the given {@link View} related to input method focus state for debugging.
+     */
+    public static String dumpViewInfo(@Nullable View view) {
+        if (view == null) {
             return "null";
         }
-        StringBuilder sb = new StringBuilder(64);
-        sb.setLength(0);
-        sb.append(obj.getClass().getName());
-        sb.append("@");
-        sb.append(Integer.toHexString(obj.hashCode()));
+        final StringBuilder sb = new StringBuilder();
+        sb.append(view);
+        sb.append(",focus=" + view.hasFocus());
+        sb.append(",windowFocus=" + view.hasWindowFocus());
+        sb.append(",window=" + view.getWindowToken());
+        sb.append(",displayId=" + view.getContext().getDisplayId());
+        sb.append(",temporaryDetach=" + view.isTemporarilyDetached());
+        sb.append(",hasImeFocus=" + view.hasImeFocus());
+
         return sb.toString();
     }
 }

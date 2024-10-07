@@ -125,13 +125,13 @@ public final class CellSignalStrengthLte extends CellSignalStrength implements P
     /**
      * Construct a cell signal strength
      *
-     * @param rssi in dBm [-113,-51], UNKNOWN
-     * @param rsrp in dBm [-140,-43], UNKNOWN
-     * @param rsrq in dB [-34, 3], UNKNOWN
-     * @param rssnr in dB [-20, +30], UNKNOWN
-     * @param cqiTableIndex [1, 6], UNKNOWN
-     * @param cqi [0, 15], UNKNOWN
-     * @param timingAdvance [0, 1282], UNKNOWN
+     * @param rssi in dBm [-113,-51], {@link CellInfo#UNAVAILABLE}
+     * @param rsrp in dBm [-140,-43], {@link CellInfo#UNAVAILABLE}
+     * @param rsrq in dB [-34, 3], {@link CellInfo#UNAVAILABLE}
+     * @param rssnr in dB [-20, +30], {@link CellInfo#UNAVAILABLE}
+     * @param cqiTableIndex [1, 6], {@link CellInfo#UNAVAILABLE}
+     * @param cqi [0, 15], {@link CellInfo#UNAVAILABLE}
+     * @param timingAdvance [0, 1282], {@link CellInfo#UNAVAILABLE}
      *
      */
     /** @hide */
@@ -151,37 +151,18 @@ public final class CellSignalStrengthLte extends CellSignalStrength implements P
     /**
      * Construct a cell signal strength
      *
-     * @param rssi in dBm [-113,-51], UNKNOWN
-     * @param rsrp in dBm [-140,-43], UNKNOWN
-     * @param rsrq in dB [-34, 3], UNKNOWN
-     * @param rssnr in dB [-20, +30], UNKNOWN
-     * @param cqi [0, 15], UNKNOWN
-     * @param timingAdvance [0, 1282], UNKNOWN
+     * @param rssi in dBm [-113,-51], {@link CellInfo#UNAVAILABLE}
+     * @param rsrp in dBm [-140,-43], {@link CellInfo#UNAVAILABLE}
+     * @param rsrq in dB [-34, 3], {@link CellInfo#UNAVAILABLE}
+     * @param rssnr in dB [-20, +30], {@link CellInfo#UNAVAILABLE}
+     * @param cqi [0, 15], {@link CellInfo#UNAVAILABLE}
+     * @param timingAdvance [0, 1282], {@link CellInfo#UNAVAILABLE}
      *
      */
     /** @hide */
     public CellSignalStrengthLte(int rssi, int rsrp, int rsrq, int rssnr, int cqi,
             int timingAdvance) {
         this(rssi, rsrp, rsrq, rssnr, CellInfo.UNAVAILABLE, cqi, timingAdvance);
-    }
-
-    /** @hide */
-    public CellSignalStrengthLte(android.hardware.radio.V1_0.LteSignalStrength lte) {
-        // Convert from HAL values as part of construction.
-        this(convertRssiAsuToDBm(lte.signalStrength),
-                lte.rsrp != CellInfo.UNAVAILABLE ? -lte.rsrp : lte.rsrp,
-                lte.rsrq != CellInfo.UNAVAILABLE ? -lte.rsrq : lte.rsrq,
-                convertRssnrUnitFromTenDbToDB(lte.rssnr), lte.cqi, lte.timingAdvance);
-    }
-
-    /** @hide */
-    public CellSignalStrengthLte(android.hardware.radio.V1_6.LteSignalStrength lte) {
-        // Convert from HAL values as part of construction.
-        this(convertRssiAsuToDBm(lte.base.signalStrength),
-                lte.base.rsrp != CellInfo.UNAVAILABLE ? -lte.base.rsrp : lte.base.rsrp,
-                lte.base.rsrq != CellInfo.UNAVAILABLE ? -lte.base.rsrq : lte.base.rsrq,
-                convertRssnrUnitFromTenDbToDB(lte.base.rssnr), lte.cqiTableIndex, lte.base.cqi,
-                lte.base.timingAdvance);
     }
 
     /** @hide */
@@ -282,29 +263,35 @@ public final class CellSignalStrengthLte extends CellSignalStrength implements P
             rssnrThresholds = sRssnrThresholds;
             rsrpOnly = false;
         } else {
-            mParametersUseForLevel = cc.getInt(
-                    CarrierConfigManager.KEY_PARAMETERS_USED_FOR_LTE_SIGNAL_BAR_INT);
-            if (DBG) {
-                Rlog.i(LOG_TAG, "Using signal strength level: " + mParametersUseForLevel);
+            if (ss != null && ss.isUsingNonTerrestrialNetwork()) {
+                if (DBG) log("updateLevel: from NTN_LTE");
+                mParametersUseForLevel = cc.getInt(
+                        CarrierConfigManager.KEY_PARAMETERS_USED_FOR_NTN_LTE_SIGNAL_BAR_INT);
+                rsrpThresholds = cc.getIntArray(
+                        CarrierConfigManager.KEY_NTN_LTE_RSRP_THRESHOLDS_INT_ARRAY);
+                rsrqThresholds = cc.getIntArray(
+                        CarrierConfigManager.KEY_NTN_LTE_RSRQ_THRESHOLDS_INT_ARRAY);
+                rssnrThresholds = cc.getIntArray(
+                        CarrierConfigManager.KEY_NTN_LTE_RSSNR_THRESHOLDS_INT_ARRAY);
+            } else {
+                mParametersUseForLevel = cc.getInt(
+                        CarrierConfigManager.KEY_PARAMETERS_USED_FOR_LTE_SIGNAL_BAR_INT);
+                rsrpThresholds = cc.getIntArray(
+                        CarrierConfigManager.KEY_LTE_RSRP_THRESHOLDS_INT_ARRAY);
+                rsrqThresholds = cc.getIntArray(
+                        CarrierConfigManager.KEY_LTE_RSRQ_THRESHOLDS_INT_ARRAY);
+                rssnrThresholds = cc.getIntArray(
+                        CarrierConfigManager.KEY_LTE_RSSNR_THRESHOLDS_INT_ARRAY);
             }
-            rsrpThresholds = cc.getIntArray(
-                    CarrierConfigManager.KEY_LTE_RSRP_THRESHOLDS_INT_ARRAY);
             if (rsrpThresholds == null) rsrpThresholds = sRsrpThresholds;
-            if (DBG) {
-                Rlog.i(LOG_TAG, "Applying LTE RSRP Thresholds: "
-                        + Arrays.toString(rsrpThresholds));
-            }
-            rsrqThresholds = cc.getIntArray(
-                    CarrierConfigManager.KEY_LTE_RSRQ_THRESHOLDS_INT_ARRAY);
             if (rsrqThresholds == null) rsrqThresholds = sRsrqThresholds;
-            if (DBG) {
-                Rlog.i(LOG_TAG, "Applying LTE RSRQ Thresholds: "
-                        + Arrays.toString(rsrqThresholds));
-            }
-            rssnrThresholds = cc.getIntArray(
-                    CarrierConfigManager.KEY_LTE_RSSNR_THRESHOLDS_INT_ARRAY);
             if (rssnrThresholds == null) rssnrThresholds = sRssnrThresholds;
             if (DBG) {
+                Rlog.i(LOG_TAG, "Using signal strength level: " + mParametersUseForLevel);
+                Rlog.i(LOG_TAG, "Applying LTE RSRP Thresholds: "
+                        + Arrays.toString(rsrpThresholds));
+                Rlog.i(LOG_TAG, "Applying LTE RSRQ Thresholds: "
+                        + Arrays.toString(rsrqThresholds));
                 Rlog.i(LOG_TAG, "Applying LTE RSSNR Thresholds: "
                         + Arrays.toString(rssnrThresholds));
             }
@@ -314,7 +301,7 @@ public final class CellSignalStrengthLte extends CellSignalStrength implements P
 
         int rsrpBoost = 0;
         if (ss != null) {
-            rsrpBoost = ss.getLteEarfcnRsrpBoost();
+            rsrpBoost = ss.getArfcnRsrpBoost();
         }
 
         int rsrp = inRangeOrUnavailable(mRsrp + rsrpBoost, MIN_LTE_RSRP, MAX_LTE_RSRP);
@@ -422,10 +409,11 @@ public final class CellSignalStrengthLte extends CellSignalStrength implements P
     }
 
     /**
-     * Get reference signal signal-to-noise ratio
+     * Get reference signal signal-to-noise ratio in dB
+     * Range: -20 dB to +30 dB.
      *
      * @return the RSSNR if available or
-     *         {@link android.telephony.CellInfo#UNAVAILABLE UNAVAILABLE} if unavailable.
+     *         {@link android.telephony.CellInfo#UNAVAILABLE} if unavailable.
      */
     public int getRssnr() {
         return mRssnr;
@@ -433,8 +421,10 @@ public final class CellSignalStrengthLte extends CellSignalStrength implements P
 
     /**
      * Get reference signal received power in dBm
+     * Range: -140 dBm to -43 dBm.
      *
-     * @return the RSRP of the measured cell.
+     * @return the RSRP of the measured cell or {@link CellInfo#UNAVAILABLE} if
+     * unavailable.
      */
     public int getRsrp() {
         return mRsrp;
@@ -617,11 +607,13 @@ public final class CellSignalStrengthLte extends CellSignalStrength implements P
         Rlog.w(LOG_TAG, s);
     }
 
-    private static int convertRssnrUnitFromTenDbToDB(int rssnr) {
-        return rssnr / 10;
+    /** @hide */
+    public static int convertRssnrUnitFromTenDbToDB(int rssnr) {
+        return (int) Math.floor((float) rssnr / 10);
     }
 
-    private static int convertRssiAsuToDBm(int rssiAsu) {
+    /** @hide */
+    public static int convertRssiAsuToDBm(int rssiAsu) {
         if (rssiAsu == SIGNAL_STRENGTH_LTE_RSSI_ASU_UNKNOWN) {
             return CellInfo.UNAVAILABLE;
         }

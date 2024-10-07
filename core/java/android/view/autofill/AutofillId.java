@@ -22,6 +22,8 @@ import android.os.Parcel;
 import android.os.Parcelable;
 import android.view.View;
 
+import java.util.Objects;
+
 /**
  * A unique identifier for an autofill node inside an {@link android.app.Activity}.
  */
@@ -59,6 +61,11 @@ public final class AutofillId implements Parcelable {
     }
 
     /** @hide */
+    public AutofillId(@NonNull AutofillId hostId, int virtualChildId, int sessionId) {
+        this(FLAG_IS_VIRTUAL_INT | FLAG_HAS_SESSION, hostId.mViewId, virtualChildId, sessionId);
+    }
+
+    /** @hide */
     @TestApi
     public AutofillId(@NonNull AutofillId hostId, long virtualChildId, int sessionId) {
         this(FLAG_IS_VIRTUAL_LONG | FLAG_HAS_SESSION, hostId.mViewId, virtualChildId, sessionId);
@@ -70,6 +77,27 @@ public final class AutofillId implements Parcelable {
         mVirtualIntId = ((flags & FLAG_IS_VIRTUAL_INT) != 0) ? (int) virtualChildId : View.NO_ID;
         mVirtualLongId = ((flags & FLAG_IS_VIRTUAL_LONG) != 0) ? virtualChildId : View.NO_ID;
         mSessionId = sessionId;
+    }
+
+    /** @hide */
+    @NonNull
+    public static final AutofillId NO_AUTOFILL_ID = new AutofillId(0);
+
+    /**
+     * Creates an {@link AutofillId} with the virtual id.
+     *
+     * This method is used by a {@link View} that contains the virtual view hierarchy. Use this
+     * method to create the {@link AutofillId} for each virtual view.
+     *
+     * @param host the view hosting the virtual view hierarchy which is used to show autofill
+     *            suggestions.
+     * @param virtualId id identifying the virtual view inside the host view.
+     * @return an {@link AutofillId} for the virtual view
+     */
+    @NonNull
+    public static AutofillId create(@NonNull View host, int virtualId) {
+        Objects.requireNonNull(host);
+        return new AutofillId(host.getAutofillId(), virtualId);
     }
 
     /** @hide */
@@ -143,6 +171,7 @@ public final class AutofillId implements Parcelable {
      *
      * @hide
      */
+    @TestApi
     public boolean isNonVirtual() {
         return !isVirtualInt() && !isVirtualLong();
     }
@@ -185,7 +214,7 @@ public final class AutofillId implements Parcelable {
     }
 
     @Override
-    public boolean equals(Object obj) {
+    public boolean equals(@Nullable Object obj) {
         if (this == obj) return true;
         if (obj == null) return false;
         if (getClass() != obj.getClass()) return false;
@@ -212,9 +241,9 @@ public final class AutofillId implements Parcelable {
     public String toString() {
         final StringBuilder builder = new StringBuilder().append(mViewId);
         if (isVirtualInt()) {
-            builder.append(':').append(mVirtualIntId);
+            builder.append(":i").append(mVirtualIntId);
         } else if (isVirtualLong()) {
-            builder.append(':').append(mVirtualLongId);
+            builder.append(":l").append(mVirtualLongId);
         }
 
         if (hasSession()) {

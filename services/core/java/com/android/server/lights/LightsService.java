@@ -15,7 +15,6 @@
 
 package com.android.server.lights;
 
-import android.Manifest;
 import android.annotation.Nullable;
 import android.app.ActivityManager;
 import android.content.Context;
@@ -29,18 +28,17 @@ import android.os.Binder;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
-import android.os.PowerManager;
+import android.os.PermissionEnforcer;
 import android.os.RemoteException;
 import android.os.ServiceManager;
 import android.os.Trace;
 import android.provider.Settings;
 import android.util.Slog;
 import android.util.SparseArray;
-import android.view.SurfaceControl;
 
-import com.android.internal.BrightnessSynchronizer;
 import com.android.internal.annotations.GuardedBy;
 import com.android.internal.annotations.VisibleForTesting;
+import com.android.internal.display.BrightnessSynchronizer;
 import com.android.internal.util.DumpUtils;
 import com.android.internal.util.Preconditions;
 import com.android.server.SystemService;
@@ -48,6 +46,7 @@ import com.android.server.SystemService;
 import java.io.FileDescriptor;
 import java.io.PrintWriter;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -69,13 +68,18 @@ public class LightsService extends SystemService {
     private Handler mH;
 
     private final class LightsManagerBinderService extends ILightsManager.Stub {
+        LightsManagerBinderService() {
+            super(PermissionEnforcer.fromContext(getContext()));
+        }
 
-        private final class Session {
+        private final class Session implements Comparable<Session> {
             final IBinder mToken;
             final SparseArray<LightState> mRequests = new SparseArray<>();
+            final int mPriority;
 
-            Session(IBinder token) {
+            Session(IBinder token, int priority) {
                 mToken = token;
+                mPriority = priority;
             }
 
             void setRequest(int lightId, LightState state) {
@@ -84,6 +88,12 @@ public class LightsService extends SystemService {
                 } else {
                     mRequests.remove(lightId);
                 }
+            }
+
+            @Override
+            public int compareTo(Session otherSession) {
+                // Sort descending by priority
+                return Integer.compare(otherSession.mPriority, mPriority);
             }
         }
 
@@ -94,10 +104,10 @@ public class LightsService extends SystemService {
          * Returns the lights available for apps to control on the device. Only lights that aren't
          * reserved for system use are available to apps.
          */
+        @android.annotation.EnforcePermission(android.Manifest.permission.CONTROL_DEVICE_LIGHTS)
         @Override
         public List<Light> getLights() {
-            getContext().enforceCallingOrSelfPermission(Manifest.permission.CONTROL_DEVICE_LIGHTS,
-                    "getLights requires CONTROL_DEVICE_LIGHTS_PERMISSION");
+            getLights_enforcePermission();
 
             synchronized (LightsService.this) {
                 final List<Light> lights = new ArrayList<Light>();
@@ -118,10 +128,10 @@ public class LightsService extends SystemService {
          * <p>Null values mean that the request should be removed, and the light turned off if it
          * is not being used by anything else.
          */
+        @android.annotation.EnforcePermission(android.Manifest.permission.CONTROL_DEVICE_LIGHTS)
         @Override
         public void setLightStates(IBinder token, int[] lightIds, LightState[] lightStates) {
-            getContext().enforceCallingOrSelfPermission(Manifest.permission.CONTROL_DEVICE_LIGHTS,
-                    "setLightStates requires CONTROL_DEVICE_LIGHTS permission");
+            setLightStates_enforcePermission();
             Preconditions.checkState(lightIds.length == lightStates.length);
 
             synchronized (LightsService.this) {
@@ -137,10 +147,10 @@ public class LightsService extends SystemService {
             }
         }
 
+        @android.annotation.EnforcePermission(android.Manifest.permission.CONTROL_DEVICE_LIGHTS)
         @Override
         public @Nullable LightState getLightState(int lightId) {
-            getContext().enforceCallingOrSelfPermission(Manifest.permission.CONTROL_DEVICE_LIGHTS,
-                    "getLightState(@TestApi) requires CONTROL_DEVICE_LIGHTS permission");
+            getLightState_enforcePermission();
 
             synchronized (LightsService.this) {
                 final LightImpl light = mLightsById.get(lightId);
@@ -151,17 +161,18 @@ public class LightsService extends SystemService {
             }
         }
 
+        @android.annotation.EnforcePermission(android.Manifest.permission.CONTROL_DEVICE_LIGHTS)
         @Override
-        public void openSession(IBinder token) {
-            getContext().enforceCallingOrSelfPermission(Manifest.permission.CONTROL_DEVICE_LIGHTS,
-                    "openSession requires CONTROL_DEVICE_LIGHTS permission");
+        public void openSession(IBinder token, int priority) {
+            openSession_enforcePermission();
             Preconditions.checkNotNull(token);
 
             synchronized (LightsService.this) {
                 Preconditions.checkState(getSessionLocked(token) == null, "already registered");
                 try {
                     token.linkToDeath(() -> closeSessionInternal(token), 0);
-                    mSessions.add(new Session(token));
+                    mSessions.add(new Session(token, priority));
+                    Collections.sort(mSessions);
                 } catch (RemoteException e) {
                     Slog.e(TAG, "Couldn't open session, client already died" , e);
                     throw new IllegalArgumentException("Client is already dead.");
@@ -169,10 +180,10 @@ public class LightsService extends SystemService {
             }
         }
 
+        @android.annotation.EnforcePermission(android.Manifest.permission.CONTROL_DEVICE_LIGHTS)
         @Override
         public void closeSession(IBinder token) {
-            getContext().enforceCallingOrSelfPermission(Manifest.permission.CONTROL_DEVICE_LIGHTS,
-                    "closeSession requires CONTROL_DEVICE_LIGHTS permission");
+            closeSession_enforcePermission();
             Preconditions.checkNotNull(token);
             closeSessionInternal(token);
         }
@@ -218,10 +229,10 @@ public class LightsService extends SystemService {
         }
 
         private void checkRequestIsValid(int[] lightIds) {
-            for (int i = 0; i < lightIds.length; i++) {
-                final LightImpl light = mLightsById.get(lightIds[i]);
+            for (int lightId : lightIds) {
+                final LightImpl light = mLightsById.get(lightId);
                 Preconditions.checkState(light != null && !light.isSystemLight(),
-                        "Invalid lightId " + lightIds[i]);
+                        "Invalid lightId " + lightId);
             }
         }
 
@@ -262,25 +273,9 @@ public class LightsService extends SystemService {
     }
 
     private final class LightImpl extends LogicalLight {
-        private final IBinder mDisplayToken;
-        private final int mSurfaceControlMaximumBrightness;
 
         private LightImpl(Context context, HwLight hwLight) {
             mHwLight = hwLight;
-            mDisplayToken = SurfaceControl.getInternalDisplayToken();
-            final boolean brightnessSupport = SurfaceControl.getDisplayBrightnessSupport(
-                    mDisplayToken);
-            if (DEBUG) {
-                Slog.d(TAG, "Display brightness support: " + brightnessSupport);
-            }
-            int maximumBrightness = 0;
-            if (brightnessSupport) {
-                PowerManager pm = context.getSystemService(PowerManager.class);
-                if (pm != null) {
-                    maximumBrightness = pm.getMaximumScreenBrightnessSetting();
-                }
-            }
-            mSurfaceControlMaximumBrightness = maximumBrightness;
         }
 
         @Override
@@ -301,29 +296,10 @@ public class LightsService extends SystemService {
                             + ": brightness=" + brightness);
                     return;
                 }
-                // Ideally, we'd like to set the brightness mode through the SF/HWC as well, but
-                // right now we just fall back to the old path through Lights brightessMode is
-                // anything but USER or the device shouldBeInLowPersistenceMode().
-                if (brightnessMode == BRIGHTNESS_MODE_USER && !shouldBeInLowPersistenceMode()
-                        && mSurfaceControlMaximumBrightness == 255) {
-                    // New system
-                    // TODO: the last check should be mSurfaceControlMaximumBrightness != 0; the
-                    // reason we enforce 255 right now is to stay consistent with the old path. In
-                    // the future, the framework should be refactored so that brightness is a float
-                    // between 0.0f and 1.0f, and the actual number of supported brightness levels
-                    // is determined in the device-specific implementation.
-                    if (DEBUG) {
-                        Slog.d(TAG, "Using new setBrightness path!");
-                    }
-                    SurfaceControl.setDisplayBrightness(mDisplayToken, brightness);
-                } else {
-                    // Old system
-                    int brightnessInt = BrightnessSynchronizer.brightnessFloatToInt(
-                            getContext(), brightness);
-                    int color = brightnessInt & 0x000000ff;
-                    color = 0xff000000 | (color << 16) | (color << 8) | color;
-                    setLightLocked(color, LIGHT_FLASH_NONE, 0, 0, brightnessMode);
-                }
+                int brightnessInt = BrightnessSynchronizer.brightnessFloatToInt(brightness);
+                int color = brightnessInt & 0x000000ff;
+                color = 0xff000000 | (color << 16) | (color << 8) | color;
+                setLightLocked(color, LIGHT_FLASH_NONE, 0, 0, brightnessMode);
             }
         }
 
@@ -492,9 +468,10 @@ public class LightsService extends SystemService {
         }
 
         for (int i = mLightsById.size() - 1; i >= 0; i--) {
-            final int type = mLightsById.keyAt(i);
+            LightImpl light = mLightsById.valueAt(i);
+            final int type = light.mHwLight.type;
             if (0 <= type && type < mLightsByType.length) {
-                mLightsByType[type] = mLightsById.valueAt(i);
+                mLightsByType[type] = light;
             }
         }
     }

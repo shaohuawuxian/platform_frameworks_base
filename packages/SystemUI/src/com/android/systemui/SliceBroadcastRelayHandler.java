@@ -14,6 +14,8 @@
 
 package com.android.systemui;
 
+import static com.android.systemui.Flags.sliceBroadcastRelayInBackground;
+
 import android.content.BroadcastReceiver;
 import android.content.ComponentName;
 import android.content.ContentProvider;
@@ -23,32 +25,43 @@ import android.content.IntentFilter;
 import android.net.Uri;
 import android.os.UserHandle;
 import android.util.ArrayMap;
-import android.util.ArraySet;
 import android.util.Log;
+
+import androidx.annotation.GuardedBy;
+import androidx.annotation.WorkerThread;
 
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.settingslib.SliceBroadcastRelay;
 import com.android.systemui.broadcast.BroadcastDispatcher;
+import com.android.systemui.dagger.SysUISingleton;
+import com.android.systemui.dagger.qualifiers.Background;
+
+import java.util.concurrent.CopyOnWriteArraySet;
+import java.util.concurrent.Executor;
 
 import javax.inject.Inject;
-import javax.inject.Singleton;
 
 /**
  * Allows settings to register certain broadcasts to launch the settings app for pinned slices.
  * @see SliceBroadcastRelay
  */
-@Singleton
-public class SliceBroadcastRelayHandler extends SystemUI {
+@SysUISingleton
+public class SliceBroadcastRelayHandler implements CoreStartable {
     private static final String TAG = "SliceBroadcastRelay";
     private static final boolean DEBUG = false;
 
+    @GuardedBy("mRelays")
     private final ArrayMap<Uri, BroadcastRelay> mRelays = new ArrayMap<>();
+    private final Context mContext;
     private final BroadcastDispatcher mBroadcastDispatcher;
+    private final Executor mBackgroundExecutor;
 
     @Inject
-    public SliceBroadcastRelayHandler(Context context, BroadcastDispatcher broadcastDispatcher) {
-        super(context);
+    public SliceBroadcastRelayHandler(Context context, BroadcastDispatcher broadcastDispatcher,
+                                      @Background Executor backgroundExecutor) {
+        mContext = context;
         mBroadcastDispatcher = broadcastDispatcher;
+        mBackgroundExecutor = backgroundExecutor;
     }
 
     @Override
@@ -56,21 +69,29 @@ public class SliceBroadcastRelayHandler extends SystemUI {
         if (DEBUG) Log.d(TAG, "Start");
         IntentFilter filter = new IntentFilter(SliceBroadcastRelay.ACTION_REGISTER);
         filter.addAction(SliceBroadcastRelay.ACTION_UNREGISTER);
-        mBroadcastDispatcher.registerReceiver(mReceiver, filter);
+
+        if (sliceBroadcastRelayInBackground()) {
+            mBroadcastDispatcher.registerReceiver(mReceiver, filter, mBackgroundExecutor);
+        } else {
+            mBroadcastDispatcher.registerReceiver(mReceiver, filter);
+        }
     }
 
     // This does not use BroadcastDispatcher as the filter may have schemas or mime types.
+    @WorkerThread
     @VisibleForTesting
     void handleIntent(Intent intent) {
         if (SliceBroadcastRelay.ACTION_REGISTER.equals(intent.getAction())) {
-            Uri uri = intent.getParcelableExtra(SliceBroadcastRelay.EXTRA_URI);
+            Uri uri = intent.getParcelableExtra(SliceBroadcastRelay.EXTRA_URI, Uri.class);
             ComponentName receiverClass =
-                    intent.getParcelableExtra(SliceBroadcastRelay.EXTRA_RECEIVER);
-            IntentFilter filter = intent.getParcelableExtra(SliceBroadcastRelay.EXTRA_FILTER);
+                    intent.getParcelableExtra(SliceBroadcastRelay.EXTRA_RECEIVER,
+                            ComponentName.class);
+            IntentFilter filter = intent.getParcelableExtra(SliceBroadcastRelay.EXTRA_FILTER,
+                    IntentFilter.class);
             if (DEBUG) Log.d(TAG, "Register " + uri + " " + receiverClass + " " + filter);
             getOrCreateRelay(uri).register(mContext, receiverClass, filter);
         } else if (SliceBroadcastRelay.ACTION_UNREGISTER.equals(intent.getAction())) {
-            Uri uri = intent.getParcelableExtra(SliceBroadcastRelay.EXTRA_URI);
+            Uri uri = intent.getParcelableExtra(SliceBroadcastRelay.EXTRA_URI, Uri.class);
             if (DEBUG) Log.d(TAG, "Unregister " + uri);
             BroadcastRelay relay = getAndRemoveRelay(uri);
             if (relay != null) {
@@ -79,17 +100,23 @@ public class SliceBroadcastRelayHandler extends SystemUI {
         }
     }
 
+    @WorkerThread
     private BroadcastRelay getOrCreateRelay(Uri uri) {
-        BroadcastRelay ret = mRelays.get(uri);
-        if (ret == null) {
-            ret = new BroadcastRelay(uri);
-            mRelays.put(uri, ret);
+        synchronized (mRelays) {
+            BroadcastRelay ret = mRelays.get(uri);
+            if (ret == null) {
+                ret = new BroadcastRelay(uri);
+                mRelays.put(uri, ret);
+            }
+            return ret;
         }
-        return ret;
     }
 
+    @WorkerThread
     private BroadcastRelay getAndRemoveRelay(Uri uri) {
-        return mRelays.remove(uri);
+        synchronized (mRelays) {
+            return mRelays.remove(uri);
+        }
     }
 
     private final BroadcastReceiver mReceiver = new BroadcastReceiver() {
@@ -101,7 +128,7 @@ public class SliceBroadcastRelayHandler extends SystemUI {
 
     private static class BroadcastRelay extends BroadcastReceiver {
 
-        private final ArraySet<ComponentName> mReceivers = new ArraySet<>();
+        private final CopyOnWriteArraySet<ComponentName> mReceivers = new CopyOnWriteArraySet<>();
         private final UserHandle mUserId;
         private final Uri mUri;
 
@@ -112,7 +139,8 @@ public class SliceBroadcastRelayHandler extends SystemUI {
 
         public void register(Context context, ComponentName receiver, IntentFilter filter) {
             mReceivers.add(receiver);
-            context.registerReceiver(this, filter);
+            context.registerReceiver(this, filter,
+                    Context.RECEIVER_EXPORTED_UNAUDITED);
         }
 
         public void unregister(Context context) {

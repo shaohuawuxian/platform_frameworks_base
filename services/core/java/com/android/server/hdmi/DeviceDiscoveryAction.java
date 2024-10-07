@@ -77,7 +77,7 @@ final class DeviceDiscoveryAction extends HdmiCecFeatureAction {
 
         private int mPhysicalAddress = Constants.INVALID_PHYSICAL_ADDRESS;
         private int mPortId = Constants.INVALID_PORT_ID;
-        private int mVendorId = Constants.UNKNOWN_VENDOR_ID;
+        private int mVendorId = Constants.VENDOR_ID_UNKNOWN;
         private int mPowerStatus = HdmiControlManager.POWER_STATUS_UNKNOWN;
         private String mDisplayName = "";
         private int mDeviceType = HdmiDeviceInfo.DEVICE_INACTIVE;
@@ -87,8 +87,15 @@ final class DeviceDiscoveryAction extends HdmiCecFeatureAction {
         }
 
         private HdmiDeviceInfo toHdmiDeviceInfo() {
-            return new HdmiDeviceInfo(mLogicalAddress, mPhysicalAddress, mPortId, mDeviceType,
-                    mVendorId, mDisplayName, mPowerStatus);
+            return  HdmiDeviceInfo.cecDeviceBuilder()
+                    .setLogicalAddress(mLogicalAddress)
+                    .setPhysicalAddress(mPhysicalAddress)
+                    .setPortId(mPortId)
+                    .setVendorId(mVendorId)
+                    .setDeviceType(mDeviceType)
+                    .setDisplayName(mDisplayName)
+                    .setDevicePowerStatus(mPowerStatus)
+                    .build();
         }
     }
 
@@ -133,7 +140,13 @@ final class DeviceDiscoveryAction extends HdmiCecFeatureAction {
                     wrapUpAndFinish();
                     return;
                 }
-
+                // Check if the action was finished before the callback was called.
+                // See {@link HdmiCecFeatureAction#finish}.
+                if (mState == STATE_NONE) {
+                    Slog.v(TAG, "Action was already finished before the callback was called.");
+                    wrapUpAndFinish();
+                    return;
+                }
                 Slog.v(TAG, "Device detected: " + ackedAddress);
                 allocateDevices(ackedAddress);
                 if (mDelayPeriod > 0) {
@@ -339,7 +352,8 @@ final class DeviceDiscoveryAction extends HdmiCecFeatureAction {
 
         // This is to manager CEC device separately in case they don't have address.
         if (mIsTvDevice) {
-            tv().updateCecSwitchInfo(current.mLogicalAddress, current.mDeviceType,
+            localDevice().mService.getHdmiCecNetwork().updateCecSwitchInfo(current.mLogicalAddress,
+                    current.mDeviceType,
                     current.mPhysicalAddress);
         }
         increaseProcessedDeviceCount();
@@ -445,7 +459,6 @@ final class DeviceDiscoveryAction extends HdmiCecFeatureAction {
             wrapUpAndFinish();
             return;
         }
-
         // If finished current stage, move on to next stage.
         if (mProcessedDeviceCount == mDevices.size()) {
             mProcessedDeviceCount = 0;

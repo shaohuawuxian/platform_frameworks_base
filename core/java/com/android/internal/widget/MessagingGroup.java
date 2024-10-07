@@ -21,9 +21,11 @@ import android.annotation.IntDef;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.annotation.StyleRes;
+import android.app.Flags;
 import android.app.Person;
 import android.content.Context;
 import android.content.res.ColorStateList;
+import android.content.res.Resources;
 import android.graphics.Color;
 import android.graphics.Point;
 import android.graphics.Rect;
@@ -31,7 +33,6 @@ import android.graphics.drawable.Icon;
 import android.text.TextUtils;
 import android.util.AttributeSet;
 import android.util.DisplayMetrics;
-import android.util.Pools;
 import android.util.TypedValue;
 import android.view.LayoutInflater;
 import android.view.View;
@@ -55,9 +56,11 @@ import java.util.List;
  * A message of a {@link MessagingLayout}.
  */
 @RemoteViews.RemoteView
-public class MessagingGroup extends LinearLayout implements MessagingLinearLayout.MessagingChild {
-    private static Pools.SimplePool<MessagingGroup> sInstancePool
-            = new Pools.SynchronizedPool<>(10);
+public class MessagingGroup extends NotificationOptimizedLinearLayout implements
+        MessagingLinearLayout.MessagingChild {
+
+    private static final MessagingPool<MessagingGroup> sInstancePool =
+            new MessagingPool<>(10);
 
     /**
      * Images are displayed inline.
@@ -109,7 +112,10 @@ public class MessagingGroup extends LinearLayout implements MessagingLinearLayou
     private boolean mIsInConversation = true;
     private ViewGroup mMessagingIconContainer;
     private int mConversationContentStart;
-    private int mNonConversationMarginEnd;
+    private int mNonConversationContentStart;
+    private int mNonConversationPaddingStart;
+    private int mConversationAvatarSize;
+    private int mNonConversationAvatarSize;
     private int mNotificationTextMarginTop;
 
     public MessagingGroup(@NonNull Context context) {
@@ -141,16 +147,21 @@ public class MessagingGroup extends LinearLayout implements MessagingLinearLayou
         mMessagingIconContainer = findViewById(R.id.message_icon_container);
         mContentContainer = findViewById(R.id.messaging_group_content_container);
         mSendingSpinnerContainer = findViewById(R.id.messaging_group_sending_progress_container);
-        DisplayMetrics displayMetrics = getResources().getDisplayMetrics();
+        Resources res = getResources();
+        DisplayMetrics displayMetrics = res.getDisplayMetrics();
         mDisplaySize.x = displayMetrics.widthPixels;
         mDisplaySize.y = displayMetrics.heightPixels;
-        mSenderTextPaddingSingleLine = getResources().getDimensionPixelSize(
+        mSenderTextPaddingSingleLine = res.getDimensionPixelSize(
                 R.dimen.messaging_group_singleline_sender_padding_end);
-        mConversationContentStart = getResources().getDimensionPixelSize(
-                R.dimen.conversation_content_start);
-        mNonConversationMarginEnd = getResources().getDimensionPixelSize(
-                R.dimen.messaging_layout_margin_end);
-        mNotificationTextMarginTop = getResources().getDimensionPixelSize(
+        mConversationContentStart = res.getDimensionPixelSize(R.dimen.conversation_content_start);
+        mNonConversationContentStart = res.getDimensionPixelSize(
+                R.dimen.notification_content_margin_start);
+        mNonConversationPaddingStart = res.getDimensionPixelSize(
+                R.dimen.messaging_layout_icon_padding_start);
+        mConversationAvatarSize = res.getDimensionPixelSize(R.dimen.messaging_avatar_size);
+        mNonConversationAvatarSize = res.getDimensionPixelSize(
+                R.dimen.notification_icon_circle_size);
+        mNotificationTextMarginTop = res.getDimensionPixelSize(
                 R.dimen.notification_text_margin_top);
     }
 
@@ -189,6 +200,10 @@ public class MessagingGroup extends LinearLayout implements MessagingLinearLayou
         mSender = sender;
         if (nameOverride == null) {
             nameOverride = sender.getName();
+        }
+        if (Flags.cleanUpSpansAndNewLines() && nameOverride != null) {
+            // remove formatting from sender name
+            nameOverride = nameOverride.toString();
         }
         mSenderName = nameOverride;
         if (mSingleLine && !TextUtils.isEmpty(nameOverride)) {
@@ -254,7 +269,8 @@ public class MessagingGroup extends LinearLayout implements MessagingLinearLayou
         return createdGroup;
     }
 
-    public void removeMessage(MessagingMessage messagingMessage) {
+    public void removeMessage(MessagingMessage messagingMessage,
+            ArrayList<MessagingLinearLayout.MessagingChild> toRecycle) {
         View view = messagingMessage.getView();
         boolean wasShown = view.isShown();
         ViewGroup messageParent = (ViewGroup) view.getParent();
@@ -262,15 +278,14 @@ public class MessagingGroup extends LinearLayout implements MessagingLinearLayou
             return;
         }
         messageParent.removeView(view);
-        Runnable recycleRunnable = () -> {
-            messageParent.removeTransientView(view);
-            messagingMessage.recycle();
-        };
         if (wasShown && !MessagingLinearLayout.isGone(view)) {
             messageParent.addTransientView(view, 0);
-            performRemoveAnimation(view, recycleRunnable);
+            performRemoveAnimation(view, () -> {
+                messageParent.removeTransientView(view);
+                messagingMessage.recycle();
+            });
         } else {
-            recycleRunnable.run();
+            toRecycle.add(messagingMessage);
         }
     }
 
@@ -329,7 +344,7 @@ public class MessagingGroup extends LinearLayout implements MessagingLinearLayou
     }
 
     public static void dropCache() {
-        sInstancePool = new Pools.SynchronizedPool<>(10);
+        sInstancePool.clear();
     }
 
     @Override
@@ -484,7 +499,9 @@ public class MessagingGroup extends LinearLayout implements MessagingLinearLayou
             int color = mSendingSpinnerContainer.getVisibility() == View.VISIBLE
                     ? mSendingTextColor : mTextColor;
             for (MessagingMessage message : mMessages) {
-                message.setColor(message.getMessage().isRemoteInputHistory() ? color : mTextColor);
+                final boolean isRemoteInputHistory =
+                        message.getMessage() != null && message.getMessage().isRemoteInputHistory();
+                message.setColor(isRemoteInputHistory ? color : mTextColor);
             }
         }
     }
@@ -696,10 +713,18 @@ public class MessagingGroup extends LinearLayout implements MessagingLinearLayou
             mIsInConversation = isInConversation;
             MarginLayoutParams layoutParams =
                     (MarginLayoutParams) mMessagingIconContainer.getLayoutParams();
-            layoutParams.width = mIsInConversation ? mConversationContentStart
-                    : ViewPager.LayoutParams.WRAP_CONTENT;
-            layoutParams.setMarginEnd(mIsInConversation ? 0 : mNonConversationMarginEnd);
+            layoutParams.width = mIsInConversation
+                    ? mConversationContentStart
+                    : mNonConversationContentStart;
             mMessagingIconContainer.setLayoutParams(layoutParams);
+            int imagePaddingStart = isInConversation ? 0 : mNonConversationPaddingStart;
+            mMessagingIconContainer.setPaddingRelative(imagePaddingStart, 0, 0, 0);
+
+            ViewGroup.LayoutParams avatarLayoutParams = mAvatarView.getLayoutParams();
+            int size = mIsInConversation ? mConversationAvatarSize : mNonConversationAvatarSize;
+            avatarLayoutParams.height = size;
+            avatarLayoutParams.width = size;
+            mAvatarView.setLayoutParams(avatarLayoutParams);
         }
     }
 

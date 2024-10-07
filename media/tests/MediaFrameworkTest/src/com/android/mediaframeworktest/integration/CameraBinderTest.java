@@ -16,6 +16,9 @@
 
 package com.android.mediaframeworktest.integration;
 
+import static android.companion.virtual.VirtualDeviceParams.DEVICE_POLICY_DEFAULT;
+import static android.content.Context.DEVICE_ID_DEFAULT;
+
 import android.hardware.CameraInfo;
 import android.hardware.ICamera;
 import android.hardware.ICameraClient;
@@ -31,8 +34,9 @@ import android.os.IBinder;
 import android.os.RemoteException;
 import android.os.ServiceSpecificException;
 import android.test.AndroidTestCase;
-import android.test.suitebuilder.annotation.SmallTest;
 import android.util.Log;
+
+import androidx.test.filters.SmallTest;
 
 /**
  * <p>
@@ -74,8 +78,8 @@ public class CameraBinderTest extends AndroidTestCase {
 
     @SmallTest
     public void testNumberOfCameras() throws Exception {
-
-        int numCameras = mUtils.getCameraService().getNumberOfCameras(CAMERA_TYPE_ALL);
+        int numCameras = mUtils.getCameraService().getNumberOfCameras(CAMERA_TYPE_ALL,
+                DEVICE_ID_DEFAULT, DEVICE_POLICY_DEFAULT);
         assertTrue("At least this many cameras: " + mUtils.getGuessedNumCameras(),
                 numCameras >= mUtils.getGuessedNumCameras());
         Log.v(TAG, "Number of cameras " + numCameras);
@@ -84,8 +88,9 @@ public class CameraBinderTest extends AndroidTestCase {
     @SmallTest
     public void testCameraInfo() throws Exception {
         for (int cameraId = 0; cameraId < mUtils.getGuessedNumCameras(); ++cameraId) {
-
-            CameraInfo info = mUtils.getCameraService().getCameraInfo(cameraId);
+            CameraInfo info = mUtils.getCameraService().getCameraInfo(cameraId,
+                    ICameraService.ROTATION_OVERRIDE_NONE, DEVICE_ID_DEFAULT,
+                    DEVICE_POLICY_DEFAULT);
             assertTrue("Facing was not set for camera " + cameraId, info.info.facing != -1);
             assertTrue("Orientation was not set for camera " + cameraId,
                     info.info.orientation != -1);
@@ -158,40 +163,16 @@ public class CameraBinderTest extends AndroidTestCase {
             ICamera cameraUser = mUtils.getCameraService()
                     .connect(dummyCallbacks, cameraId, clientPackageName,
                             ICameraService.USE_CALLING_UID,
-                            ICameraService.USE_CALLING_PID);
+                            ICameraService.USE_CALLING_PID,
+                            getContext().getApplicationInfo().targetSdkVersion,
+                            ICameraService.ROTATION_OVERRIDE_NONE,
+                            /*forceSlowJpegMode*/false,
+                            DEVICE_ID_DEFAULT, DEVICE_POLICY_DEFAULT);
             assertNotNull(String.format("Camera %s was null", cameraId), cameraUser);
 
             Log.v(TAG, String.format("Camera %s connected", cameraId));
 
             cameraUser.disconnect();
-        }
-    }
-
-    @SmallTest
-    public void testConnectLegacy() throws Exception {
-        final int CAMERA_HAL_API_VERSION_1_0 = 0x100;
-        for (int cameraId = 0; cameraId < mUtils.getGuessedNumCameras(); ++cameraId) {
-            ICamera cameraUser = null;
-            ICameraClient dummyCallbacks = new DummyCameraClient();
-
-            String clientPackageName = getContext().getPackageName();
-
-            try {
-                cameraUser = mUtils.getCameraService()
-                        .connectLegacy(dummyCallbacks, cameraId, CAMERA_HAL_API_VERSION_1_0,
-                                clientPackageName,
-                                ICameraService.USE_CALLING_UID);
-                assertNotNull(String.format("Camera %s was null", cameraId), cameraUser);
-
-                Log.v(TAG, String.format("Camera %s connected as HAL1 legacy device", cameraId));
-            } catch (RuntimeException e) {
-                // Not all camera device support openLegacy.
-                Log.i(TAG, "Unable to open camera as HAL1 legacy camera device " + e);
-            } finally {
-                if (cameraUser != null) {
-                    cameraUser.disconnect();
-                }
-            }
         }
     }
 
@@ -207,7 +188,6 @@ public class CameraBinderTest extends AndroidTestCase {
         public void onDeviceError(int errorCode, CaptureResultExtras resultExtras)
                 throws RemoteException {
             // TODO Auto-generated method stub
-
         }
 
         /*
@@ -220,7 +200,6 @@ public class CameraBinderTest extends AndroidTestCase {
         public void onCaptureStarted(CaptureResultExtras resultExtras, long timestamp)
                 throws RemoteException {
             // TODO Auto-generated method stub
-
         }
 
         /*
@@ -234,7 +213,6 @@ public class CameraBinderTest extends AndroidTestCase {
         public void onResultReceived(CameraMetadataNative result, CaptureResultExtras resultExtras,
                 PhysicalCaptureResultInfo physicalResults[]) throws RemoteException {
             // TODO Auto-generated method stub
-
         }
 
         /*
@@ -244,7 +222,6 @@ public class CameraBinderTest extends AndroidTestCase {
         @Override
         public void onDeviceIdle() throws RemoteException {
             // TODO Auto-generated method stub
-
         }
 
         /*
@@ -254,7 +231,6 @@ public class CameraBinderTest extends AndroidTestCase {
         @Override
         public void onPrepared(int streamId) throws RemoteException {
             // TODO Auto-generated method stub
-
         }
 
         /*
@@ -264,7 +240,6 @@ public class CameraBinderTest extends AndroidTestCase {
         @Override
         public void onRequestQueueEmpty() throws RemoteException {
             // TODO Auto-generated method stub
-
         }
 
         /*
@@ -290,7 +265,10 @@ public class CameraBinderTest extends AndroidTestCase {
                     mUtils.getCameraService().connectDevice(
                         dummyCallbacks, String.valueOf(cameraId),
                         clientPackageName, clientAttributionTag,
-                        ICameraService.USE_CALLING_UID);
+                        ICameraService.USE_CALLING_UID, 0 /*oomScoreOffset*/,
+                        getContext().getApplicationInfo().targetSdkVersion,
+                        ICameraService.ROTATION_OVERRIDE_NONE, DEVICE_ID_DEFAULT,
+                        DEVICE_POLICY_DEFAULT);
             assertNotNull(String.format("Camera %s was null", cameraId), cameraUser);
 
             Log.v(TAG, String.format("Camera %s connected", cameraId));
@@ -301,18 +279,18 @@ public class CameraBinderTest extends AndroidTestCase {
 
     static class DummyCameraServiceListener extends ICameraServiceListener.Stub {
         @Override
-        public void onStatusChanged(int status, String cameraId)
+        public void onStatusChanged(int status, String cameraId, int deviceId)
                 throws RemoteException {
             Log.v(TAG, String.format("Camera %s has status changed to 0x%x", cameraId, status));
         }
-        public void onTorchStatusChanged(int status, String cameraId)
+        public void onTorchStatusChanged(int status, String cameraId, int deviceId)
                 throws RemoteException {
             Log.v(TAG, String.format("Camera %s has torch status changed to 0x%x",
                     cameraId, status));
         }
         @Override
         public void onPhysicalCameraStatusChanged(int status, String cameraId,
-                String physicalCameraId) throws RemoteException {
+                String physicalCameraId, int deviceId) throws RemoteException {
             Log.v(TAG, String.format("Camera %s : %s has status changed to 0x%x",
                     cameraId, physicalCameraId, status));
         }
@@ -321,13 +299,18 @@ public class CameraBinderTest extends AndroidTestCase {
             Log.v(TAG, "Camera access permission change");
         }
         @Override
-        public void onCameraOpened(String cameraId, String clientPackageName) {
+        public void onCameraOpened(String cameraId, String clientPackageName, int deviceId) {
             Log.v(TAG, String.format("Camera %s is opened by client package %s",
                     cameraId, clientPackageName));
         }
         @Override
-        public void onCameraClosed(String cameraId) {
+        public void onCameraClosed(String cameraId, int deviceId) {
             Log.v(TAG, String.format("Camera %s is closed", cameraId));
+        }
+        @Override
+        public void onTorchStrengthLevelChanged(String cameraId, int torchStrength, int deviceId) {
+            Log.v(TAG, String.format("Camera " + cameraId + " torch strength level changed to "
+                    + torchStrength ));
         }
     }
 

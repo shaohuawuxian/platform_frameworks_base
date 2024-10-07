@@ -132,17 +132,12 @@ public class HeadsetProfile implements LocalBluetoothProfile {
     }
 
     public BluetoothDevice getActiveDevice() {
-        if (mService == null) {
+        if (mBluetoothAdapter == null) {
             return null;
         }
-        return mService.getActiveDevice();
-    }
-
-    public boolean isAudioOn() {
-        if (mService == null) {
-            return false;
-        }
-        return mService.isAudioOn();
+        final List<BluetoothDevice> activeDevices = mBluetoothAdapter
+                .getActiveDevices(BluetoothProfile.HEADSET);
+        return (activeDevices.size() > 0) ? activeDevices.get(0) : null;
     }
 
     public int getAudioState(BluetoothDevice device) {
@@ -170,19 +165,19 @@ public class HeadsetProfile implements LocalBluetoothProfile {
 
     @Override
     public boolean setEnabled(BluetoothDevice device, boolean enabled) {
-        boolean isEnabled = false;
+        boolean isSuccessful = false;
         if (mService == null) {
             return false;
         }
         if (enabled) {
             if (mService.getConnectionPolicy(device) < CONNECTION_POLICY_ALLOWED) {
-                isEnabled = mService.setConnectionPolicy(device, CONNECTION_POLICY_ALLOWED);
+                isSuccessful = mService.setConnectionPolicy(device, CONNECTION_POLICY_ALLOWED);
             }
         } else {
-            isEnabled = mService.setConnectionPolicy(device, CONNECTION_POLICY_FORBIDDEN);
+            isSuccessful = mService.setConnectionPolicy(device, CONNECTION_POLICY_FORBIDDEN);
         }
 
-        return isEnabled;
+        return isSuccessful;
     }
 
     public List<BluetoothDevice> getConnectedDevices() {

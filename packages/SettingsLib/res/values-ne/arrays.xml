@@ -23,7 +23,7 @@
   <string-array name="wifi_status">
     <item msgid="1596683495752107015"></item>
     <item msgid="3288373008277313483">"स्क्यान गरिँदै..."</item>
-    <item msgid="6050951078202663628">"जडान हुँदै..."</item>
+    <item msgid="6050951078202663628">"कनेक्ट गरिँदै छ..."</item>
     <item msgid="8356618438494652335">"प्रमाणित गर्दै ..."</item>
     <item msgid="2837871868181677206">"IP एड्रेस पत्ता लगाउँदै ..."</item>
     <item msgid="4613015005934755724">"जडान गरिएको"</item>
@@ -37,7 +37,7 @@
   <string-array name="wifi_status_with_ssid">
     <item msgid="5969842512724979061"></item>
     <item msgid="1818677602615822316">"स्क्यान गर्दै..."</item>
-    <item msgid="8339720953594087771">"<xliff:g id="NETWORK_NAME">%1$s</xliff:g>सँग जडान हुँदै..."</item>
+    <item msgid="8339720953594087771">"<xliff:g id="NETWORK_NAME">%1$s</xliff:g>सँग कनेक्ट गरिँदै छ..."</item>
     <item msgid="3028983857109369308">"<xliff:g id="NETWORK_NAME">%1$s</xliff:g>को साथ प्रमाणित गर्दै…"</item>
     <item msgid="4287401332778341890">"<xliff:g id="NETWORK_NAME">%1$s</xliff:g>बाट IP एड्रेस प्राप्त गर्दै…"</item>
     <item msgid="1043944043827424501">"<xliff:g id="NETWORK_NAME">%1$s</xliff:g> मा कनेक्ट भएको छ छ"</item>
@@ -59,9 +59,20 @@
     <item msgid="6421717003037072581">"सधैँ HDCP जाँच प्रयोग गर्नुहोस्"</item>
   </string-array>
   <string-array name="bt_hci_snoop_log_entries">
-    <item msgid="695678520785580527">"असक्षम पारिएको छ"</item>
-    <item msgid="6336372935919715515">"फिल्टर सक्षम पारियो"</item>
-    <item msgid="2779123106632690576">"सक्षम पारिएको छ"</item>
+    <item msgid="695678520785580527">"अफ गरिएको छ"</item>
+    <item msgid="6336372935919715515">"फिल्टर अफ पारियो"</item>
+    <item msgid="2779123106632690576">"अन गरिएको छ"</item>
+  </string-array>
+  <string-array name="bt_hci_snoop_log_filters_entries">
+    <item msgid="195768089203590086">"ACL हेडर मात्र छाड्नुहोस्"</item>
+    <item msgid="2776218217644557831">"A2DP मिडिया प्याकेटहरू फिल्टर गर्नुहोस्"</item>
+    <item msgid="8163235976612675092">"RFCOMM च्यानल फिल्टर गर्नुहोस्"</item>
+  </string-array>
+  <string-array name="bt_hci_snoop_log_profile_filter_entries">
+    <item msgid="3961868665260627524">"अफ गर्नुहोस्"</item>
+    <item msgid="2505973306504851132">"वर्णको स्ट्रिङ हाल्नुहोस्"</item>
+    <item msgid="5883011000629613855">"हेडर मात्र छाड्नुहोस्"</item>
+    <item msgid="1051534112762023603">"पूरै हटाउनुहोस्"</item>
   </string-array>
   <string-array name="bluetooth_avrcp_versions">
     <item msgid="6603880723315236832">"AVRCP १.५ (डिफल्ट)"</item>
@@ -86,54 +97,58 @@
     <item msgid="8147982633566548515">"map14"</item>
   </string-array>
   <string-array name="bluetooth_a2dp_codec_titles">
-    <item msgid="2494959071796102843">"सिस्टमको छनौट प्रयोग गरियोस् (डिफल्ट)"</item>
+    <item msgid="2494959071796102843">"सिस्टमको छनौट प्रयोग गर्नुहोस् (डिफल्ट)"</item>
     <item msgid="4055460186095649420">"SBC"</item>
     <item msgid="720249083677397051">"AAC"</item>
     <item msgid="1049450003868150455">"<xliff:g id="QUALCOMM">Qualcomm®</xliff:g> <xliff:g id="APTX">aptX™</xliff:g> अडियो"</item>
     <item msgid="2908219194098827570">"<xliff:g id="QUALCOMM">Qualcomm®</xliff:g> <xliff:g id="APTX_HD">aptX™ HD</xliff:g> अडियो"</item>
     <item msgid="3825367753087348007">"LDAC"</item>
+    <item msgid="328951785723550863">"LC3"</item>
+    <item msgid="506175145534048710">"Opus"</item>
   </string-array>
   <string-array name="bluetooth_a2dp_codec_summaries">
-    <item msgid="8868109554557331312">"सिस्टमको छनौट प्रयोग गरियोस् (डिफल्ट)"</item>
+    <item msgid="8868109554557331312">"सिस्टमको छनौट प्रयोग गर्नुहोस् (डिफल्ट)"</item>
     <item msgid="9024885861221697796">"SBC"</item>
     <item msgid="4688890470703790013">"AAC"</item>
     <item msgid="8627333814413492563">"<xliff:g id="QUALCOMM">Qualcomm®</xliff:g> <xliff:g id="APTX">aptX™</xliff:g> अडियो"</item>
     <item msgid="3517061573669307965">"<xliff:g id="QUALCOMM">Qualcomm®</xliff:g> <xliff:g id="APTX_HD">aptX™ HD</xliff:g> अडियो"</item>
     <item msgid="2553206901068987657">"LDAC"</item>
+    <item msgid="3940992993241040716">"LC3"</item>
+    <item msgid="7940970833006181407">"Opus"</item>
   </string-array>
   <string-array name="bluetooth_a2dp_codec_sample_rate_titles">
-    <item msgid="926809261293414607">"सिस्टमको छनौट प्रयोग गरियोस् (डिफल्ट)"</item>
+    <item msgid="926809261293414607">"सिस्टमको छनौट प्रयोग गर्नुहोस् (डिफल्ट)"</item>
     <item msgid="8003118270854840095">"४४.१ kHz"</item>
     <item msgid="3208896645474529394">"४८.० kHz"</item>
     <item msgid="8420261949134022577">"८८.२ kHz"</item>
     <item msgid="8887519571067543785">"९६.० kHz"</item>
   </string-array>
   <string-array name="bluetooth_a2dp_codec_sample_rate_summaries">
-    <item msgid="2284090879080331090">"सिस्टमको छनौट प्रयोग गरियोस् (डिफल्ट)"</item>
+    <item msgid="2284090879080331090">"सिस्टमको छनौट प्रयोग गर्नुहोस् (डिफल्ट)"</item>
     <item msgid="1872276250541651186">"४४.१ kHz"</item>
     <item msgid="8736780630001704004">"४८.० kHz"</item>
     <item msgid="7698585706868856888">"८८.२ kHz"</item>
     <item msgid="8946330945963372966">"९६.० kHz"</item>
   </string-array>
   <string-array name="bluetooth_a2dp_codec_bits_per_sample_titles">
-    <item msgid="2574107108483219051">"सिस्टमको छनौट प्रयोग गरियोस् (डिफल्ट)"</item>
+    <item msgid="2574107108483219051">"सिस्टमको छनौट प्रयोग गर्नुहोस् (डिफल्ट)"</item>
     <item msgid="4671992321419011165">"१६ बिट/नमूना"</item>
     <item msgid="1933898806184763940">"२४ बिट/नमूना"</item>
     <item msgid="1212577207279552119">"३२ बिट/नमूना"</item>
   </string-array>
   <string-array name="bluetooth_a2dp_codec_bits_per_sample_summaries">
-    <item msgid="9196208128729063711">"सिस्टमको छनौट प्रयोग गरियोस् (डिफल्ट)"</item>
+    <item msgid="9196208128729063711">"सिस्टमको छनौट प्रयोग गर्नुहोस् (डिफल्ट)"</item>
     <item msgid="1084497364516370912">"१६ बिट/नमूना"</item>
     <item msgid="2077889391457961734">"२४ बिट/नमूना"</item>
     <item msgid="3836844909491316925">"३२ बिट/नमूना"</item>
   </string-array>
   <string-array name="bluetooth_a2dp_codec_channel_mode_titles">
-    <item msgid="3014194562841654656">"सिस्टमको छनौट प्रयोग गरियोस् (डिफल्ट)"</item>
+    <item msgid="3014194562841654656">"सिस्टमको छनौट प्रयोग गर्नुहोस् (डिफल्ट)"</item>
     <item msgid="5982952342181788248">"मोनो"</item>
     <item msgid="927546067692441494">"स्टेरियो"</item>
   </string-array>
   <string-array name="bluetooth_a2dp_codec_channel_mode_summaries">
-    <item msgid="1997302811102880485">"सिस्टमको छनौट प्रयोग गरियोस् (डिफल्ट)"</item>
+    <item msgid="1997302811102880485">"सिस्टमको छनौट प्रयोग गर्नुहोस् (डिफल्ट)"</item>
     <item msgid="8005696114958453588">"मोनो"</item>
     <item msgid="1333279807604675720">"स्टेरियो"</item>
   </string-array>
@@ -228,7 +243,7 @@
     <item msgid="8612549335720461635">"४ हजार (सुरक्षित)"</item>
     <item msgid="7322156123728520872">"४ हजार (upscaled)"</item>
     <item msgid="7735692090314849188">"४ हजार (upscaled, सुरक्षित)"</item>
-    <item msgid="7346816300608639624">"७२० पिक्सेल, १०८० पिक्सेल (दोहरो स्क्रिन)"</item>
+    <item msgid="7346816300608639624">"७२० पिक्सेल, १०८० पिक्सेल (Dual Screen)"</item>
   </string-array>
   <string-array name="enable_opengl_traces_entries">
     <item msgid="4433736508877934305">"कुनै पनि होइन"</item>
@@ -242,7 +257,7 @@
     <item msgid="1212561935004167943">"हाइलाइट परीक्षण चित्र कोर्ने आदेशहरू हरियोमा"</item>
   </string-array>
   <string-array name="track_frame_time_entries">
-    <item msgid="634406443901014984">"बन्द"</item>
+    <item msgid="634406443901014984">"अफ छ"</item>
     <item msgid="1288760936356000927">"स्क्रिनमा बारको रूपमा"</item>
     <item msgid="5023908510820531131">"<xliff:g id="AS_TYPED_COMMAND">adb shell dumpsys gfxinfo</xliff:g> मा"</item>
   </string-array>
@@ -260,11 +275,17 @@
     <item msgid="6506681373060736204">"बढीमा ४ प्रक्रियाहरू"</item>
   </string-array>
   <string-array name="usb_configuration_titles">
-    <item msgid="3358668781763928157">"चार्ज हुँदै"</item>
+    <item msgid="3358668781763928157">"चार्ज हुँदै छ"</item>
     <item msgid="7804797564616858506">"MTP (मिडिया स्थानान्तरण प्रोटोकल)"</item>
     <item msgid="910925519184248772">"PTP (चित्र स्थानान्तरण प्रोटोकल)"</item>
     <item msgid="3825132913289380004">"RNDIS (USB इथरनेट)"</item>
     <item msgid="8828567335701536560">"अडियो स्रोत"</item>
     <item msgid="8688681727755534982">"MIDI"</item>
+  </string-array>
+  <string-array name="grammatical_gender_values">
+    <item msgid="4976102487934077239">"०"</item>
+    <item msgid="2646486108212979598">"१"</item>
+    <item msgid="3753634915787796632">"२"</item>
+    <item msgid="4779928470672877922">"३"</item>
   </string-array>
 </resources>

@@ -25,15 +25,18 @@ android_test {
     name: "CarrierDefaultAppUnitTests",
     certificate: "platform",
     libs: [
-        "android.test.runner",
-        "android.test.base",
+        "android.test.runner.stubs.system",
+        "android.test.base.stubs.system",
+        "SlicePurchaseController",
     ],
     static_libs: [
         "androidx.test.rules",
-        "mockito-target-minus-junit4",
+        "mockito-target-inline-minus-junit4",
     ],
+    jni_libs: ["libdexmakerjvmtiagent"],
     // Include all test java files.
     srcs: ["src/**/*.java"],
     platform_apis: true,
+    use_embedded_native_libs: false,
     instrumentation_for: "CarrierDefaultApp",
 }

@@ -15,30 +15,7 @@
 ** limitations under the License.
 */
 
-#undef LOG_TAG
-#define LOG_TAG "Paint"
-
-#include <utils/Log.h>
-
-#include "GraphicsJNI.h"
-#include <nativehelper/ScopedStringChars.h>
-#include <nativehelper/ScopedUtfChars.h>
-#include <nativehelper/ScopedPrimitiveArray.h>
-
-#include "SkBlurDrawLooper.h"
-#include "SkColorFilter.h"
-#include "SkFont.h"
-#include "SkFontMetrics.h"
-#include "SkFontTypes.h"
-#include "SkMaskFilter.h"
-#include "SkPath.h"
-#include "SkPathEffect.h"
-#include "SkShader.h"
-#include "SkBlendMode.h"
-#include "unicode/uloc.h"
-#include "unicode/ushape.h"
-#include "utils/Blur.h"
-
+#include <hwui/BlurDrawLooper.h>
 #include <hwui/MinikinSkia.h>
 #include <hwui/MinikinUtils.h>
 #include <hwui/Paint.h>
@@ -47,28 +24,46 @@
 #include <minikin/LocaleList.h>
 #include <minikin/Measurement.h>
 #include <minikin/MinikinPaint.h>
+#include <nativehelper/ScopedPrimitiveArray.h>
+#include <nativehelper/ScopedStringChars.h>
+#include <nativehelper/ScopedUtfChars.h>
 #include <unicode/utf16.h>
+#include <utils/Log.h>
 
 #include <cassert>
 #include <cstring>
 #include <memory>
+#include <string_view>
 #include <vector>
+
+#include "ColorFilter.h"
+#include "GraphicsJNI.h"
+#include "SkBlendMode.h"
+#include "SkColorFilter.h"
+#include "SkColorSpace.h"
+#include "SkFont.h"
+#include "SkFontMetrics.h"
+#include "SkFontTypes.h"
+#include "SkMaskFilter.h"
+#include "SkPath.h"
+#include "SkPathEffect.h"
+#include "SkPathUtils.h"
+#include "SkShader.h"
+#include "unicode/uloc.h"
+#include "utils/Blur.h"
 
 namespace android {
 
-struct JMetricsID {
-    jfieldID    top;
-    jfieldID    ascent;
-    jfieldID    descent;
-    jfieldID    bottom;
-    jfieldID    leading;
-};
+namespace {
 
-static jclass   gFontMetrics_class;
-static JMetricsID gFontMetrics_fieldID;
+void copyMinikinRectToSkRect(const minikin::MinikinRect& minikinRect, SkRect* skRect) {
+    skRect->fLeft = minikinRect.mLeft;
+    skRect->fTop = minikinRect.mTop;
+    skRect->fRight = minikinRect.mRight;
+    skRect->fBottom = minikinRect.mBottom;
+}
 
-static jclass   gFontMetricsInt_class;
-static JMetricsID gFontMetricsInt_fieldID;
+}  // namespace
 
 static void getPosTextPath(const SkFont& font, const uint16_t glyphs[], int count,
                            const SkPoint pos[], SkPath* dst) {
@@ -118,8 +113,8 @@ namespace PaintGlue {
         float measured = 0;
 
         std::unique_ptr<float[]> advancesArray(new float[count]);
-        MinikinUtils::measureText(&paint, static_cast<minikin::Bidi>(bidiFlags), typeface, text,
-                0, count, count, advancesArray.get());
+        MinikinUtils::measureText(&paint, static_cast<minikin::Bidi>(bidiFlags), typeface, text, 0,
+                                  count, count, advancesArray.get(), nullptr, nullptr);
 
         for (int i = 0; i < count; i++) {
             // traverse in the given direction
@@ -209,9 +204,9 @@ namespace PaintGlue {
         if (advances) {
             advancesArray.reset(new jfloat[count]);
         }
-        const float advance = MinikinUtils::measureText(paint,
-                static_cast<minikin::Bidi>(bidiFlags), typeface, text, start, count, contextCount,
-                advancesArray.get());
+        const float advance = MinikinUtils::measureText(
+                paint, static_cast<minikin::Bidi>(bidiFlags), typeface, text, start, count,
+                contextCount, advancesArray.get(), nullptr, nullptr);
         if (advances) {
             env->SetFloatArrayRegion(advances, advancesIndex, count, advancesArray.get());
         }
@@ -249,7 +244,7 @@ namespace PaintGlue {
         minikin::Bidi bidiFlags = dir == 1 ? minikin::Bidi::FORCE_RTL : minikin::Bidi::FORCE_LTR;
         std::unique_ptr<float[]> advancesArray(new float[count]);
         MinikinUtils::measureText(paint, bidiFlags, typeface, text, start, count, start + count,
-                advancesArray.get());
+                                  advancesArray.get(), nullptr, nullptr);
         size_t result = minikin::GraphemeBreak::getTextRunCursor(advancesArray.get(), text,
                 start, count, offset, moveOpt);
         return static_cast<jint>(result);
@@ -353,18 +348,13 @@ namespace PaintGlue {
     }
 
     static void doTextBounds(JNIEnv* env, const jchar* text, int count, jobject bounds,
-            const Paint& paint, const Typeface* typeface, jint bidiFlags) {
+            const Paint& paint, const Typeface* typeface, jint bidiFlagsInt) {
         SkRect  r;
         SkIRect ir;
 
-        minikin::Layout layout = MinikinUtils::doLayout(&paint,
-                static_cast<minikin::Bidi>(bidiFlags), typeface,
-                text, count,  // text buffer
-                0, count,  // draw range
-                0, count,  // context range
-                nullptr);
         minikin::MinikinRect rect;
-        layout.getBounds(&rect);
+        minikin::Bidi bidiFlags = static_cast<minikin::Bidi>(bidiFlagsInt);
+        MinikinUtils::getBounds(&paint, bidiFlags, typeface, text, count, &rect);
         r.fLeft = rect.mLeft;
         r.fTop = rect.mTop;
         r.fRight = rect.mRight;
@@ -515,17 +505,42 @@ namespace PaintGlue {
         return true;
     }
 
-    static jfloat doRunAdvance(const Paint* paint, const Typeface* typeface, const jchar buf[],
-            jint start, jint count, jint bufSize, jboolean isRtl, jint offset) {
+    static jfloat doRunAdvance(JNIEnv* env, const Paint* paint, const Typeface* typeface,
+                               const jchar buf[], jint start, jint count, jint bufSize,
+                               jboolean isRtl, jint offset, jfloatArray advances,
+                               jint advancesIndex, SkRect* drawBounds, uint32_t* clusterCount) {
+        if (advances) {
+            size_t advancesLength = env->GetArrayLength(advances);
+            if ((size_t)(count + advancesIndex) > advancesLength) {
+                doThrowAIOOBE(env);
+                return 0;
+            }
+        }
         minikin::Bidi bidiFlags = isRtl ? minikin::Bidi::FORCE_RTL : minikin::Bidi::FORCE_LTR;
-        if (offset == start + count) {
-            return MinikinUtils::measureText(paint, bidiFlags, typeface, buf, start, count,
-                    bufSize, nullptr);
+        minikin::MinikinRect bounds;
+        if (offset == start + count && advances == nullptr) {
+            float result = MinikinUtils::measureText(paint, bidiFlags, typeface, buf, start, count,
+                                                     bufSize, nullptr,
+                                                     drawBounds ? &bounds : nullptr, clusterCount);
+            if (drawBounds) {
+                copyMinikinRectToSkRect(bounds, drawBounds);
+            }
+            return result;
         }
         std::unique_ptr<float[]> advancesArray(new float[count]);
         MinikinUtils::measureText(paint, bidiFlags, typeface, buf, start, count, bufSize,
-                advancesArray.get());
-        return minikin::getRunAdvance(advancesArray.get(), buf, start, count, offset);
+                                  advancesArray.get(), drawBounds ? &bounds : nullptr,
+                                  clusterCount);
+
+        if (drawBounds) {
+            copyMinikinRectToSkRect(bounds, drawBounds);
+        }
+        float result = minikin::getRunAdvance(advancesArray.get(), buf, start, count, offset);
+        if (advances) {
+            minikin::distributeAdvances(advancesArray.get(), buf, start, count);
+            env->SetFloatArrayRegion(advances, advancesIndex, count, advancesArray.get());
+        }
+        return result;
     }
 
     static jfloat getRunAdvance___CIIIIZI_F(JNIEnv *env, jclass, jlong paintHandle, jcharArray text,
@@ -533,9 +548,33 @@ namespace PaintGlue {
         const Paint* paint = reinterpret_cast<Paint*>(paintHandle);
         const Typeface* typeface = paint->getAndroidTypeface();
         ScopedCharArrayRO textArray(env, text);
-        jfloat result = doRunAdvance(paint, typeface, textArray.get() + contextStart,
-                start - contextStart, end - start, contextEnd - contextStart, isRtl,
-                offset - contextStart);
+        jfloat result = doRunAdvance(env, paint, typeface, textArray.get() + contextStart,
+                                     start - contextStart, end - start, contextEnd - contextStart,
+                                     isRtl, offset - contextStart, nullptr, 0, nullptr, nullptr);
+        return result;
+    }
+
+    static jfloat getRunCharacterAdvance___CIIIIZI_FI_F(JNIEnv* env, jclass, jlong paintHandle,
+                                                        jcharArray text, jint start, jint end,
+                                                        jint contextStart, jint contextEnd,
+                                                        jboolean isRtl, jint offset,
+                                                        jfloatArray advances, jint advancesIndex,
+                                                        jobject drawBounds, jobject runInfo) {
+        const Paint* paint = reinterpret_cast<Paint*>(paintHandle);
+        const Typeface* typeface = paint->getAndroidTypeface();
+        ScopedCharArrayRO textArray(env, text);
+        SkRect skDrawBounds;
+        uint32_t clusterCount = 0;
+        jfloat result = doRunAdvance(env, paint, typeface, textArray.get() + contextStart,
+                                     start - contextStart, end - start, contextEnd - contextStart,
+                                     isRtl, offset - contextStart, advances, advancesIndex,
+                                     drawBounds ? &skDrawBounds : nullptr, &clusterCount);
+        if (drawBounds != nullptr) {
+            GraphicsJNI::rect_to_jrectf(skDrawBounds, env, drawBounds);
+        }
+        if (runInfo) {
+            GraphicsJNI::set_cluster_count_to_run_info(env, runInfo, clusterCount);
+        }
         return result;
     }
 
@@ -544,7 +583,7 @@ namespace PaintGlue {
         minikin::Bidi bidiFlags = isRtl ? minikin::Bidi::FORCE_RTL : minikin::Bidi::FORCE_LTR;
         std::unique_ptr<float[]> advancesArray(new float[count]);
         MinikinUtils::measureText(paint, bidiFlags, typeface, buf, start, count, bufSize,
-                advancesArray.get());
+                                  advancesArray.get(), nullptr, nullptr);
         return minikin::getOffsetForAdvance(advancesArray.get(), buf, start, count, advance);
     }
 
@@ -560,27 +599,7 @@ namespace PaintGlue {
         return result;
     }
 
-    // ------------------ @FastNative ---------------------------
-
-    static jint setTextLocales(JNIEnv* env, jobject clazz, jlong objHandle, jstring locales) {
-        Paint* obj = reinterpret_cast<Paint*>(objHandle);
-        ScopedUtfChars localesChars(env, locales);
-        jint minikinLocaleListId = minikin::registerLocaleList(localesChars.c_str());
-        obj->setMinikinLocaleListId(minikinLocaleListId);
-        return minikinLocaleListId;
-    }
-
-    static void setFontFeatureSettings(JNIEnv* env, jobject clazz, jlong paintHandle, jstring settings) {
-        Paint* paint = reinterpret_cast<Paint*>(paintHandle);
-        if (!settings) {
-            paint->setFontFeatureSettings(std::string());
-        } else {
-            ScopedUtfChars settingsChars(env, settings);
-            paint->setFontFeatureSettings(std::string(settingsChars.c_str(), settingsChars.size()));
-        }
-    }
-
-    static SkScalar getMetricsInternal(jlong paintHandle, SkFontMetrics *metrics) {
+    static SkScalar getMetricsInternal(jlong paintHandle, SkFontMetrics* metrics, bool useLocale) {
         const int kElegantTop = 2500;
         const int kElegantBottom = -1000;
         const int kElegantAscent = 1900;
@@ -593,7 +612,7 @@ namespace PaintGlue {
         minikin::FakedFont baseFont = typeface->fFontCollection->baseFontFaked(typeface->fStyle);
         float saveSkewX = font->getSkewX();
         bool savefakeBold = font->isEmbolden();
-        MinikinFontSkia::populateSkFont(font, baseFont.font->typeface().get(), baseFont.fakery);
+        MinikinFontSkia::populateSkFont(font, baseFont.typeface().get(), baseFont.fakery);
         SkScalar spacing = font->getMetrics(metrics);
         // The populateSkPaint call may have changed fake bold / text skew
         // because we want to measure with those effects applied, so now
@@ -609,43 +628,96 @@ namespace PaintGlue {
             metrics->fLeading = size * kElegantLeading / 2048;
             spacing = metrics->fDescent - metrics->fAscent + metrics->fLeading;
         }
+
+        if (useLocale) {
+            minikin::MinikinPaint minikinPaint = MinikinUtils::prepareMinikinPaint(paint, typeface);
+            minikin::MinikinExtent extent =
+                    typeface->fFontCollection->getReferenceExtentForLocale(minikinPaint);
+            metrics->fAscent = std::min(extent.ascent, metrics->fAscent);
+            metrics->fDescent = std::max(extent.descent, metrics->fDescent);
+            metrics->fTop = std::min(metrics->fAscent, metrics->fTop);
+            metrics->fBottom = std::max(metrics->fDescent, metrics->fBottom);
+        }
+
         return spacing;
     }
 
-    static jfloat getFontMetrics(JNIEnv* env, jobject, jlong paintHandle, jobject metricsObj) {
-        SkFontMetrics metrics;
-        SkScalar spacing = getMetricsInternal(paintHandle, &metrics);
+    static void doFontExtent(JNIEnv* env, jlong paintHandle, const jchar buf[], jint start,
+                             jint count, jint bufSize, jboolean isRtl, jobject fmi) {
+        const Paint* paint = reinterpret_cast<Paint*>(paintHandle);
+        const Typeface* typeface = paint->getAndroidTypeface();
+        minikin::Bidi bidiFlags = isRtl ? minikin::Bidi::FORCE_RTL : minikin::Bidi::FORCE_LTR;
+        minikin::MinikinExtent extent =
+                MinikinUtils::getFontExtent(paint, bidiFlags, typeface, buf, start, count, bufSize);
 
-        if (metricsObj) {
-            SkASSERT(env->IsInstanceOf(metricsObj, gFontMetrics_class));
-            env->SetFloatField(metricsObj, gFontMetrics_fieldID.top, SkScalarToFloat(metrics.fTop));
-            env->SetFloatField(metricsObj, gFontMetrics_fieldID.ascent, SkScalarToFloat(metrics.fAscent));
-            env->SetFloatField(metricsObj, gFontMetrics_fieldID.descent, SkScalarToFloat(metrics.fDescent));
-            env->SetFloatField(metricsObj, gFontMetrics_fieldID.bottom, SkScalarToFloat(metrics.fBottom));
-            env->SetFloatField(metricsObj, gFontMetrics_fieldID.leading, SkScalarToFloat(metrics.fLeading));
+        SkFontMetrics metrics;
+        getMetricsInternal(paintHandle, &metrics, false /* useLocale */);
+
+        metrics.fAscent = extent.ascent;
+        metrics.fDescent = extent.descent;
+
+        // If top/bottom is narrower than ascent/descent, adjust top/bottom to ascent/descent.
+        metrics.fTop = std::min(metrics.fAscent, metrics.fTop);
+        metrics.fBottom = std::max(metrics.fDescent, metrics.fBottom);
+
+        GraphicsJNI::set_metrics_int(env, fmi, metrics);
+    }
+
+    static void getFontMetricsIntForText___C(JNIEnv* env, jclass, jlong paintHandle,
+                                             jcharArray text, jint start, jint count, jint ctxStart,
+                                             jint ctxCount, jboolean isRtl, jobject fmi) {
+        ScopedCharArrayRO textArray(env, text);
+
+        doFontExtent(env, paintHandle, textArray.get() + ctxStart, start - ctxStart, count,
+                     ctxCount, isRtl, fmi);
+    }
+
+    static void getFontMetricsIntForText___String(JNIEnv* env, jclass, jlong paintHandle,
+                                                  jstring text, jint start, jint count,
+                                                  jint ctxStart, jint ctxCount, jboolean isRtl,
+                                                  jobject fmi) {
+        ScopedStringChars textChars(env, text);
+
+        doFontExtent(env, paintHandle, textChars.get() + ctxStart, start - ctxStart, count,
+                     ctxCount, isRtl, fmi);
+    }
+
+    // ------------------ @FastNative ---------------------------
+
+    static jint setTextLocales(JNIEnv* env, jobject clazz, jlong objHandle, jstring locales) {
+        Paint* obj = reinterpret_cast<Paint*>(objHandle);
+        ScopedUtfChars localesChars(env, locales);
+        jint minikinLocaleListId = minikin::registerLocaleList(localesChars.c_str());
+        obj->setMinikinLocaleListId(minikinLocaleListId);
+        return minikinLocaleListId;
+    }
+
+    static void setFontFeatureSettings(JNIEnv* env, jobject clazz, jlong paintHandle,
+                                       jstring settings) {
+        Paint* paint = reinterpret_cast<Paint*>(paintHandle);
+        if (!settings) {
+            paint->resetFontFeatures();
+        } else {
+            ScopedUtfChars settingsChars(env, settings);
+            paint->setFontFeatureSettings(
+                    std::string_view(settingsChars.c_str(), settingsChars.size()));
         }
+    }
+
+    static jfloat getFontMetrics(JNIEnv* env, jobject, jlong paintHandle, jobject metricsObj,
+                                 jboolean useLocale) {
+        SkFontMetrics metrics;
+        SkScalar spacing = getMetricsInternal(paintHandle, &metrics, useLocale);
+        GraphicsJNI::set_metrics(env, metricsObj, metrics);
         return SkScalarToFloat(spacing);
     }
 
-    static jint getFontMetricsInt(JNIEnv* env, jobject, jlong paintHandle, jobject metricsObj) {
+    static jint getFontMetricsInt(JNIEnv* env, jobject, jlong paintHandle, jobject metricsObj,
+                                  jboolean useLocale) {
         SkFontMetrics metrics;
-
-        getMetricsInternal(paintHandle, &metrics);
-        int ascent = SkScalarRoundToInt(metrics.fAscent);
-        int descent = SkScalarRoundToInt(metrics.fDescent);
-        int leading = SkScalarRoundToInt(metrics.fLeading);
-
-        if (metricsObj) {
-            SkASSERT(env->IsInstanceOf(metricsObj, gFontMetricsInt_class));
-            env->SetIntField(metricsObj, gFontMetricsInt_fieldID.top, SkScalarFloorToInt(metrics.fTop));
-            env->SetIntField(metricsObj, gFontMetricsInt_fieldID.ascent, ascent);
-            env->SetIntField(metricsObj, gFontMetricsInt_fieldID.descent, descent);
-            env->SetIntField(metricsObj, gFontMetricsInt_fieldID.bottom, SkScalarCeilToInt(metrics.fBottom));
-            env->SetIntField(metricsObj, gFontMetricsInt_fieldID.leading, leading);
-        }
-        return descent - ascent + leading;
+        getMetricsInternal(paintHandle, &metrics, useLocale);
+        return GraphicsJNI::set_metrics_int(env, metricsObj, metrics);
     }
-
 
     // ------------------ @CriticalNative ---------------------------
 
@@ -703,8 +775,7 @@ namespace PaintGlue {
     }
 
     static void setFilterBitmap(CRITICAL_JNI_PARAMS_COMMA jlong paintHandle, jboolean filterBitmap) {
-        reinterpret_cast<Paint*>(paintHandle)->setFilterQuality(
-                filterBitmap ? kLow_SkFilterQuality : kNone_SkFilterQuality);
+        reinterpret_cast<Paint*>(paintHandle)->setFilterBitmap(filterBitmap);
     }
 
     static void setDither(CRITICAL_JNI_PARAMS_COMMA jlong paintHandle, jboolean dither) {
@@ -779,7 +850,7 @@ namespace PaintGlue {
         Paint* obj = reinterpret_cast<Paint*>(objHandle);
         SkPath* src = reinterpret_cast<SkPath*>(srcHandle);
         SkPath* dst = reinterpret_cast<SkPath*>(dstHandle);
-        return obj->getFillPath(*src, dst) ? JNI_TRUE : JNI_FALSE;
+        return skpathutils::FillPathWithPaint(*src, *obj, dst) ? JNI_TRUE : JNI_FALSE;
     }
 
     static jlong setShader(CRITICAL_JNI_PARAMS_COMMA jlong objHandle, jlong shaderHandle) {
@@ -791,9 +862,11 @@ namespace PaintGlue {
 
     static jlong setColorFilter(CRITICAL_JNI_PARAMS_COMMA jlong objHandle, jlong filterHandle) {
         Paint* obj = reinterpret_cast<Paint *>(objHandle);
-        SkColorFilter* filter  = reinterpret_cast<SkColorFilter *>(filterHandle);
-        obj->setColorFilter(sk_ref_sp(filter));
-        return reinterpret_cast<jlong>(obj->getColorFilter());
+        auto colorFilter = uirenderer::ColorFilter::fromJava(filterHandle);
+        auto skColorFilter =
+                colorFilter != nullptr ? colorFilter->getInstance() : sk_sp<SkColorFilter>();
+        obj->setColorFilter(skColorFilter);
+        return filterHandle;
     }
 
     static void setXfermode(CRITICAL_JNI_PARAMS_COMMA jlong paintHandle, jint xfermodeHandle) {
@@ -869,15 +942,39 @@ namespace PaintGlue {
         obj->setMinikinLocaleListId(minikinLocaleListId);
     }
 
-    static jboolean isElegantTextHeight(CRITICAL_JNI_PARAMS_COMMA jlong paintHandle) {
+    // Note: Following three values must be equal to the ones in Java file: Paint.java.
+    constexpr jint ELEGANT_TEXT_HEIGHT_UNSET = -1;
+    constexpr jint ELEGANT_TEXT_HEIGHT_ENABLED = 0;
+    constexpr jint ELEGANT_TEXT_HEIGHT_DISABLED = 1;
+
+    static jint getElegantTextHeight(CRITICAL_JNI_PARAMS_COMMA jlong paintHandle) {
         Paint* obj = reinterpret_cast<Paint*>(paintHandle);
-        return obj->getFamilyVariant() == minikin::FamilyVariant::ELEGANT;
+        const std::optional<minikin::FamilyVariant>& familyVariant = obj->getFamilyVariant();
+        if (familyVariant.has_value()) {
+            if (familyVariant.value() == minikin::FamilyVariant::ELEGANT) {
+                return ELEGANT_TEXT_HEIGHT_ENABLED;
+            } else {
+                return ELEGANT_TEXT_HEIGHT_DISABLED;
+            }
+        } else {
+            return ELEGANT_TEXT_HEIGHT_UNSET;
+        }
     }
 
-    static void setElegantTextHeight(CRITICAL_JNI_PARAMS_COMMA jlong paintHandle, jboolean aa) {
+    static void setElegantTextHeight(CRITICAL_JNI_PARAMS_COMMA jlong paintHandle, jint value) {
         Paint* obj = reinterpret_cast<Paint*>(paintHandle);
-        obj->setFamilyVariant(
-                aa ? minikin::FamilyVariant::ELEGANT : minikin::FamilyVariant::DEFAULT);
+        switch (value) {
+            case ELEGANT_TEXT_HEIGHT_ENABLED:
+                obj->setFamilyVariant(minikin::FamilyVariant::ELEGANT);
+                return;
+            case ELEGANT_TEXT_HEIGHT_DISABLED:
+                obj->setFamilyVariant(minikin::FamilyVariant::DEFAULT);
+                return;
+            case ELEGANT_TEXT_HEIGHT_UNSET:
+            default:
+                obj->resetFamilyVariant();
+                return;
+        }
     }
 
     static jfloat getTextSize(CRITICAL_JNI_PARAMS_COMMA jlong paintHandle) {
@@ -948,19 +1045,19 @@ namespace PaintGlue {
 
     static jfloat ascent(CRITICAL_JNI_PARAMS_COMMA jlong paintHandle) {
         SkFontMetrics metrics;
-        getMetricsInternal(paintHandle, &metrics);
+        getMetricsInternal(paintHandle, &metrics, false /* useLocale */);
         return SkScalarToFloat(metrics.fAscent);
     }
 
     static jfloat descent(CRITICAL_JNI_PARAMS_COMMA jlong paintHandle) {
         SkFontMetrics metrics;
-        getMetricsInternal(paintHandle, &metrics);
+        getMetricsInternal(paintHandle, &metrics, false /* useLocale */);
         return SkScalarToFloat(metrics.fDescent);
     }
 
     static jfloat getUnderlinePosition(CRITICAL_JNI_PARAMS_COMMA jlong paintHandle) {
         SkFontMetrics metrics;
-        getMetricsInternal(paintHandle, &metrics);
+        getMetricsInternal(paintHandle, &metrics, false /* useLocale */);
         SkScalar position;
         if (metrics.hasUnderlinePosition(&position)) {
             return SkScalarToFloat(position);
@@ -972,7 +1069,7 @@ namespace PaintGlue {
 
     static jfloat getUnderlineThickness(CRITICAL_JNI_PARAMS_COMMA jlong paintHandle) {
         SkFontMetrics metrics;
-        getMetricsInternal(paintHandle, &metrics);
+        getMetricsInternal(paintHandle, &metrics, false /* useLocale */);
         SkScalar thickness;
         if (metrics.hasUnderlineThickness(&thickness)) {
             return SkScalarToFloat(thickness);
@@ -1004,13 +1101,13 @@ namespace PaintGlue {
         }
         else {
             SkScalar sigma = android::uirenderer::Blur::convertRadiusToSigma(radius);
-            paint->setLooper(SkBlurDrawLooper::Make(color, cs.get(), sigma, dx, dy));
+            paint->setLooper(BlurDrawLooper::Make(color, cs.get(), sigma, {dx, dy}));
         }
     }
 
     static jboolean hasShadowLayer(CRITICAL_JNI_PARAMS_COMMA jlong paintHandle) {
         Paint* paint = reinterpret_cast<Paint*>(paintHandle);
-        return paint->getLooper() && paint->getLooper()->asABlurShadow(nullptr);
+        return paint->getLooper() != nullptr;
     }
 
     static jboolean equalsForTextMeasurement(CRITICAL_JNI_PARAMS_COMMA jlong lPaint, jlong rPaint) {
@@ -1033,126 +1130,114 @@ namespace PaintGlue {
 }; // namespace PaintGlue
 
 static const JNINativeMethod methods[] = {
-    {"nGetNativeFinalizer", "()J", (void*) PaintGlue::getNativeFinalizer},
-    {"nInit","()J", (void*) PaintGlue::init},
-    {"nInitWithPaint","(J)J", (void*) PaintGlue::initWithPaint},
-    {"nBreakText","(J[CIIFI[F)I", (void*) PaintGlue::breakTextC},
-    {"nBreakText","(JLjava/lang/String;ZFI[F)I", (void*) PaintGlue::breakTextS},
-    {"nGetTextAdvances","(J[CIIIII[FI)F",
-            (void*) PaintGlue::getTextAdvances___CIIIII_FI},
-    {"nGetTextAdvances","(JLjava/lang/String;IIIII[FI)F",
-            (void*) PaintGlue::getTextAdvances__StringIIIII_FI},
+        {"nGetNativeFinalizer", "()J", (void*)PaintGlue::getNativeFinalizer},
+        {"nInit", "()J", (void*)PaintGlue::init},
+        {"nInitWithPaint", "(J)J", (void*)PaintGlue::initWithPaint},
+        {"nBreakText", "(J[CIIFI[F)I", (void*)PaintGlue::breakTextC},
+        {"nBreakText", "(JLjava/lang/String;ZFI[F)I", (void*)PaintGlue::breakTextS},
+        {"nGetTextAdvances", "(J[CIIIII[FI)F", (void*)PaintGlue::getTextAdvances___CIIIII_FI},
+        {"nGetTextAdvances", "(JLjava/lang/String;IIIII[FI)F",
+         (void*)PaintGlue::getTextAdvances__StringIIIII_FI},
 
-    {"nGetTextRunCursor", "(J[CIIIII)I", (void*) PaintGlue::getTextRunCursor___C},
-    {"nGetTextRunCursor", "(JLjava/lang/String;IIIII)I",
-            (void*) PaintGlue::getTextRunCursor__String},
-    {"nGetTextPath", "(JI[CIIFFJ)V", (void*) PaintGlue::getTextPath___C},
-    {"nGetTextPath", "(JILjava/lang/String;IIFFJ)V", (void*) PaintGlue::getTextPath__String},
-    {"nGetStringBounds", "(JLjava/lang/String;IIILandroid/graphics/Rect;)V",
-            (void*) PaintGlue::getStringBounds },
-    {"nGetCharArrayBounds", "(J[CIIILandroid/graphics/Rect;)V",
-            (void*) PaintGlue::getCharArrayBounds },
-    {"nHasGlyph", "(JILjava/lang/String;)Z", (void*) PaintGlue::hasGlyph },
-    {"nGetRunAdvance", "(J[CIIIIZI)F", (void*) PaintGlue::getRunAdvance___CIIIIZI_F},
-    {"nGetOffsetForAdvance", "(J[CIIIIZF)I",
-            (void*) PaintGlue::getOffsetForAdvance___CIIIIZF_I},
+        {"nGetTextRunCursor", "(J[CIIIII)I", (void*)PaintGlue::getTextRunCursor___C},
+        {"nGetTextRunCursor", "(JLjava/lang/String;IIIII)I",
+         (void*)PaintGlue::getTextRunCursor__String},
+        {"nGetTextPath", "(JI[CIIFFJ)V", (void*)PaintGlue::getTextPath___C},
+        {"nGetTextPath", "(JILjava/lang/String;IIFFJ)V", (void*)PaintGlue::getTextPath__String},
+        {"nGetStringBounds", "(JLjava/lang/String;IIILandroid/graphics/Rect;)V",
+         (void*)PaintGlue::getStringBounds},
+        {"nGetCharArrayBounds", "(J[CIIILandroid/graphics/Rect;)V",
+         (void*)PaintGlue::getCharArrayBounds},
+        {"nHasGlyph", "(JILjava/lang/String;)Z", (void*)PaintGlue::hasGlyph},
+        {"nGetRunAdvance", "(J[CIIIIZI)F", (void*)PaintGlue::getRunAdvance___CIIIIZI_F},
+        {"nGetRunCharacterAdvance",
+         "(J[CIIIIZI[FILandroid/graphics/RectF;Landroid/graphics/Paint$RunInfo;)F",
+         (void*)PaintGlue::getRunCharacterAdvance___CIIIIZI_FI_F},
+        {"nGetOffsetForAdvance", "(J[CIIIIZF)I", (void*)PaintGlue::getOffsetForAdvance___CIIIIZF_I},
+        {"nGetFontMetricsIntForText", "(J[CIIIIZLandroid/graphics/Paint$FontMetricsInt;)V",
+         (void*)PaintGlue::getFontMetricsIntForText___C},
+        {"nGetFontMetricsIntForText",
+         "(JLjava/lang/String;IIIIZLandroid/graphics/Paint$FontMetricsInt;)V",
+         (void*)PaintGlue::getFontMetricsIntForText___String},
 
-    // --------------- @FastNative ----------------------
+        // --------------- @FastNative ----------------------
 
-    {"nSetTextLocales","(JLjava/lang/String;)I", (void*) PaintGlue::setTextLocales},
-    {"nSetFontFeatureSettings","(JLjava/lang/String;)V",
-                (void*) PaintGlue::setFontFeatureSettings},
-    {"nGetFontMetrics", "(JLandroid/graphics/Paint$FontMetrics;)F",
-                (void*)PaintGlue::getFontMetrics},
-    {"nGetFontMetricsInt", "(JLandroid/graphics/Paint$FontMetricsInt;)I",
-            (void*)PaintGlue::getFontMetricsInt},
+        {"nSetTextLocales", "(JLjava/lang/String;)I", (void*)PaintGlue::setTextLocales},
+        {"nSetFontFeatureSettings", "(JLjava/lang/String;)V",
+         (void*)PaintGlue::setFontFeatureSettings},
+        {"nGetFontMetrics", "(JLandroid/graphics/Paint$FontMetrics;Z)F",
+         (void*)PaintGlue::getFontMetrics},
+        {"nGetFontMetricsInt", "(JLandroid/graphics/Paint$FontMetricsInt;Z)I",
+         (void*)PaintGlue::getFontMetricsInt},
 
-    // --------------- @CriticalNative ------------------
+        // --------------- @CriticalNative ------------------
 
-    {"nReset","(J)V", (void*) PaintGlue::reset},
-    {"nSet","(JJ)V", (void*) PaintGlue::assign},
-    {"nGetFlags","(J)I", (void*) PaintGlue::getFlags},
-    {"nSetFlags","(JI)V", (void*) PaintGlue::setFlags},
-    {"nGetHinting","(J)I", (void*) PaintGlue::getHinting},
-    {"nSetHinting","(JI)V", (void*) PaintGlue::setHinting},
-    {"nSetAntiAlias","(JZ)V", (void*) PaintGlue::setAntiAlias},
-    {"nSetSubpixelText","(JZ)V", (void*) PaintGlue::setSubpixelText},
-    {"nSetLinearText","(JZ)V", (void*) PaintGlue::setLinearText},
-    {"nSetUnderlineText","(JZ)V", (void*) PaintGlue::setUnderlineText},
-    {"nSetStrikeThruText","(JZ)V", (void*) PaintGlue::setStrikeThruText},
-    {"nSetFakeBoldText","(JZ)V", (void*) PaintGlue::setFakeBoldText},
-    {"nSetFilterBitmap","(JZ)V", (void*) PaintGlue::setFilterBitmap},
-    {"nSetDither","(JZ)V", (void*) PaintGlue::setDither},
-    {"nGetStyle","(J)I", (void*) PaintGlue::getStyle},
-    {"nSetStyle","(JI)V", (void*) PaintGlue::setStyle},
-    {"nSetColor","(JI)V", (void*) PaintGlue::setColor},
-    {"nSetColor","(JJJ)V", (void*) PaintGlue::setColorLong},
-    {"nSetAlpha","(JI)V", (void*) PaintGlue::setAlpha},
-    {"nGetStrokeWidth","(J)F", (void*) PaintGlue::getStrokeWidth},
-    {"nSetStrokeWidth","(JF)V", (void*) PaintGlue::setStrokeWidth},
-    {"nGetStrokeMiter","(J)F", (void*) PaintGlue::getStrokeMiter},
-    {"nSetStrokeMiter","(JF)V", (void*) PaintGlue::setStrokeMiter},
-    {"nGetStrokeCap","(J)I", (void*) PaintGlue::getStrokeCap},
-    {"nSetStrokeCap","(JI)V", (void*) PaintGlue::setStrokeCap},
-    {"nGetStrokeJoin","(J)I", (void*) PaintGlue::getStrokeJoin},
-    {"nSetStrokeJoin","(JI)V", (void*) PaintGlue::setStrokeJoin},
-    {"nGetFillPath","(JJJ)Z", (void*) PaintGlue::getFillPath},
-    {"nSetShader","(JJ)J", (void*) PaintGlue::setShader},
-    {"nSetColorFilter","(JJ)J", (void*) PaintGlue::setColorFilter},
-    {"nSetXfermode","(JI)V", (void*) PaintGlue::setXfermode},
-    {"nSetPathEffect","(JJ)J", (void*) PaintGlue::setPathEffect},
-    {"nSetMaskFilter","(JJ)J", (void*) PaintGlue::setMaskFilter},
-    {"nSetTypeface","(JJ)V", (void*) PaintGlue::setTypeface},
-    {"nGetTextAlign","(J)I", (void*) PaintGlue::getTextAlign},
-    {"nSetTextAlign","(JI)V", (void*) PaintGlue::setTextAlign},
-    {"nSetTextLocalesByMinikinLocaleListId","(JI)V",
-            (void*) PaintGlue::setTextLocalesByMinikinLocaleListId},
-    {"nIsElegantTextHeight","(J)Z", (void*) PaintGlue::isElegantTextHeight},
-    {"nSetElegantTextHeight","(JZ)V", (void*) PaintGlue::setElegantTextHeight},
-    {"nGetTextSize","(J)F", (void*) PaintGlue::getTextSize},
-    {"nSetTextSize","(JF)V", (void*) PaintGlue::setTextSize},
-    {"nGetTextScaleX","(J)F", (void*) PaintGlue::getTextScaleX},
-    {"nSetTextScaleX","(JF)V", (void*) PaintGlue::setTextScaleX},
-    {"nGetTextSkewX","(J)F", (void*) PaintGlue::getTextSkewX},
-    {"nSetTextSkewX","(JF)V", (void*) PaintGlue::setTextSkewX},
-    {"nGetLetterSpacing","(J)F", (void*) PaintGlue::getLetterSpacing},
-    {"nSetLetterSpacing","(JF)V", (void*) PaintGlue::setLetterSpacing},
-    {"nGetWordSpacing","(J)F", (void*) PaintGlue::getWordSpacing},
-    {"nSetWordSpacing","(JF)V", (void*) PaintGlue::setWordSpacing},
-    {"nGetStartHyphenEdit", "(J)I", (void*) PaintGlue::getStartHyphenEdit},
-    {"nGetEndHyphenEdit", "(J)I", (void*) PaintGlue::getEndHyphenEdit},
-    {"nSetStartHyphenEdit", "(JI)V", (void*) PaintGlue::setStartHyphenEdit},
-    {"nSetEndHyphenEdit", "(JI)V", (void*) PaintGlue::setEndHyphenEdit},
-    {"nAscent","(J)F", (void*) PaintGlue::ascent},
-    {"nDescent","(J)F", (void*) PaintGlue::descent},
-    {"nGetUnderlinePosition","(J)F", (void*) PaintGlue::getUnderlinePosition},
-    {"nGetUnderlineThickness","(J)F", (void*) PaintGlue::getUnderlineThickness},
-    {"nGetStrikeThruPosition","(J)F", (void*) PaintGlue::getStrikeThruPosition},
-    {"nGetStrikeThruThickness","(J)F", (void*) PaintGlue::getStrikeThruThickness},
-    {"nSetShadowLayer", "(JFFFJJ)V", (void*)PaintGlue::setShadowLayer},
-    {"nHasShadowLayer", "(J)Z", (void*)PaintGlue::hasShadowLayer},
-    {"nEqualsForTextMeasurement", "(JJ)Z", (void*)PaintGlue::equalsForTextMeasurement},
+        {"nReset", "(J)V", (void*)PaintGlue::reset},
+        {"nSet", "(JJ)V", (void*)PaintGlue::assign},
+        {"nGetFlags", "(J)I", (void*)PaintGlue::getFlags},
+        {"nSetFlags", "(JI)V", (void*)PaintGlue::setFlags},
+        {"nGetHinting", "(J)I", (void*)PaintGlue::getHinting},
+        {"nSetHinting", "(JI)V", (void*)PaintGlue::setHinting},
+        {"nSetAntiAlias", "(JZ)V", (void*)PaintGlue::setAntiAlias},
+        {"nSetSubpixelText", "(JZ)V", (void*)PaintGlue::setSubpixelText},
+        {"nSetLinearText", "(JZ)V", (void*)PaintGlue::setLinearText},
+        {"nSetUnderlineText", "(JZ)V", (void*)PaintGlue::setUnderlineText},
+        {"nSetStrikeThruText", "(JZ)V", (void*)PaintGlue::setStrikeThruText},
+        {"nSetFakeBoldText", "(JZ)V", (void*)PaintGlue::setFakeBoldText},
+        {"nSetFilterBitmap", "(JZ)V", (void*)PaintGlue::setFilterBitmap},
+        {"nSetDither", "(JZ)V", (void*)PaintGlue::setDither},
+        {"nGetStyle", "(J)I", (void*)PaintGlue::getStyle},
+        {"nSetStyle", "(JI)V", (void*)PaintGlue::setStyle},
+        {"nSetColor", "(JI)V", (void*)PaintGlue::setColor},
+        {"nSetColor", "(JJJ)V", (void*)PaintGlue::setColorLong},
+        {"nSetAlpha", "(JI)V", (void*)PaintGlue::setAlpha},
+        {"nGetStrokeWidth", "(J)F", (void*)PaintGlue::getStrokeWidth},
+        {"nSetStrokeWidth", "(JF)V", (void*)PaintGlue::setStrokeWidth},
+        {"nGetStrokeMiter", "(J)F", (void*)PaintGlue::getStrokeMiter},
+        {"nSetStrokeMiter", "(JF)V", (void*)PaintGlue::setStrokeMiter},
+        {"nGetStrokeCap", "(J)I", (void*)PaintGlue::getStrokeCap},
+        {"nSetStrokeCap", "(JI)V", (void*)PaintGlue::setStrokeCap},
+        {"nGetStrokeJoin", "(J)I", (void*)PaintGlue::getStrokeJoin},
+        {"nSetStrokeJoin", "(JI)V", (void*)PaintGlue::setStrokeJoin},
+        {"nGetFillPath", "(JJJ)Z", (void*)PaintGlue::getFillPath},
+        {"nSetShader", "(JJ)J", (void*)PaintGlue::setShader},
+        {"nSetColorFilter", "(JJ)J", (void*)PaintGlue::setColorFilter},
+        {"nSetXfermode", "(JI)V", (void*)PaintGlue::setXfermode},
+        {"nSetPathEffect", "(JJ)J", (void*)PaintGlue::setPathEffect},
+        {"nSetMaskFilter", "(JJ)J", (void*)PaintGlue::setMaskFilter},
+        {"nSetTypeface", "(JJ)V", (void*)PaintGlue::setTypeface},
+        {"nGetTextAlign", "(J)I", (void*)PaintGlue::getTextAlign},
+        {"nSetTextAlign", "(JI)V", (void*)PaintGlue::setTextAlign},
+        {"nSetTextLocalesByMinikinLocaleListId", "(JI)V",
+         (void*)PaintGlue::setTextLocalesByMinikinLocaleListId},
+        {"nGetElegantTextHeight", "(J)I", (void*)PaintGlue::getElegantTextHeight},
+        {"nSetElegantTextHeight", "(JI)V", (void*)PaintGlue::setElegantTextHeight},
+        {"nGetTextSize", "(J)F", (void*)PaintGlue::getTextSize},
+        {"nSetTextSize", "(JF)V", (void*)PaintGlue::setTextSize},
+        {"nGetTextScaleX", "(J)F", (void*)PaintGlue::getTextScaleX},
+        {"nSetTextScaleX", "(JF)V", (void*)PaintGlue::setTextScaleX},
+        {"nGetTextSkewX", "(J)F", (void*)PaintGlue::getTextSkewX},
+        {"nSetTextSkewX", "(JF)V", (void*)PaintGlue::setTextSkewX},
+        {"nGetLetterSpacing", "(J)F", (void*)PaintGlue::getLetterSpacing},
+        {"nSetLetterSpacing", "(JF)V", (void*)PaintGlue::setLetterSpacing},
+        {"nGetWordSpacing", "(J)F", (void*)PaintGlue::getWordSpacing},
+        {"nSetWordSpacing", "(JF)V", (void*)PaintGlue::setWordSpacing},
+        {"nGetStartHyphenEdit", "(J)I", (void*)PaintGlue::getStartHyphenEdit},
+        {"nGetEndHyphenEdit", "(J)I", (void*)PaintGlue::getEndHyphenEdit},
+        {"nSetStartHyphenEdit", "(JI)V", (void*)PaintGlue::setStartHyphenEdit},
+        {"nSetEndHyphenEdit", "(JI)V", (void*)PaintGlue::setEndHyphenEdit},
+        {"nAscent", "(J)F", (void*)PaintGlue::ascent},
+        {"nDescent", "(J)F", (void*)PaintGlue::descent},
+        {"nGetUnderlinePosition", "(J)F", (void*)PaintGlue::getUnderlinePosition},
+        {"nGetUnderlineThickness", "(J)F", (void*)PaintGlue::getUnderlineThickness},
+        {"nGetStrikeThruPosition", "(J)F", (void*)PaintGlue::getStrikeThruPosition},
+        {"nGetStrikeThruThickness", "(J)F", (void*)PaintGlue::getStrikeThruThickness},
+        {"nSetShadowLayer", "(JFFFJJ)V", (void*)PaintGlue::setShadowLayer},
+        {"nHasShadowLayer", "(J)Z", (void*)PaintGlue::hasShadowLayer},
+        {"nEqualsForTextMeasurement", "(JJ)Z", (void*)PaintGlue::equalsForTextMeasurement},
 };
 
 int register_android_graphics_Paint(JNIEnv* env) {
-    gFontMetrics_class = FindClassOrDie(env, "android/graphics/Paint$FontMetrics");
-    gFontMetrics_class = MakeGlobalRefOrDie(env, gFontMetrics_class);
-
-    gFontMetrics_fieldID.top = GetFieldIDOrDie(env, gFontMetrics_class, "top", "F");
-    gFontMetrics_fieldID.ascent = GetFieldIDOrDie(env, gFontMetrics_class, "ascent", "F");
-    gFontMetrics_fieldID.descent = GetFieldIDOrDie(env, gFontMetrics_class, "descent", "F");
-    gFontMetrics_fieldID.bottom = GetFieldIDOrDie(env, gFontMetrics_class, "bottom", "F");
-    gFontMetrics_fieldID.leading = GetFieldIDOrDie(env, gFontMetrics_class, "leading", "F");
-
-    gFontMetricsInt_class = FindClassOrDie(env, "android/graphics/Paint$FontMetricsInt");
-    gFontMetricsInt_class = MakeGlobalRefOrDie(env, gFontMetricsInt_class);
-
-    gFontMetricsInt_fieldID.top = GetFieldIDOrDie(env, gFontMetricsInt_class, "top", "I");
-    gFontMetricsInt_fieldID.ascent = GetFieldIDOrDie(env, gFontMetricsInt_class, "ascent", "I");
-    gFontMetricsInt_fieldID.descent = GetFieldIDOrDie(env, gFontMetricsInt_class, "descent", "I");
-    gFontMetricsInt_fieldID.bottom = GetFieldIDOrDie(env, gFontMetricsInt_class, "bottom", "I");
-    gFontMetricsInt_fieldID.leading = GetFieldIDOrDie(env, gFontMetricsInt_class, "leading", "I");
-
     return RegisterMethodsOrDie(env, "android/graphics/Paint", methods, NELEM(methods));
 }
 

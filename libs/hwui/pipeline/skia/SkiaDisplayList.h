@@ -16,14 +16,16 @@
 
 #pragma once
 
+#include <deque>
+#include <memory>
+
+#include "Mesh.h"
 #include "RecordingCanvas.h"
 #include "RenderNodeDrawable.h"
 #include "TreeInfo.h"
 #include "hwui/AnimatedImageDrawable.h"
 #include "utils/LinearAllocator.h"
 #include "utils/Pair.h"
-
-#include <deque>
 
 namespace android {
 namespace uirenderer {
@@ -46,8 +48,10 @@ class FunctorDrawable;
 
 class SkiaDisplayList {
 public:
-    size_t getUsedSize() { return allocator.usedSize() + mDisplayList.usedSize(); }
-    size_t getAllocatedSize() { return allocator.allocatedSize() + mDisplayList.allocatedSize(); }
+    size_t getUsedSize() const { return allocator.usedSize() + mDisplayList.usedSize(); }
+    size_t getAllocatedSize() const {
+        return allocator.allocatedSize() + mDisplayList.allocatedSize();
+    }
 
     ~SkiaDisplayList() {
         /* Given that we are using a LinearStdAllocator to store some of the
@@ -93,12 +97,14 @@ public:
 
     bool hasText() const { return mDisplayList.hasText(); }
 
+    bool hasFill() const { return mDisplayList.hasFill(); }
+
     /**
      * Attempts to reset and reuse this DisplayList.
      *
      * @return true if the displayList will be reused and therefore should not be deleted
      */
-    bool reuseDisplayList(RenderNode* node, renderthread::CanvasContext* context);
+    bool reuseDisplayList(RenderNode* node);
 
     /**
      * ONLY to be called by RenderNode::syncDisplayList so that we can notify any
@@ -108,6 +114,17 @@ public:
      *       to subclass from DisplayList
      */
     void syncContents(const WebViewSyncData& data);
+
+    /**
+     * ONLY to be called by RenderNode::onRemovedFromTree so that we can notify any
+     * contained VectorDrawables or GLFunctors.
+     *
+     */
+    void onRemovedFromTree();
+
+    void applyColorTransform(ColorTransform transform) {
+        mDisplayList.applyColorTransform(transform);
+    }
 
     /**
      * ONLY to be called by RenderNode::prepareTree in order to prepare this
@@ -131,6 +148,8 @@ public:
      */
     void updateChildren(std::function<void(RenderNode*)> updateFn);
 
+    void visit(std::function<void(const RenderNode&)> func) const;
+
     /**
      *  Returns true if there is a child render node that is a projection receiver.
      */
@@ -142,7 +161,7 @@ public:
 
     void draw(SkCanvas* canvas) { mDisplayList.draw(canvas); }
 
-    void output(std::ostream& output, uint32_t level);
+    void output(std::ostream& output, uint32_t level) const;
 
     LinearAllocator allocator;
 
@@ -154,15 +173,24 @@ public:
     std::deque<RenderNodeDrawable> mChildNodes;
     std::deque<FunctorDrawable*> mChildFunctors;
     std::vector<SkImage*> mMutableImages;
+    std::vector<std::shared_ptr<const MeshBufferData>> mMeshBufferData;
+
 private:
     std::vector<Pair<VectorDrawableRoot*, SkMatrix>> mVectorDrawables;
+    bool mHasHolePunches;
 public:
-    void appendVD(VectorDrawableRoot* r) {
-        appendVD(r, SkMatrix::I());
-    }
+    void appendVD(VectorDrawableRoot* r) { appendVD(r, SkMatrix::I()); }
 
     void appendVD(VectorDrawableRoot* r, const SkMatrix& mat) {
         mVectorDrawables.push_back(Pair<VectorDrawableRoot*, SkMatrix>(r, mat));
+    }
+
+    void setHasHolePunches(bool hasHolePunches) {
+        mHasHolePunches = hasHolePunches;
+    }
+
+    bool hasHolePunches() {
+        return mHasHolePunches;
     }
 
     std::vector<AnimatedImageDrawable*> mAnimatedImages;

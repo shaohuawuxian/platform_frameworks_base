@@ -17,7 +17,6 @@
 package com.android.systemui.colorextraction;
 
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNotEquals;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
@@ -35,7 +34,9 @@ import androidx.test.runner.AndroidJUnit4;
 import com.android.internal.colorextraction.ColorExtractor;
 import com.android.internal.colorextraction.types.Tonal;
 import com.android.systemui.SysuiTestCase;
+import com.android.systemui.dump.DumpManager;
 import com.android.systemui.statusbar.policy.ConfigurationController;
+import com.android.systemui.user.domain.interactor.SelectedUserInteractor;
 
 import org.junit.Before;
 import org.junit.Test;
@@ -60,6 +61,10 @@ public class SysuiColorExtractorTests extends SysuiTestCase {
 
     @Mock
     private WallpaperManager mWallpaperManager;
+    @Mock
+    private DumpManager mDumpManager;
+    @Mock
+    private SelectedUserInteractor mSelectedUserInteractor;
     private ColorExtractor.GradientColors mColors;
     private SysuiColorExtractor mColorExtractor;
 
@@ -69,13 +74,19 @@ public class SysuiColorExtractorTests extends SysuiTestCase {
         mColors = new ColorExtractor.GradientColors();
         mColors.setMainColor(Color.RED);
         mColors.setSecondaryColor(Color.RED);
-        mColorExtractor = new SysuiColorExtractor(getContext(),
+        mColorExtractor = new SysuiColorExtractor(
+                getContext(),
                 (inWallpaperColors, outGradientColorsNormal, outGradientColorsDark,
                         outGradientColorsExtraDark) -> {
                     outGradientColorsNormal.set(mColors);
                     outGradientColorsDark.set(mColors);
                     outGradientColorsExtraDark.set(mColors);
-                }, mock(ConfigurationController.class), mWallpaperManager, true /* immediately */);
+                },
+                mock(ConfigurationController.class),
+                mWallpaperManager,
+                mDumpManager,
+                true /* immediately */,
+                () -> mSelectedUserInteractor);
     }
 
     @Test
@@ -93,26 +104,17 @@ public class SysuiColorExtractorTests extends SysuiTestCase {
     }
 
     @Test
-    public void getColors_fallbackWhenMediaIsVisible() {
-        simulateEvent(mColorExtractor);
-        mColorExtractor.setHasMediaArtwork(true);
-
-        ColorExtractor.GradientColors fallbackColors = mColorExtractor.getNeutralColors();
-
-        for (int type : sTypes) {
-            assertEquals("Not using fallback!",
-                    mColorExtractor.getColors(WallpaperManager.FLAG_LOCK, type), fallbackColors);
-            assertNotEquals("Media visibility should not affect system wallpaper.",
-                    mColorExtractor.getColors(WallpaperManager.FLAG_SYSTEM, type), fallbackColors);
-        }
-    }
-
-    @Test
     public void onUiModeChanged_reloadsColors() {
         Tonal tonal = mock(Tonal.class);
         ConfigurationController configurationController = mock(ConfigurationController.class);
-        SysuiColorExtractor sysuiColorExtractor = new SysuiColorExtractor(getContext(),
-                tonal, configurationController, mWallpaperManager, true /* immediately */);
+        SysuiColorExtractor sysuiColorExtractor = new SysuiColorExtractor(
+                getContext(),
+                tonal,
+                configurationController,
+                mWallpaperManager,
+                mDumpManager,
+                true /* immediately */,
+                () -> mSelectedUserInteractor);
         verify(configurationController).addCallback(eq(sysuiColorExtractor));
 
         reset(tonal);

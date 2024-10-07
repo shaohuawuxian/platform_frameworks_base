@@ -16,11 +16,13 @@
 
 package com.android.server.wm;
 
+import android.annotation.NonNull;
 import android.util.proto.ProtoOutputStream;
 import android.view.SurfaceControl;
 import android.view.SurfaceControl.Transaction;
 import android.view.animation.Animation;
 
+import com.android.internal.annotations.VisibleForTesting;
 import com.android.server.wm.SurfaceAnimator.AnimationType;
 import com.android.server.wm.SurfaceAnimator.OnAnimationFinishedCallback;
 
@@ -30,7 +32,8 @@ import java.io.PrintWriter;
  * Interface that describes an animation and bridges the animation start to the component
  * responsible for running the animation.
  */
-interface AnimationAdapter {
+@VisibleForTesting
+public interface AnimationAdapter {
 
     long STATUS_BAR_TRANSITION_DURATION = 120L;
 
@@ -39,6 +42,22 @@ interface AnimationAdapter {
      * @see Animation#getShowWallpaper()
      */
     boolean getShowWallpaper();
+
+    /**
+     * @return Whether we should show a background behind the animating windows.
+     * @see Animation#getShowBackdrop()
+     */
+    default boolean getShowBackground() {
+        return false;
+    }
+
+    /**
+     * @return The background color to use during an animation if getShowBackground returns true.
+     * @see Animation#getBackdropColor()
+     */
+    default int getBackgroundColor() {
+        return 0;
+    }
 
     /**
      * Requests to start the animation.
@@ -52,7 +71,7 @@ interface AnimationAdapter {
      * @param finishCallback The callback to be invoked when the animation has finished.
      */
     void startAnimation(SurfaceControl animationLeash, Transaction t, @AnimationType int type,
-            OnAnimationFinishedCallback finishCallback);
+            @NonNull OnAnimationFinishedCallback finishCallback);
 
     /**
      * Called when the animation that was started with {@link #startAnimation} was cancelled by the

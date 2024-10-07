@@ -17,6 +17,7 @@
 package androidx.window.sidecar;
 
 import android.os.IBinder;
+import android.util.Log;
 
 import androidx.annotation.NonNull;
 
@@ -29,8 +30,10 @@ import java.util.Set;
  */
 abstract class StubSidecar implements SidecarInterface {
 
+    private static final String TAG = "WindowManagerSidecar";
+
     private SidecarCallback mSidecarCallback;
-    private final Set<IBinder> mWindowLayoutChangeListenerTokens = new HashSet<>();
+    final Set<IBinder> mWindowLayoutChangeListenerTokens = new HashSet<>();
     private boolean mDeviceStateChangeListenerRegistered;
 
     StubSidecar() {
@@ -61,14 +64,22 @@ abstract class StubSidecar implements SidecarInterface {
 
     void updateDeviceState(SidecarDeviceState newState) {
         if (this.mSidecarCallback != null) {
-            mSidecarCallback.onDeviceStateChanged(newState);
+            try {
+                mSidecarCallback.onDeviceStateChanged(newState);
+            } catch (AbstractMethodError e) {
+                Log.e(TAG, "App is using an outdated Window Jetpack library", e);
+            }
         }
     }
 
     void updateWindowLayout(@NonNull IBinder windowToken,
             @NonNull SidecarWindowLayoutInfo newLayout) {
         if (this.mSidecarCallback != null) {
-            mSidecarCallback.onWindowLayoutChanged(windowToken, newLayout);
+            try {
+                mSidecarCallback.onWindowLayoutChanged(windowToken, newLayout);
+            } catch (AbstractMethodError e) {
+                Log.e(TAG, "App is using an outdated Window Jetpack library", e);
+            }
         }
     }
 

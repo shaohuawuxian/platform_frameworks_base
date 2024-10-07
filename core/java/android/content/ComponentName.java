@@ -37,6 +37,7 @@ import java.io.PrintWriter;
  * name inside of that package.
  *
  */
+@android.ravenwood.annotation.RavenwoodKeepWholeClass
 public final class ComponentName implements Parcelable, Cloneable, Comparable<ComponentName> {
     private final String mPackage;
     private final String mClass;
@@ -313,18 +314,15 @@ public final class ComponentName implements Parcelable, Cloneable, Comparable<Co
      * same name, and if the classes that implement each component also have the same name.
      */
     @Override
-    public boolean equals(Object obj) {
-        try {
-            if (obj != null) {
-                ComponentName other = (ComponentName)obj;
-                // Note: no null checks, because mPackage and mClass can
-                // never be null.
-                return mPackage.equals(other.mPackage)
-                        && mClass.equals(other.mClass);
-            }
-        } catch (ClassCastException e) {
+    public boolean equals(@Nullable Object obj) {
+        if (obj instanceof ComponentName) {
+            ComponentName other = (ComponentName) obj;
+            // mPackage and mClass can never be null.
+            return mPackage.equals(other.mPackage)
+                    && mClass.equals(other.mClass);
+        } else {
+            return false;
         }
-        return false;
     }
 
     @Override

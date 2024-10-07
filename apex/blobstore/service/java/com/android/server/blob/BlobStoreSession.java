@@ -54,12 +54,12 @@ import android.os.storage.StorageManager;
 import android.system.ErrnoException;
 import android.system.Os;
 import android.util.ExceptionUtils;
+import android.util.IndentingPrintWriter;
 import android.util.Slog;
 
 import com.android.internal.annotations.GuardedBy;
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.util.FrameworkStatsLog;
-import com.android.internal.util.IndentingPrintWriter;
 import com.android.internal.util.Preconditions;
 import com.android.internal.util.XmlUtils;
 import com.android.server.blob.BlobStoreManagerService.DumpArgs;
@@ -223,7 +223,8 @@ class BlobStoreSession extends IBlobStoreSession.Stub {
         FileDescriptor fd = null;
         try {
             fd = openWriteInternal(offsetBytes, lengthBytes);
-            final RevocableFileDescriptor revocableFd = new RevocableFileDescriptor(mContext, fd);
+            final RevocableFileDescriptor revocableFd = new RevocableFileDescriptor(mContext, fd,
+                    BlobStoreUtils.getRevocableFdHandler());
             synchronized (mSessionLock) {
                 if (mState != STATE_OPENED) {
                     IoUtils.closeQuietly(fd);

@@ -15,133 +15,122 @@
  */
 package com.android.server.notification;
 
+import static android.app.Notification.COLOR_DEFAULT;
+import static android.app.Notification.FLAG_AUTOGROUP_SUMMARY;
+import static android.app.Notification.FLAG_AUTO_CANCEL;
+import static android.app.Notification.FLAG_GROUP_SUMMARY;
+import static android.app.Notification.FLAG_LOCAL_ONLY;
+import static android.app.Notification.FLAG_NO_CLEAR;
+import static android.app.Notification.FLAG_ONGOING_EVENT;
+import static android.app.Notification.VISIBILITY_PRIVATE;
+import static android.app.Notification.VISIBILITY_PUBLIC;
+
+import android.annotation.NonNull;
+import android.app.Notification;
+import android.content.Context;
+import android.content.pm.PackageManager;
+import android.content.pm.PackageManager.NameNotFoundException;
+import android.graphics.drawable.AdaptiveIconDrawable;
+import android.graphics.drawable.Drawable;
+import android.graphics.drawable.Icon;
 import android.service.notification.StatusBarNotification;
 import android.util.ArrayMap;
-import android.util.ArraySet;
-import android.util.Log;
 import android.util.Slog;
 
+import com.android.internal.R;
+import com.android.internal.annotations.GuardedBy;
 import com.android.internal.annotations.VisibleForTesting;
 
 import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Map;
+import java.util.Objects;
 
 /**
  * NotificationManagerService helper for auto-grouping notifications.
  */
 public class GroupHelper {
     private static final String TAG = "GroupHelper";
-    private static final boolean DEBUG = Log.isLoggable(TAG, Log.DEBUG);
 
     protected static final String AUTOGROUP_KEY = "ranker_group";
 
+    protected static final int FLAG_INVALID = -1;
+
+    // Flags that all autogroup summaries have
+    protected static final int BASE_FLAGS =
+            FLAG_AUTOGROUP_SUMMARY | FLAG_GROUP_SUMMARY | FLAG_LOCAL_ONLY;
+    // Flag that autogroup summaries inherits if all children have the flag
+    private static final int ALL_CHILDREN_FLAG = FLAG_AUTO_CANCEL;
+    // Flags that autogroup summaries inherits if any child has them
+    private static final int ANY_CHILDREN_FLAGS = FLAG_ONGOING_EVENT | FLAG_NO_CLEAR;
+
     private final Callback mCallback;
     private final int mAutoGroupAtCount;
+    private final Context mContext;
+    private final PackageManager mPackageManager;
 
-    // count the number of ongoing notifications per group
-    // userId -> (package name -> (group Id -> (set of notification keys)))
-    final ArrayMap<String, ArraySet<String>>
-            mOngoingGroupCount = new ArrayMap<>();
+    // Only contains notifications that are not explicitly grouped by the app (aka no group or
+    // sort key).
+    // userId|packageName -> (keys of notifications that aren't in an explicit app group -> flags)
+    @GuardedBy("mUngroupedNotifications")
+    private final ArrayMap<String, ArrayMap<String, NotificationAttributes>> mUngroupedNotifications
+            = new ArrayMap<>();
 
-    // Map of user : <Map of package : notification keys>. Only contains notifications that are not
-    // grouped by the app (aka no group or sort key).
-    Map<Integer, Map<String, LinkedHashSet<String>>> mUngroupedNotifications = new HashMap<>();
-
-    public GroupHelper(int autoGroupAtCount, Callback callback) {
+    public GroupHelper(Context context, PackageManager packageManager, int autoGroupAtCount,
+            Callback callback) {
         mAutoGroupAtCount = autoGroupAtCount;
-        mCallback = callback;
+        mCallback =  callback;
+        mContext = context;
+        mPackageManager = packageManager;
     }
 
-    private String generatePackageGroupKey(int userId, String pkg, String group) {
-        return userId + "|" + pkg + "|" + group;
+    private String generatePackageKey(int userId, String pkg) {
+        return userId + "|" + pkg;
     }
 
     @VisibleForTesting
-    protected int getOngoingGroupCount(int userId, String pkg, String group) {
-        String key = generatePackageGroupKey(userId, pkg, group);
-        return mOngoingGroupCount.getOrDefault(key, new ArraySet<>(0)).size();
-    }
-
-    private void addToOngoingGroupCount(StatusBarNotification sbn, boolean add) {
-        if (sbn.getNotification().isGroupSummary()) return;
-        if (!sbn.isOngoing() && add) return;
-        String group = sbn.getGroup();
-        if (group == null) return;
-        int userId = sbn.getUser().getIdentifier();
-        String key = generatePackageGroupKey(userId, sbn.getPackageName(), group);
-        ArraySet<String> notifications = mOngoingGroupCount.getOrDefault(key, new ArraySet<>(0));
-        if (add) {
-            notifications.add(sbn.getKey());
-            mOngoingGroupCount.put(key, notifications);
-        } else {
-            notifications.remove(sbn.getKey());
-            // we dont need to put it back if it is default
+    @GuardedBy("mUngroupedNotifications")
+    protected int getAutogroupSummaryFlags(
+            @NonNull final ArrayMap<String, NotificationAttributes> children) {
+        boolean allChildrenHasFlag = children.size() > 0;
+        int anyChildFlagSet = 0;
+        for (int i = 0; i < children.size(); i++) {
+            if (!hasAnyFlag(children.valueAt(i).flags, ALL_CHILDREN_FLAG)) {
+                allChildrenHasFlag = false;
+            }
+            if (hasAnyFlag(children.valueAt(i).flags, ANY_CHILDREN_FLAGS)) {
+                anyChildFlagSet |= (children.valueAt(i).flags & ANY_CHILDREN_FLAGS);
+            }
         }
-        String combinedKey = generatePackageGroupKey(userId, sbn.getPackageName(), group);
-        boolean needsOngoingFlag = notifications.size() > 0;
-        mCallback.updateAutogroupSummary(sbn.getKey(), needsOngoingFlag);
+        return BASE_FLAGS | (allChildrenHasFlag ? ALL_CHILDREN_FLAG : 0) | anyChildFlagSet;
     }
 
-    public void onNotificationUpdated(StatusBarNotification childSbn,
-            boolean autogroupSummaryExists) {
-        if (childSbn.getGroup() != AUTOGROUP_KEY
-                || childSbn.getNotification().isGroupSummary()) return;
-        if (childSbn.isOngoing()) {
-            addToOngoingGroupCount(childSbn, true);
-        } else {
-            addToOngoingGroupCount(childSbn, false);
-        }
+    private boolean hasAnyFlag(int flags, int mask) {
+        return (flags & mask) != 0;
     }
 
-    public void onNotificationPosted(StatusBarNotification sbn, boolean autogroupSummaryExists) {
-        if (DEBUG) Log.i(TAG, "POSTED " + sbn.getKey());
+    /**
+     * Called when a notification is newly posted. Checks whether that notification, and all other
+     * active notifications should be grouped or ungrouped atuomatically, and returns whether.
+     * @param sbn The posted notification.
+     * @param autogroupSummaryExists Whether a summary for this notification already exists.
+     * @return Whether the provided notification should be autogrouped synchronously.
+     */
+    public boolean onNotificationPosted(StatusBarNotification sbn, boolean autogroupSummaryExists) {
+        boolean sbnToBeAutogrouped = false;
         try {
-            List<String> notificationsToGroup = new ArrayList<>();
-            if (autogroupSummaryExists) addToOngoingGroupCount(sbn, true);
             if (!sbn.isAppGroup()) {
-                // Not grouped by the app, add to the list of notifications for the app;
-                // send grouping update if app exceeds the autogrouping limit.
-                synchronized (mUngroupedNotifications) {
-                    Map<String, LinkedHashSet<String>> ungroupedNotificationsByUser
-                            = mUngroupedNotifications.get(sbn.getUserId());
-                    if (ungroupedNotificationsByUser == null) {
-                        ungroupedNotificationsByUser = new HashMap<>();
-                    }
-                    mUngroupedNotifications.put(sbn.getUserId(), ungroupedNotificationsByUser);
-                    LinkedHashSet<String> notificationsForPackage
-                            = ungroupedNotificationsByUser.get(sbn.getPackageName());
-                    if (notificationsForPackage == null) {
-                        notificationsForPackage = new LinkedHashSet<>();
-                    }
-
-                    notificationsForPackage.add(sbn.getKey());
-                    ungroupedNotificationsByUser.put(sbn.getPackageName(), notificationsForPackage);
-
-                    if (notificationsForPackage.size() >= mAutoGroupAtCount
-                            || autogroupSummaryExists) {
-                        notificationsToGroup.addAll(notificationsForPackage);
-                    }
-                }
-                if (notificationsToGroup.size() > 0) {
-                    adjustAutogroupingSummary(sbn.getUserId(), sbn.getPackageName(),
-                            notificationsToGroup.get(0), true);
-                    adjustNotificationBundling(notificationsToGroup, true);
-                }
+                sbnToBeAutogrouped = maybeGroup(sbn, autogroupSummaryExists);
             } else {
-                // Grouped, but not by us. Send updates to un-autogroup, if we grouped it.
                 maybeUngroup(sbn, false, sbn.getUserId());
             }
         } catch (Exception e) {
             Slog.e(TAG, "Failure processing new notification", e);
         }
+        return sbnToBeAutogrouped;
     }
 
     public void onNotificationRemoved(StatusBarNotification sbn) {
         try {
-            addToOngoingGroupCount(sbn, false);
             maybeUngroup(sbn, true, sbn.getUserId());
         } catch (Exception e) {
             Slog.e(TAG, "Error processing canceled notification", e);
@@ -149,68 +138,301 @@ public class GroupHelper {
     }
 
     /**
-     * Un-autogroups notifications that are now grouped by the app.
+     * A non-app grouped notification has been added or updated
+     * Evaluate if:
+     * (a) an existing autogroup summary needs updated flags
+     * (b) a new autogroup summary needs to be added with correct flags
+     * (c) other non-app grouped children need to be moved to the autogroup
+     *
+     * And stores the list of upgrouped notifications & their flags
      */
-    private void maybeUngroup(StatusBarNotification sbn, boolean notificationGone, int userId) {
-        List<String> notificationsToUnAutogroup = new ArrayList<>();
-        boolean removeSummary = false;
+    private boolean maybeGroup(StatusBarNotification sbn, boolean autogroupSummaryExists) {
+        int flags = 0;
+        List<String> notificationsToGroup = new ArrayList<>();
+        List<NotificationAttributes> childrenAttr = new ArrayList<>();
+        // Indicates whether the provided sbn should be autogrouped by the caller.
+        boolean sbnToBeAutogrouped = false;
         synchronized (mUngroupedNotifications) {
-            Map<String, LinkedHashSet<String>> ungroupedNotificationsByUser
-                    = mUngroupedNotifications.get(sbn.getUserId());
-            if (ungroupedNotificationsByUser == null || ungroupedNotificationsByUser.size() == 0) {
-                return;
+            String packageKey = generatePackageKey(sbn.getUserId(), sbn.getPackageName());
+            final ArrayMap<String, NotificationAttributes> children =
+                    mUngroupedNotifications.getOrDefault(packageKey, new ArrayMap<>());
+
+            NotificationAttributes attr = new NotificationAttributes(sbn.getNotification().flags,
+                    sbn.getNotification().getSmallIcon(), sbn.getNotification().color,
+                    sbn.getNotification().visibility);
+            children.put(sbn.getKey(), attr);
+            mUngroupedNotifications.put(packageKey, children);
+
+            if (children.size() >= mAutoGroupAtCount || autogroupSummaryExists) {
+                flags = getAutogroupSummaryFlags(children);
+                notificationsToGroup.addAll(children.keySet());
+                childrenAttr.addAll(children.values());
             }
-            LinkedHashSet<String> notificationsForPackage
-                    = ungroupedNotificationsByUser.get(sbn.getPackageName());
-            if (notificationsForPackage == null || notificationsForPackage.size() == 0) {
-                return;
+        }
+        if (notificationsToGroup.size() > 0) {
+            if (autogroupSummaryExists) {
+                NotificationAttributes attr = new NotificationAttributes(flags,
+                        sbn.getNotification().getSmallIcon(), sbn.getNotification().color,
+                        VISIBILITY_PRIVATE);
+                if (Flags.autogroupSummaryIconUpdate()) {
+                    attr = updateAutobundledSummaryAttributes(sbn.getPackageName(), childrenAttr,
+                            attr);
+                }
+
+                mCallback.updateAutogroupSummary(sbn.getUserId(), sbn.getPackageName(), attr);
+            } else {
+                Icon summaryIcon = sbn.getNotification().getSmallIcon();
+                int summaryIconColor = sbn.getNotification().color;
+                int summaryVisibility = VISIBILITY_PRIVATE;
+                if (Flags.autogroupSummaryIconUpdate()) {
+                    // Calculate the initial summary icon, icon color and visibility
+                    NotificationAttributes iconAttr = getAutobundledSummaryAttributes(
+                            sbn.getPackageName(), childrenAttr);
+                    summaryIcon = iconAttr.icon;
+                    summaryIconColor = iconAttr.iconColor;
+                    summaryVisibility = iconAttr.visibility;
+                }
+
+                NotificationAttributes attr = new NotificationAttributes(flags, summaryIcon,
+                        summaryIconColor, summaryVisibility);
+                mCallback.addAutoGroupSummary(sbn.getUserId(), sbn.getPackageName(), sbn.getKey(),
+                        attr);
             }
-            if (notificationsForPackage.remove(sbn.getKey())) {
-                if (!notificationGone) {
-                    // Add the current notification to the ungrouping list if it still exists.
-                    notificationsToUnAutogroup.add(sbn.getKey());
+            for (String keyToGroup : notificationsToGroup) {
+                if (android.app.Flags.checkAutogroupBeforePost()) {
+                    if (keyToGroup.equals(sbn.getKey())) {
+                        // Autogrouping for the provided notification is to be done synchronously.
+                        sbnToBeAutogrouped = true;
+                    } else {
+                        mCallback.addAutoGroup(keyToGroup, /*requestSort=*/true);
+                    }
+                } else {
+                    mCallback.addAutoGroup(keyToGroup, /*requestSort=*/true);
                 }
             }
-            // If the status change of this notification has brought the number of loose
-            // notifications to zero, remove the summary and un-autogroup.
-            if (notificationsForPackage.size() == 0) {
-                ungroupedNotificationsByUser.remove(sbn.getPackageName());
-                removeSummary = true;
+        }
+        return sbnToBeAutogrouped;
+    }
+
+    /**
+     * A notification was added that's app grouped, or a notification was removed.
+     * Evaluate whether:
+     * (a) an existing autogroup summary needs updated flags
+     * (b) if we need to remove our autogroup overlay for this notification
+     * (c) we need to remove the autogroup summary
+     *
+     * And updates the internal state of un-app-grouped notifications and their flags.
+     */
+    private void maybeUngroup(StatusBarNotification sbn, boolean notificationGone, int userId) {
+        boolean removeSummary = false;
+        int summaryFlags = FLAG_INVALID;
+        boolean updateSummaryFlags = false;
+        boolean removeAutogroupOverlay = false;
+        List<NotificationAttributes> childrenAttrs = new ArrayList<>();
+        synchronized (mUngroupedNotifications) {
+            String key = generatePackageKey(sbn.getUserId(), sbn.getPackageName());
+            final ArrayMap<String, NotificationAttributes> children =
+                    mUngroupedNotifications.getOrDefault(key, new ArrayMap<>());
+            if (children.size() == 0) {
+                return;
+            }
+
+            // if this notif was autogrouped and now isn't
+            if (children.containsKey(sbn.getKey())) {
+                // if this notification was contributing flags that aren't covered by other
+                // children to the summary, reevaluate flags for the summary
+                int flags = children.remove(sbn.getKey()).flags;
+                // this
+                if (hasAnyFlag(flags, ANY_CHILDREN_FLAGS)) {
+                    updateSummaryFlags = true;
+                    summaryFlags = getAutogroupSummaryFlags(children);
+                }
+                // if this notification still exists and has an autogroup overlay, but is now
+                // grouped by the app, clear the overlay
+                if (!notificationGone && sbn.getOverrideGroupKey() != null) {
+                    removeAutogroupOverlay = true;
+                }
+
+                // If there are no more children left to autogroup, remove the summary
+                if (children.size() == 0) {
+                    removeSummary = true;
+                } else {
+                    childrenAttrs.addAll(children.values());
+                }
             }
         }
+
         if (removeSummary) {
-            adjustAutogroupingSummary(userId, sbn.getPackageName(), null, false);
-        }
-        if (notificationsToUnAutogroup.size() > 0) {
-            adjustNotificationBundling(notificationsToUnAutogroup, false);
-        }
-    }
-
-    private void adjustAutogroupingSummary(int userId, String packageName, String triggeringKey,
-            boolean summaryNeeded) {
-        if (summaryNeeded) {
-            mCallback.addAutoGroupSummary(userId, packageName, triggeringKey);
+            mCallback.removeAutoGroupSummary(userId, sbn.getPackageName());
         } else {
-            mCallback.removeAutoGroupSummary(userId, packageName);
+            NotificationAttributes attr = new NotificationAttributes(summaryFlags,
+                    sbn.getNotification().getSmallIcon(), sbn.getNotification().color,
+                    VISIBILITY_PRIVATE);
+            boolean attributesUpdated = false;
+            if (Flags.autogroupSummaryIconUpdate()) {
+                NotificationAttributes newAttr = updateAutobundledSummaryAttributes(
+                        sbn.getPackageName(), childrenAttrs, attr);
+                if (!newAttr.equals(attr)) {
+                    attributesUpdated = true;
+                    attr = newAttr;
+                }
+            }
+
+            if (updateSummaryFlags || attributesUpdated) {
+                mCallback.updateAutogroupSummary(userId, sbn.getPackageName(), attr);
+            }
+        }
+        if (removeAutogroupOverlay) {
+            mCallback.removeAutoGroup(sbn.getKey());
         }
     }
 
-    private void adjustNotificationBundling(List<String> keys, boolean group) {
-        for (String key : keys) {
-            if (DEBUG) Log.i(TAG, "Sending grouping adjustment for: " + key + " group? " + group);
-            if (group) {
-                mCallback.addAutoGroup(key);
+    @VisibleForTesting
+    int getNotGroupedByAppCount(int userId, String pkg) {
+        synchronized (mUngroupedNotifications) {
+            String key = generatePackageKey(userId, pkg);
+            final ArrayMap<String, NotificationAttributes> children =
+                    mUngroupedNotifications.getOrDefault(key, new ArrayMap<>());
+            return children.size();
+        }
+    }
+
+    NotificationAttributes getAutobundledSummaryAttributes(@NonNull String packageName,
+            @NonNull List<NotificationAttributes> childrenAttr) {
+        Icon newIcon = null;
+        boolean childrenHaveSameIcon = true;
+        int newColor = Notification.COLOR_INVALID;
+        boolean childrenHaveSameColor = true;
+        int newVisibility = VISIBILITY_PRIVATE;
+
+        // Both the icon drawable and the icon background color are updated according to this rule:
+        // - if all child icons are identical => use the common icon
+        // - if child icons are different: use the monochromatic app icon, if exists.
+        // Otherwise fall back to a generic icon representing a stack.
+        for (NotificationAttributes state: childrenAttr) {
+            // Check for icon
+            if (newIcon == null) {
+                newIcon = state.icon;
             } else {
-                mCallback.removeAutoGroup(key);
+                if (!newIcon.sameAs(state.icon)) {
+                    childrenHaveSameIcon = false;
+                }
             }
+            // Check for color
+            if (newColor == Notification.COLOR_INVALID) {
+                newColor = state.iconColor;
+            } else {
+                if (newColor != state.iconColor) {
+                    childrenHaveSameColor = false;
+                }
+            }
+            // Check for visibility. If at least one child is public, then set to public
+            if (state.visibility == VISIBILITY_PUBLIC) {
+                newVisibility = VISIBILITY_PUBLIC;
+            }
+        }
+        if (!childrenHaveSameIcon) {
+            newIcon = getMonochromeAppIcon(packageName);
+        }
+        if (!childrenHaveSameColor) {
+            newColor = COLOR_DEFAULT;
+        }
+
+        return new NotificationAttributes(0, newIcon, newColor, newVisibility);
+    }
+
+    NotificationAttributes updateAutobundledSummaryAttributes(@NonNull String packageName,
+            @NonNull List<NotificationAttributes> childrenAttr,
+            @NonNull NotificationAttributes oldAttr) {
+        NotificationAttributes newAttr = getAutobundledSummaryAttributes(packageName,
+                childrenAttr);
+        Icon newIcon = newAttr.icon;
+        int newColor = newAttr.iconColor;
+        if (newAttr.icon == null) {
+            newIcon = oldAttr.icon;
+        }
+        if (newAttr.iconColor == Notification.COLOR_INVALID) {
+            newColor = oldAttr.iconColor;
+        }
+
+        return new NotificationAttributes(oldAttr.flags, newIcon, newColor, newAttr.visibility);
+    }
+
+    /**
+     * Get the monochrome app icon for an app from the adaptive launcher icon
+     *  or a fallback generic icon for autogroup summaries.
+     *
+     * @param pkg packageName of the app
+     * @return a monochrome app icon or a fallback generic icon
+     */
+    @NonNull
+    Icon getMonochromeAppIcon(@NonNull final String pkg) {
+        Icon monochromeIcon = null;
+        final int fallbackIconResId = R.drawable.ic_notification_summary_auto;
+        try {
+            final Drawable appIcon = mPackageManager.getApplicationIcon(pkg);
+            if (appIcon instanceof AdaptiveIconDrawable) {
+                if (((AdaptiveIconDrawable) appIcon).getMonochrome() != null) {
+                    monochromeIcon = Icon.createWithResourceAdaptiveDrawable(pkg,
+                            ((AdaptiveIconDrawable) appIcon).getSourceDrawableResId(), true,
+                            -2.0f * AdaptiveIconDrawable.getExtraInsetFraction());
+                }
+            }
+        } catch (NameNotFoundException e) {
+            Slog.e(TAG, "Failed to getApplicationIcon() in getMonochromeAppIcon()", e);
+        }
+        if (monochromeIcon != null) {
+            return monochromeIcon;
+        } else {
+            return Icon.createWithResource(mContext, fallbackIconResId);
+        }
+    }
+
+    protected static class NotificationAttributes {
+        public final int flags;
+        public final int iconColor;
+        public final Icon icon;
+        public final int visibility;
+
+        public NotificationAttributes(int flags, Icon icon, int iconColor, int visibility) {
+            this.flags = flags;
+            this.icon = icon;
+            this.iconColor = iconColor;
+            this.visibility = visibility;
+        }
+
+        public NotificationAttributes(@NonNull NotificationAttributes attr) {
+            this.flags = attr.flags;
+            this.icon = attr.icon;
+            this.iconColor = attr.iconColor;
+            this.visibility = attr.visibility;
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            if (this == o) {
+                return true;
+            }
+            if (!(o instanceof NotificationAttributes that)) {
+                return false;
+            }
+            return flags == that.flags && iconColor == that.iconColor && icon.sameAs(that.icon)
+                    && visibility == that.visibility;
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(flags, iconColor, icon, visibility);
         }
     }
 
     protected interface Callback {
-        void addAutoGroup(String key);
+        void addAutoGroup(String key, boolean requestSort);
         void removeAutoGroup(String key);
-        void addAutoGroupSummary(int userId, String pkg, String triggeringKey);
+
+        void addAutoGroupSummary(int userId, String pkg, String triggeringKey,
+                NotificationAttributes summaryAttr);
         void removeAutoGroupSummary(int user, String pkg);
-        void updateAutogroupSummary(String key, boolean needsOngoingFlag);
+        void updateAutogroupSummary(int userId, String pkg, NotificationAttributes summaryAttr);
     }
 }

@@ -17,6 +17,9 @@
 #define ATRACE_TAG ATRACE_TAG_RESOURCES
 #define LOG_TAG "asset"
 
+#include "android_runtime/android_util_AssetManager.h"
+
+#include <errno.h>
 #include <inttypes.h>
 #include <linux/capability.h>
 #include <stdio.h>
@@ -31,7 +34,7 @@
 #include "android-base/logging.h"
 #include "android-base/properties.h"
 #include "android-base/stringprintf.h"
-#include "android_runtime/android_util_AssetManager.h"
+#include "android_content_res_ApkAssets.h"
 #include "android_runtime/AndroidRuntime.h"
 #include "android_util_Binder.h"
 #include "androidfw/Asset.h"
@@ -39,10 +42,9 @@
 #include "androidfw/AssetManager2.h"
 #include "androidfw/AttributeResolution.h"
 #include "androidfw/MutexGuard.h"
+#include "androidfw/ResourceTimer.h"
 #include "androidfw/ResourceTypes.h"
 #include "androidfw/ResourceUtils.h"
-
-#include "android_util_AssetManager_private.h"
 #include "core_jni_helpers.h"
 #include "jni.h"
 #include "nativehelper/JNIPlatformHelp.h"
@@ -50,9 +52,9 @@
 #include "nativehelper/ScopedStringChars.h"
 #include "nativehelper/ScopedUtfChars.h"
 #include "utils/Log.h"
-#include "utils/misc.h"
 #include "utils/String8.h"
 #include "utils/Trace.h"
+#include "utils/misc.h"
 
 extern "C" int capget(cap_user_header_t hdrp, cap_user_data_t datap);
 extern "C" int capset(cap_user_header_t hdrp, const cap_user_data_t datap);
@@ -92,6 +94,8 @@ static struct configuration_offsets_t {
   jfieldID mSmallestScreenWidthDpOffset;
   jfieldID mScreenWidthDpOffset;
   jfieldID mScreenHeightDpOffset;
+  jfieldID mScreenLayoutOffset;
+  jfieldID mUiMode;
 } gConfigurationOffsets;
 
 static struct arraymap_offsets_t {
@@ -158,9 +162,30 @@ static Guarded<AssetManager2>& AssetManagerFromLong(jlong ptr) {
   return *AssetManagerForNdkAssetManager(reinterpret_cast<AAssetManager*>(ptr));
 }
 
+struct ScopedLockedAssetsOperation {
+  ScopedLockedAssetsOperation(Guarded<AssetManager2>& guarded_am)
+        : am_(guarded_am), op_(am_->StartOperation()) {}
+
+  AssetManager2& operator*() { return *am_; }
+
+  AssetManager2* operator->() { return am_.get(); }
+
+  AssetManager2* get() { return am_.get(); }
+
+  private:
+  DISALLOW_COPY_AND_ASSIGN(ScopedLockedAssetsOperation);
+
+  ScopedLock<AssetManager2> am_;
+  AssetManager2::ScopedOperation op_;
+};
+
+ScopedLockedAssetsOperation LockAndStartAssetManager(jlong ptr) {
+  return ScopedLockedAssetsOperation(AssetManagerFromLong(ptr));
+}
+
 static jobject NativeGetOverlayableMap(JNIEnv* env, jclass /*clazz*/, jlong ptr,
                                        jstring package_name) {
-  ScopedLock<AssetManager2> assetmanager(AssetManagerFromLong(ptr));
+  auto assetmanager = LockAndStartAssetManager(ptr);
   const ScopedUtfChars package_name_utf8(env, package_name);
   CHECK(package_name_utf8.c_str() != nullptr);
   const std::string std_package_name(package_name_utf8.c_str());
@@ -206,7 +231,7 @@ static jobject NativeGetOverlayableMap(JNIEnv* env, jclass /*clazz*/, jlong ptr,
 
 static jstring NativeGetOverlayablesToString(JNIEnv* env, jclass /*clazz*/, jlong ptr,
                                              jstring package_name) {
-  ScopedLock<AssetManager2> assetmanager(AssetManagerFromLong(ptr));
+  auto assetmanager = LockAndStartAssetManager(ptr);
   const ScopedUtfChars package_name_utf8(env, package_name);
   CHECK(package_name_utf8.c_str() != nullptr);
   const std::string std_package_name(package_name_utf8.c_str());
@@ -270,7 +295,7 @@ static jobject NativeGetAssetAllocations(JNIEnv* env, jobject /*clazz*/) {
   if (alloc.length() <= 0) {
     return nullptr;
   }
-  return env->NewStringUTF(alloc.string());
+  return env->NewStringUTF(alloc.c_str());
 }
 
 static jint NativeGetGlobalAssetManagerCount(JNIEnv* /*env*/, jobject /*clazz*/) {
@@ -289,11 +314,12 @@ static void NativeDestroy(JNIEnv* /*env*/, jclass /*clazz*/, jlong ptr) {
 }
 
 static void NativeSetApkAssets(JNIEnv* env, jclass /*clazz*/, jlong ptr,
-                               jobjectArray apk_assets_array, jboolean invalidate_caches) {
+                               jobjectArray apk_assets_array, jboolean invalidate_caches,
+                               jboolean preset) {
   ATRACE_NAME("AssetManager::SetApkAssets");
 
   const jsize apk_assets_len = env->GetArrayLength(apk_assets_array);
-  std::vector<const ApkAssets*> apk_assets;
+  std::vector<AssetManager2::ApkAssetsPtr> apk_assets;
   apk_assets.reserve(apk_assets_len);
   for (jsize i = 0; i < apk_assets_len; i++) {
     jobject obj = env->GetObjectArrayElement(apk_assets_array, i);
@@ -307,21 +333,41 @@ static void NativeSetApkAssets(JNIEnv* env, jclass /*clazz*/, jlong ptr,
     if (env->ExceptionCheck()) {
       return;
     }
-    apk_assets.push_back(reinterpret_cast<const ApkAssets*>(apk_assets_native_ptr));
+    if (!apk_assets_native_ptr) {
+      ALOGW("Got a closed ApkAssets instance at index %d for AssetManager %p", i, (void*)ptr);
+      std::string msg = StringPrintf("ApkAssets at index %d is closed, native pointer is null", i);
+      jniThrowException(env, "java/lang/IllegalArgumentException", msg.c_str());
+      return;
+    }
+    auto scoped_assets = ScopedLock(ApkAssetsFromLong(apk_assets_native_ptr));
+    apk_assets.emplace_back(*scoped_assets);
   }
 
-  ScopedLock<AssetManager2> assetmanager(AssetManagerFromLong(ptr));
-  assetmanager->SetApkAssets(apk_assets, invalidate_caches);
+  auto assetmanager = LockAndStartAssetManager(ptr);
+  if (preset) {
+    assetmanager->PresetApkAssets(apk_assets);
+  } else {
+    assetmanager->SetApkAssets(apk_assets, invalidate_caches);
+  }
 }
 
 static void NativeSetConfiguration(JNIEnv* env, jclass /*clazz*/, jlong ptr, jint mcc, jint mnc,
-                                   jstring locale, jint orientation, jint touchscreen, jint density,
-                                   jint keyboard, jint keyboard_hidden, jint navigation,
-                                   jint screen_width, jint screen_height,
-                                   jint smallest_screen_width_dp, jint screen_width_dp,
-                                   jint screen_height_dp, jint screen_layout, jint ui_mode,
-                                   jint color_mode, jint major_version) {
+                                   jstring default_locale, jobjectArray locales, jint orientation,
+                                   jint touchscreen, jint density, jint keyboard,
+                                   jint keyboard_hidden, jint navigation, jint screen_width,
+                                   jint screen_height, jint smallest_screen_width_dp,
+                                   jint screen_width_dp, jint screen_height_dp, jint screen_layout,
+                                   jint ui_mode, jint color_mode, jint grammatical_gender,
+                                   jint major_version, jboolean force_refresh) {
   ATRACE_NAME("AssetManager::SetConfiguration");
+
+  const jsize locale_count = (locales == NULL) ? 0 : env->GetArrayLength(locales);
+
+  // Constants duplicated from Java class android.content.res.Configuration.
+  static const jint kScreenLayoutRoundMask = 0x300;
+  static const jint kScreenLayoutRoundShift = 8;
+
+  std::vector<ResTable_config> configs;
 
   ResTable_config configuration;
   memset(&configuration, 0, sizeof(configuration));
@@ -341,32 +387,45 @@ static void NativeSetConfiguration(JNIEnv* env, jclass /*clazz*/, jlong ptr, jin
   configuration.screenLayout = static_cast<uint8_t>(screen_layout);
   configuration.uiMode = static_cast<uint8_t>(ui_mode);
   configuration.colorMode = static_cast<uint8_t>(color_mode);
+  configuration.grammaticalInflection = static_cast<uint8_t>(grammatical_gender);
   configuration.sdkVersion = static_cast<uint16_t>(major_version);
-
-  if (locale != nullptr) {
-    ScopedUtfChars locale_utf8(env, locale);
-    CHECK(locale_utf8.c_str() != nullptr);
-    configuration.setBcp47Locale(locale_utf8.c_str());
-  }
-
-  // Constants duplicated from Java class android.content.res.Configuration.
-  static const jint kScreenLayoutRoundMask = 0x300;
-  static const jint kScreenLayoutRoundShift = 8;
-
   // In Java, we use a 32bit integer for screenLayout, while we only use an 8bit integer
   // in C++. We must extract the round qualifier out of the Java screenLayout and put it
   // into screenLayout2.
   configuration.screenLayout2 =
-      static_cast<uint8_t>((screen_layout & kScreenLayoutRoundMask) >> kScreenLayoutRoundShift);
+          static_cast<uint8_t>((screen_layout & kScreenLayoutRoundMask) >> kScreenLayoutRoundShift);
 
-  ScopedLock<AssetManager2> assetmanager(AssetManagerFromLong(ptr));
-  assetmanager->SetConfiguration(configuration);
+  if (locale_count > 0) {
+    configs.resize(locale_count, configuration);
+    for (int i = 0; i < locale_count; i++) {
+      jstring locale = (jstring)(env->GetObjectArrayElement(locales, i));
+      ScopedUtfChars locale_utf8(env, locale);
+      CHECK(locale_utf8.c_str() != nullptr);
+      configs[i].setBcp47Locale(locale_utf8.c_str());
+    }
+  } else {
+    configs.push_back(configuration);
+  }
+
+  uint32_t default_locale_int = 0;
+  if (default_locale != nullptr) {
+    ResTable_config config;
+    static_assert(std::is_same_v<decltype(config.locale), decltype(default_locale_int)>);
+    ScopedUtfChars locale_utf8(env, default_locale);
+    CHECK(locale_utf8.c_str() != nullptr);
+    config.setBcp47Locale(locale_utf8.c_str());
+    default_locale_int = config.locale;
+  }
+
+  auto assetmanager = LockAndStartAssetManager(ptr);
+  assetmanager->SetConfigurations(std::move(configs), force_refresh != JNI_FALSE);
+  assetmanager->SetDefaultLocale(default_locale_int);
 }
 
 static jobject NativeGetAssignedPackageIdentifiers(JNIEnv* env, jclass /*clazz*/, jlong ptr,
                                                    jboolean includeOverlays,
                                                    jboolean includeLoaders) {
-  ScopedLock<AssetManager2> assetmanager(AssetManagerFromLong(ptr));
+  auto assetmanager = LockAndStartAssetManager(ptr);
 
   jobject sparse_array =
         env->NewObject(gSparseArrayOffsets.classObject, gSparseArrayOffsets.constructor);
@@ -396,7 +455,7 @@ static jobject NativeGetAssignedPackageIdentifiers(JNIEnv* env, jclass /*clazz*/
 }
 
 static jboolean ContainsAllocatedTable(JNIEnv* env, jclass /*clazz*/, jlong ptr) {
-  ScopedLock<AssetManager2> assetmanager(AssetManagerFromLong(ptr));
+  auto assetmanager = LockAndStartAssetManager(ptr);
   return assetmanager->ContainsAllocatedTable();
 }
 
@@ -407,7 +466,7 @@ static jobjectArray NativeList(JNIEnv* env, jclass /*clazz*/, jlong ptr, jstring
     return nullptr;
   }
 
-  ScopedLock<AssetManager2> assetmanager(AssetManagerFromLong(ptr));
+  auto assetmanager = LockAndStartAssetManager(ptr);
   std::unique_ptr<AssetDir> asset_dir =
       assetmanager->OpenDir(path_utf8.c_str());
   if (asset_dir == nullptr) {
@@ -423,7 +482,7 @@ static jobjectArray NativeList(JNIEnv* env, jclass /*clazz*/, jlong ptr, jstring
   }
 
   for (size_t i = 0; i < file_count; i++) {
-    jstring java_string = env->NewStringUTF(asset_dir->getFileName(i).string());
+    jstring java_string = env->NewStringUTF(asset_dir->getFileName(i).c_str());
 
     // Check for errors creating the strings (if malformed or no memory).
     if (env->ExceptionCheck()) {
@@ -455,7 +514,7 @@ static jlong NativeOpenAsset(JNIEnv* env, jclass /*clazz*/, jlong ptr, jstring a
     return 0;
   }
 
-  ScopedLock<AssetManager2> assetmanager(AssetManagerFromLong(ptr));
+  auto assetmanager = LockAndStartAssetManager(ptr);
   std::unique_ptr<Asset> asset =
       assetmanager->Open(asset_path_utf8.c_str(), static_cast<Asset::AccessMode>(access_mode));
   if (!asset) {
@@ -475,7 +534,7 @@ static jobject NativeOpenAssetFd(JNIEnv* env, jclass /*clazz*/, jlong ptr, jstri
 
   ATRACE_NAME(base::StringPrintf("AssetManager::OpenAssetFd(%s)", asset_path_utf8.c_str()).c_str());
 
-  ScopedLock<AssetManager2> assetmanager(AssetManagerFromLong(ptr));
+  auto assetmanager = LockAndStartAssetManager(ptr);
   std::unique_ptr<Asset> asset = assetmanager->Open(asset_path_utf8.c_str(), Asset::ACCESS_RANDOM);
   if (!asset) {
     jniThrowException(env, "java/io/FileNotFoundException", asset_path_utf8.c_str());
@@ -501,7 +560,7 @@ static jlong NativeOpenNonAsset(JNIEnv* env, jclass /*clazz*/, jlong ptr, jint j
     return 0;
   }
 
-  ScopedLock<AssetManager2> assetmanager(AssetManagerFromLong(ptr));
+  auto assetmanager = LockAndStartAssetManager(ptr);
   std::unique_ptr<Asset> asset;
   if (cookie != kInvalidCookie) {
     asset = assetmanager->OpenNonAsset(asset_path_utf8.c_str(), cookie,
@@ -529,7 +588,7 @@ static jobject NativeOpenNonAssetFd(JNIEnv* env, jclass /*clazz*/, jlong ptr, ji
 
   ATRACE_NAME(base::StringPrintf("AssetManager::OpenNonAssetFd(%s)", asset_path_utf8.c_str()).c_str());
 
-  ScopedLock<AssetManager2> assetmanager(AssetManagerFromLong(ptr));
+  auto assetmanager = LockAndStartAssetManager(ptr);
   std::unique_ptr<Asset> asset;
   if (cookie != kInvalidCookie) {
     asset = assetmanager->OpenNonAsset(asset_path_utf8.c_str(), cookie, Asset::ACCESS_RANDOM);
@@ -555,7 +614,7 @@ static jlong NativeOpenXmlAsset(JNIEnv* env, jobject /*clazz*/, jlong ptr, jint 
 
   ATRACE_NAME(base::StringPrintf("AssetManager::OpenXmlAsset(%s)", asset_path_utf8.c_str()).c_str());
 
-  ScopedLock<AssetManager2> assetmanager(AssetManagerFromLong(ptr));
+  auto assetmanager = LockAndStartAssetManager(ptr);
   std::unique_ptr<Asset> asset;
   if (cookie != kInvalidCookie) {
     asset = assetmanager->OpenNonAsset(asset_path_utf8.c_str(), cookie, Asset::ACCESS_RANDOM);
@@ -571,8 +630,9 @@ static jlong NativeOpenXmlAsset(JNIEnv* env, jobject /*clazz*/, jlong ptr, jint 
   const incfs::map_ptr<void> buffer = asset->getIncFsBuffer(true /* aligned */);
   const size_t length = asset->getLength();
   if (!buffer.convert<uint8_t>().verify(length)) {
-    jniThrowException(env, kResourcesNotFound, kIOErrorMessage);
-    return 0;
+      jniThrowException(env, "java/io/FileNotFoundException",
+                        "File not fully present due to incremental installation");
+      return 0;
   }
 
   auto xml_tree = util::make_unique<ResXMLTree>(assetmanager->GetDynamicRefTableForCookie(cookie));
@@ -602,14 +662,16 @@ static jlong NativeOpenXmlAssetFd(JNIEnv* env, jobject /*clazz*/, jlong ptr, int
   std::unique_ptr<Asset>
       asset(Asset::createFromFd(dup_fd.release(), nullptr, Asset::AccessMode::ACCESS_BUFFER));
 
-  ScopedLock<AssetManager2> assetmanager(AssetManagerFromLong(ptr));
+  auto assetmanager = LockAndStartAssetManager(ptr);
+
   ApkAssetsCookie cookie = JavaCookieToApkAssetsCookie(jcookie);
 
   const incfs::map_ptr<void> buffer = asset->getIncFsBuffer(true /* aligned */);
   const size_t length = asset->getLength();
   if (!buffer.convert<uint8_t>().verify(length)) {
-    jniThrowException(env, kResourcesNotFound, kIOErrorMessage);
-    return 0;
+      jniThrowException(env, "java/io/FileNotFoundException",
+                        "File not fully present due to incremental installation");
+      return 0;
   }
 
   auto xml_tree = util::make_unique<ResXMLTree>(assetmanager->GetDynamicRefTableForCookie(cookie));
@@ -624,18 +686,18 @@ static jlong NativeOpenXmlAssetFd(JNIEnv* env, jobject /*clazz*/, jlong ptr, int
 static jint NativeGetResourceValue(JNIEnv* env, jclass /*clazz*/, jlong ptr, jint resid,
                                    jshort density, jobject typed_value,
                                    jboolean resolve_references) {
-  ScopedLock<AssetManager2> assetmanager(AssetManagerFromLong(ptr));
+  auto assetmanager = LockAndStartAssetManager(ptr);
+  ResourceTimer _timer(ResourceTimer::Counter::GetResourceValue);
+
   auto value = assetmanager->GetResource(static_cast<uint32_t>(resid), false /*may_be_bag*/,
                                          static_cast<uint16_t>(density));
   if (!value.has_value()) {
-    ThrowIfIOError(env, value);
     return ApkAssetsCookieToJavaCookie(kInvalidCookie);
   }
 
   if (resolve_references) {
     auto result = assetmanager->ResolveReference(value.value());
     if (!result.has_value()) {
-      ThrowIfIOError(env, result);
       return ApkAssetsCookieToJavaCookie(kInvalidCookie);
     }
   }
@@ -644,10 +706,10 @@ static jint NativeGetResourceValue(JNIEnv* env, jclass /*clazz*/, jlong ptr, jin
 
 static jint NativeGetResourceBagValue(JNIEnv* env, jclass /*clazz*/, jlong ptr, jint resid,
                                       jint bag_entry_id, jobject typed_value) {
-  ScopedLock<AssetManager2> assetmanager(AssetManagerFromLong(ptr));
+  auto assetmanager = LockAndStartAssetManager(ptr);
+
   auto bag = assetmanager->GetBag(static_cast<uint32_t>(resid));
   if (!bag.has_value()) {
-    ThrowIfIOError(env, bag);
     return ApkAssetsCookieToJavaCookie(kInvalidCookie);
   }
 
@@ -666,17 +728,16 @@ static jint NativeGetResourceBagValue(JNIEnv* env, jclass /*clazz*/, jlong ptr, 
   AssetManager2::SelectedValue attr_value(*bag, *entry);
   auto result = assetmanager->ResolveReference(attr_value);
   if (!result.has_value()) {
-    ThrowIfIOError(env, result);
     return ApkAssetsCookieToJavaCookie(kInvalidCookie);
   }
   return CopyValue(env, attr_value, typed_value);
 }
 
 static jintArray NativeGetStyleAttributes(JNIEnv* env, jclass /*clazz*/, jlong ptr, jint resid) {
-  ScopedLock<AssetManager2> assetmanager(AssetManagerFromLong(ptr));
+  auto assetmanager = LockAndStartAssetManager(ptr);
+
   auto bag_result = assetmanager->GetBag(static_cast<uint32_t>(resid));
   if (!bag_result.has_value()) {
-    ThrowIfIOError(env, bag_result);
     return nullptr;
   }
 
@@ -695,10 +756,10 @@ static jintArray NativeGetStyleAttributes(JNIEnv* env, jclass /*clazz*/, jlong p
 
 static jobjectArray NativeGetResourceStringArray(JNIEnv* env, jclass /*clazz*/, jlong ptr,
                                                  jint resid) {
-  ScopedLock<AssetManager2> assetmanager(AssetManagerFromLong(ptr));
+  auto assetmanager = LockAndStartAssetManager(ptr);
+
   auto bag_result = assetmanager->GetBag(static_cast<uint32_t>(resid));
   if (!bag_result.has_value()) {
-    ThrowIfIOError(env, bag_result);
     return nullptr;
   }
 
@@ -713,42 +774,40 @@ static jobjectArray NativeGetResourceStringArray(JNIEnv* env, jclass /*clazz*/, 
     AssetManager2::SelectedValue attr_value(bag, bag->entries[i]);
     auto result = assetmanager->ResolveReference(attr_value);
     if (!result.has_value()) {
-      ThrowIfIOError(env, result);
       return nullptr;
     }
 
     if (attr_value.type == Res_value::TYPE_STRING) {
-      const ApkAssets* apk_assets = assetmanager->GetApkAssets()[attr_value.cookie];
-      const ResStringPool* pool = apk_assets->GetLoadedArsc()->GetStringPool();
+      const auto& apk_assets = assetmanager->GetApkAssets(attr_value.cookie);
+      if (apk_assets) {
+          const ResStringPool* pool = apk_assets->GetLoadedArsc()->GetStringPool();
 
-      jstring java_string = nullptr;
-      auto str_utf8 = pool->string8At(attr_value.data);
-      if (UNLIKELY(ThrowIfIOError(env, str_utf8))) {
-        return nullptr;
-      }
+          jstring java_string;
+          if (auto str_utf8 = pool->string8At(attr_value.data); str_utf8.has_value()) {
+              java_string = env->NewStringUTF(str_utf8->data());
+          } else {
+              auto str_utf16 = pool->stringAt(attr_value.data);
+              if (!str_utf16.has_value()) {
+                  return nullptr;
+              }
+              java_string = env->NewString(reinterpret_cast<const jchar*>(str_utf16->data()),
+                                           str_utf16->size());
+          }
 
-      if (str_utf8.has_value()) {
-        java_string = env->NewStringUTF(str_utf8->data());
+          // Check for errors creating the strings (if malformed or no memory).
+          if (env->ExceptionCheck()) {
+              return nullptr;
+          }
+
+          env->SetObjectArrayElement(array, i, java_string);
+
+          // If we have a large amount of string in our array, we might overflow the
+          // local reference table of the VM.
+          env->DeleteLocalRef(java_string);
       } else {
-        auto str_utf16 = pool->stringAt(attr_value.data);
-        if (!str_utf16.has_value()) {
-          ThrowIfIOError(env, str_utf16);
-          return nullptr;
-        }
-        java_string = env->NewString(reinterpret_cast<const jchar*>(str_utf16->data()),
-                                     str_utf16->size());
+          ALOGW("NativeGetResourceStringArray: an expired assets object #%d / %d", i,
+                attr_value.cookie);
       }
-
-      // Check for errors creating the strings (if malformed or no memory).
-      if (env->ExceptionCheck()) {
-        return nullptr;
-      }
-
-      env->SetObjectArrayElement(array, i, java_string);
-
-      // If we have a large amount of string in our array, we might overflow the
-      // local reference table of the VM.
-      env->DeleteLocalRef(java_string);
     }
   }
   return array;
@@ -756,10 +815,10 @@ static jobjectArray NativeGetResourceStringArray(JNIEnv* env, jclass /*clazz*/, 
 
 static jintArray NativeGetResourceStringArrayInfo(JNIEnv* env, jclass /*clazz*/, jlong ptr,
                                                   jint resid) {
-  ScopedLock<AssetManager2> assetmanager(AssetManagerFromLong(ptr));
+  auto assetmanager = LockAndStartAssetManager(ptr);
+
   auto bag_result = assetmanager->GetBag(static_cast<uint32_t>(resid));
   if (!bag_result.has_value()) {
-    ThrowIfIOError(env, bag_result);
     return nullptr;
   }
 
@@ -779,7 +838,6 @@ static jintArray NativeGetResourceStringArrayInfo(JNIEnv* env, jclass /*clazz*/,
     auto result = assetmanager->ResolveReference(attr_value);
     if (!result.has_value()) {
       env->ReleasePrimitiveArrayCritical(array, buffer, JNI_ABORT);
-      ThrowIfIOError(env, result);
       return nullptr;
     }
 
@@ -796,10 +854,10 @@ static jintArray NativeGetResourceStringArrayInfo(JNIEnv* env, jclass /*clazz*/,
 }
 
 static jintArray NativeGetResourceIntArray(JNIEnv* env, jclass /*clazz*/, jlong ptr, jint resid) {
-  ScopedLock<AssetManager2> assetmanager(AssetManagerFromLong(ptr));
+  auto assetmanager = LockAndStartAssetManager(ptr);
+
   auto bag_result = assetmanager->GetBag(static_cast<uint32_t>(resid));
   if (!bag_result.has_value()) {
-    ThrowIfIOError(env, bag_result);
     return nullptr;
   }
 
@@ -819,7 +877,6 @@ static jintArray NativeGetResourceIntArray(JNIEnv* env, jclass /*clazz*/, jlong 
     auto result = assetmanager->ResolveReference(attr_value);
     if (!result.has_value()) {
       env->ReleasePrimitiveArrayCritical(array, buffer, 0);
-      ThrowIfIOError(env, result);
       return nullptr;
     }
 
@@ -833,23 +890,22 @@ static jintArray NativeGetResourceIntArray(JNIEnv* env, jclass /*clazz*/, jlong 
 }
 
 static jint NativeGetResourceArraySize(JNIEnv* env, jclass /*clazz*/, jlong ptr, jint resid) {
-    ScopedLock<AssetManager2> assetmanager(AssetManagerFromLong(ptr));
-    auto bag = assetmanager->GetBag(static_cast<uint32_t>(resid));
-    if (!bag.has_value()) {
-      ThrowIfIOError(env, bag);
-      return -1;
-    }
+  auto assetmanager = LockAndStartAssetManager(ptr);
+  auto bag = assetmanager->GetBag(static_cast<uint32_t>(resid));
+  if (!bag.has_value()) {
+    return -1;
+  }
     return static_cast<jint>((*bag)->entry_count);
 }
 
 static jint NativeGetResourceArray(JNIEnv* env, jclass /*clazz*/, jlong ptr, jint resid,
                                    jintArray out_data) {
-  ScopedLock<AssetManager2> assetmanager(AssetManagerFromLong(ptr));
-  auto bag_result = assetmanager->GetBag(static_cast<uint32_t>(resid));
-  if (!bag_result.has_value()) {
-    ThrowIfIOError(env, bag_result);
+    auto assetmanager = LockAndStartAssetManager(ptr);
+
+    auto bag_result = assetmanager->GetBag(static_cast<uint32_t>(resid));
+    if (!bag_result.has_value()) {
     return -1;
-  }
+    }
 
   const jsize out_data_length = env->GetArrayLength(out_data);
   if (env->ExceptionCheck()) {
@@ -874,7 +930,6 @@ static jint NativeGetResourceArray(JNIEnv* env, jclass /*clazz*/, jlong ptr, jin
     auto result = assetmanager->ResolveReference(attr_value);
     if (!result.has_value()) {
       env->ReleasePrimitiveArrayCritical(out_data, buffer, JNI_ABORT);
-      ThrowIfIOError(env, bag_result);
       return -1;
     }
 
@@ -894,6 +949,12 @@ static jint NativeGetResourceArray(JNIEnv* env, jclass /*clazz*/, jlong ptr, jin
   }
   env->ReleasePrimitiveArrayCritical(out_data, buffer, 0);
   return static_cast<jint>(bag->entry_count);
+}
+
+static jint NativeGetParentThemeIdentifier(JNIEnv* env, jclass /*clazz*/, jlong ptr, jint resid) {
+  auto assetmanager = LockAndStartAssetManager(ptr);
+  const auto parentThemeResId = assetmanager->GetParentThemeResourceId(resid);
+  return parentThemeResId.value_or(0);
 }
 
 static jint NativeGetResourceIdentifier(JNIEnv* env, jclass /*clazz*/, jlong ptr, jstring name,
@@ -918,10 +979,9 @@ static jint NativeGetResourceIdentifier(JNIEnv* env, jclass /*clazz*/, jlong ptr
     package = package_utf8.c_str();
   }
 
-  ScopedLock<AssetManager2> assetmanager(AssetManagerFromLong(ptr));
+  auto assetmanager = LockAndStartAssetManager(ptr);
   auto resid = assetmanager->GetResourceId(name_utf8.c_str(), type, package);
   if (!resid.has_value()) {
-    ThrowIfIOError(env, resid);
     return 0;
   }
 
@@ -929,10 +989,9 @@ static jint NativeGetResourceIdentifier(JNIEnv* env, jclass /*clazz*/, jlong ptr
 }
 
 static jstring NativeGetResourceName(JNIEnv* env, jclass /*clazz*/, jlong ptr, jint resid) {
-  ScopedLock<AssetManager2> assetmanager(AssetManagerFromLong(ptr));
+  auto assetmanager = LockAndStartAssetManager(ptr);
   auto name = assetmanager->GetResourceName(static_cast<uint32_t>(resid));
   if (!name.has_value()) {
-    ThrowIfIOError(env, name);
     return nullptr;
   }
 
@@ -941,10 +1000,9 @@ static jstring NativeGetResourceName(JNIEnv* env, jclass /*clazz*/, jlong ptr, j
 }
 
 static jstring NativeGetResourcePackageName(JNIEnv* env, jclass /*clazz*/, jlong ptr, jint resid) {
-  ScopedLock<AssetManager2> assetmanager(AssetManagerFromLong(ptr));
+  auto assetmanager = LockAndStartAssetManager(ptr);
   auto name = assetmanager->GetResourceName(static_cast<uint32_t>(resid));
   if (!name.has_value()) {
-    ThrowIfIOError(env, name);
     return nullptr;
   }
 
@@ -955,10 +1013,9 @@ static jstring NativeGetResourcePackageName(JNIEnv* env, jclass /*clazz*/, jlong
 }
 
 static jstring NativeGetResourceTypeName(JNIEnv* env, jclass /*clazz*/, jlong ptr, jint resid) {
-  ScopedLock<AssetManager2> assetmanager(AssetManagerFromLong(ptr));
+  auto assetmanager = LockAndStartAssetManager(ptr);
   auto name = assetmanager->GetResourceName(static_cast<uint32_t>(resid));
   if (!name.has_value()) {
-    ThrowIfIOError(env, name);
     return nullptr;
   }
 
@@ -971,10 +1028,9 @@ static jstring NativeGetResourceTypeName(JNIEnv* env, jclass /*clazz*/, jlong pt
 }
 
 static jstring NativeGetResourceEntryName(JNIEnv* env, jclass /*clazz*/, jlong ptr, jint resid) {
-  ScopedLock<AssetManager2> assetmanager(AssetManagerFromLong(ptr));
+  auto assetmanager = LockAndStartAssetManager(ptr);
   auto name = assetmanager->GetResourceName(static_cast<uint32_t>(resid));
   if (!name.has_value()) {
-    ThrowIfIOError(env, name);
     return nullptr;
   }
 
@@ -990,14 +1046,14 @@ static void NativeSetResourceResolutionLoggingEnabled(JNIEnv* /*env*/,
                                                       jclass /*clazz*/,
                                                       jlong ptr,
                                                       jboolean enabled) {
-  ScopedLock<AssetManager2> assetmanager(AssetManagerFromLong(ptr));
+  auto assetmanager = LockAndStartAssetManager(ptr);
   assetmanager->SetResourceResolutionLoggingEnabled(enabled);
 }
 
 static jstring NativeGetLastResourceResolution(JNIEnv* env,
                                                jclass /*clazz*/,
                                                jlong ptr) {
-  ScopedLock<AssetManager2> assetmanager(AssetManagerFromLong(ptr));
+  auto assetmanager = LockAndStartAssetManager(ptr);
   std::string resolution = assetmanager->GetLastResourceResolution();
   if (resolution.empty()) {
     return nullptr;
@@ -1008,7 +1064,7 @@ static jstring NativeGetLastResourceResolution(JNIEnv* env,
 
 static jobjectArray NativeGetLocales(JNIEnv* env, jclass /*class*/, jlong ptr,
                                      jboolean exclude_system) {
-  ScopedLock<AssetManager2> assetmanager(AssetManagerFromLong(ptr));
+  auto assetmanager = LockAndStartAssetManager(ptr);
   std::set<std::string> locales =
       assetmanager->GetResourceLocales(exclude_system, true /*merge_equivalent_languages*/);
 
@@ -1040,15 +1096,16 @@ static jobject ConstructConfigurationObject(JNIEnv* env, const ResTable_config& 
                    config.smallestScreenWidthDp);
   env->SetIntField(result, gConfigurationOffsets.mScreenWidthDpOffset, config.screenWidthDp);
   env->SetIntField(result, gConfigurationOffsets.mScreenHeightDpOffset, config.screenHeightDp);
+  env->SetIntField(result, gConfigurationOffsets.mScreenLayoutOffset, config.screenLayout);
+  env->SetIntField(result, gConfigurationOffsets.mUiMode, config.uiMode);
   return result;
 }
 
-static jobjectArray NativeGetSizeConfigurations(JNIEnv* env, jclass /*clazz*/, jlong ptr) {
-  ScopedLock<AssetManager2> assetmanager(AssetManagerFromLong(ptr));
+static jobjectArray GetSizeAndUiModeConfigurations(JNIEnv* env, jlong ptr) {
+  auto assetmanager = LockAndStartAssetManager(ptr);
   auto configurations = assetmanager->GetResourceConfigurations(true /*exclude_system*/,
                                                                 false /*exclude_mipmap*/);
   if (!configurations.has_value()) {
-    ThrowIfIOError(env, configurations);
     return nullptr;
   }
 
@@ -1071,12 +1128,18 @@ static jobjectArray NativeGetSizeConfigurations(JNIEnv* env, jclass /*clazz*/, j
   return array;
 }
 
-static jintArray NativeAttributeResolutionStack(
-    JNIEnv* env, jclass /*clazz*/, jlong ptr,
-    jlong theme_ptr, jint xml_style_res,
-    jint def_style_attr, jint def_style_resid) {
+static jobjectArray NativeGetSizeConfigurations(JNIEnv* env, jclass /*clazz*/, jlong ptr) {
+  return GetSizeAndUiModeConfigurations(env, ptr);
+}
 
-  ScopedLock<AssetManager2> assetmanager(AssetManagerFromLong(ptr));
+static jobjectArray NativeGetSizeAndUiModeConfigurations(JNIEnv* env, jclass /*clazz*/, jlong ptr) {
+  return GetSizeAndUiModeConfigurations(env, ptr);
+}
+
+static jintArray NativeAttributeResolutionStack(JNIEnv* env, jclass /*clazz*/, jlong ptr,
+                                                jlong theme_ptr, jint xml_style_res,
+                                                jint def_style_attr, jint def_style_resid) {
+  auto assetmanager = LockAndStartAssetManager(ptr);
   Theme* theme = reinterpret_cast<Theme*>(theme_ptr);
   CHECK(theme->GetAssetManager() == &(*assetmanager));
   (void) assetmanager;
@@ -1089,29 +1152,36 @@ static jintArray NativeAttributeResolutionStack(
     }
   }
 
-  auto style_stack = assetmanager->GetBagResIdStack(xml_style_res);
-  auto def_style_stack = assetmanager->GetBagResIdStack(def_style_resid);
+  const auto maybe_style_stack = assetmanager->GetBagResIdStack(xml_style_res);
+  if (!maybe_style_stack.ok()) {
+    jniThrowIOException(env, EBADMSG);
+    return nullptr;
+  }
+  const auto& style_stack = *maybe_style_stack.value();
+  const auto maybe_def_style_stack = assetmanager->GetBagResIdStack(def_style_resid);
+  if (!maybe_def_style_stack.ok()) {
+    jniThrowIOException(env, EBADMSG);
+    return nullptr;
+  }
+  const auto& def_style_stack = *maybe_def_style_stack.value();
 
   jintArray array = env->NewIntArray(style_stack.size() + def_style_stack.size());
   if (env->ExceptionCheck()) {
     return nullptr;
   }
 
-  for (uint32_t i = 0; i < style_stack.size(); i++) {
-    jint attr_resid = style_stack[i];
-    env->SetIntArrayRegion(array, i, 1, &attr_resid);
-  }
-  for (uint32_t i = 0; i < def_style_stack.size(); i++) {
-    jint attr_resid = def_style_stack[i];
-    env->SetIntArrayRegion(array, style_stack.size() + i, 1, &attr_resid);
-  }
+  static_assert(sizeof(jint) == sizeof(decltype(style_stack.front())));
+  env->SetIntArrayRegion(array, 0, style_stack.size(),
+                         reinterpret_cast<const jint*>(style_stack.data()));
+  env->SetIntArrayRegion(array, style_stack.size(), def_style_stack.size(),
+                         reinterpret_cast<const jint*>(def_style_stack.data()));
   return array;
 }
 
 static void NativeApplyStyle(JNIEnv* env, jclass /*clazz*/, jlong ptr, jlong theme_ptr,
                              jint def_style_attr, jint def_style_resid, jlong xml_parser_ptr,
                              jintArray java_attrs, jlong out_values_ptr, jlong out_indices_ptr) {
-  ScopedLock<AssetManager2> assetmanager(AssetManagerFromLong(ptr));
+  auto assetmanager = LockAndStartAssetManager(ptr);
   Theme* theme = reinterpret_cast<Theme*>(theme_ptr);
   CHECK(theme->GetAssetManager() == &(*assetmanager));
   (void) assetmanager;
@@ -1126,11 +1196,10 @@ static void NativeApplyStyle(JNIEnv* env, jclass /*clazz*/, jlong ptr, jlong the
     return;
   }
 
-  auto result = ApplyStyle(theme, xml_parser, static_cast<uint32_t>(def_style_attr),
-                           static_cast<uint32_t>(def_style_resid),
-                           reinterpret_cast<uint32_t*>(attrs), attrs_len, out_values, out_indices);
+  ApplyStyle(theme, xml_parser, static_cast<uint32_t>(def_style_attr),
+             static_cast<uint32_t>(def_style_resid), reinterpret_cast<uint32_t*>(attrs), attrs_len,
+             out_values, out_indices);
   env->ReleasePrimitiveArrayCritical(java_attrs, attrs, JNI_ABORT);
-  ThrowIfIOError(env, result);
 }
 
 static jboolean NativeResolveAttrs(JNIEnv* env, jclass /*clazz*/, jlong ptr, jlong theme_ptr,
@@ -1187,7 +1256,7 @@ static jboolean NativeResolveAttrs(JNIEnv* env, jclass /*clazz*/, jlong ptr, jlo
     }
   }
 
-  ScopedLock<AssetManager2> assetmanager(AssetManagerFromLong(ptr));
+  auto assetmanager = LockAndStartAssetManager(ptr);
   Theme* theme = reinterpret_cast<Theme*>(theme_ptr);
   CHECK(theme->GetAssetManager() == &(*assetmanager));
   (void) assetmanager;
@@ -1207,11 +1276,7 @@ static jboolean NativeResolveAttrs(JNIEnv* env, jclass /*clazz*/, jlong ptr, jlo
   }
 
   env->ReleasePrimitiveArrayCritical(java_attrs, attrs, JNI_ABORT);
-  if (!result.has_value()) {
-    ThrowIfIOError(env, result);
-    return JNI_FALSE;
-  }
-  return JNI_TRUE;
+  return result.has_value() ? JNI_TRUE : JNI_FALSE;
 }
 
 static jboolean NativeRetrieveAttributes(JNIEnv* env, jclass /*clazz*/, jlong ptr,
@@ -1250,7 +1315,8 @@ static jboolean NativeRetrieveAttributes(JNIEnv* env, jclass /*clazz*/, jlong pt
     }
   }
 
-  ScopedLock<AssetManager2> assetmanager(AssetManagerFromLong(ptr));
+  auto assetmanager = LockAndStartAssetManager(ptr);
+  ResourceTimer _timer(ResourceTimer::Counter::RetrieveAttributes);
   ResXMLParser* xml_parser = reinterpret_cast<ResXMLParser*>(xml_parser_ptr);
   auto result =
           RetrieveAttributes(assetmanager.get(), xml_parser, reinterpret_cast<uint32_t*>(attrs),
@@ -1263,32 +1329,31 @@ static jboolean NativeRetrieveAttributes(JNIEnv* env, jclass /*clazz*/, jlong pt
 
   env->ReleasePrimitiveArrayCritical(out_java_values, out_values, 0);
   env->ReleasePrimitiveArrayCritical(java_attrs, attrs, JNI_ABORT);
-  if (!result.has_value()) {
-    ThrowIfIOError(env, result);
-    return JNI_FALSE;
-  }
-  return JNI_TRUE;
+  return result.has_value() ? JNI_TRUE : JNI_FALSE;
 }
 
 static jlong NativeThemeCreate(JNIEnv* /*env*/, jclass /*clazz*/, jlong ptr) {
-  ScopedLock<AssetManager2> assetmanager(AssetManagerFromLong(ptr));
+  auto assetmanager = LockAndStartAssetManager(ptr);
   return reinterpret_cast<jlong>(assetmanager->NewTheme().release());
 }
 
-static void NativeThemeDestroy(JNIEnv* /*env*/, jclass /*clazz*/, jlong theme_ptr) {
+static void NativeThemeDestroy(jlong theme_ptr) {
   delete reinterpret_cast<Theme*>(theme_ptr);
+}
+
+static jlong NativeGetThemeFreeFunction(JNIEnv* /*env*/, jclass /*clazz*/) {
+  return static_cast<jlong>(reinterpret_cast<uintptr_t>(&NativeThemeDestroy));
 }
 
 static void NativeThemeApplyStyle(JNIEnv* env, jclass /*clazz*/, jlong ptr, jlong theme_ptr,
                                   jint resid, jboolean force) {
   // AssetManager is accessed via the theme, so grab an explicit lock here.
-  ScopedLock<AssetManager2> assetmanager(AssetManagerFromLong(ptr));
+  auto assetmanager = LockAndStartAssetManager(ptr);
   Theme* theme = reinterpret_cast<Theme*>(theme_ptr);
   CHECK(theme->GetAssetManager() == &(*assetmanager));
   (void) assetmanager;
 
-  auto result = theme->ApplyStyle(static_cast<uint32_t>(resid), force);
-  ThrowIfIOError(env, result);
+  theme->ApplyStyle(static_cast<uint32_t>(resid), force);
 
   // TODO(adamlesinski): Consider surfacing exception when result is failure.
   // CTS currently expects no exceptions from this method.
@@ -1296,37 +1361,71 @@ static void NativeThemeApplyStyle(JNIEnv* env, jclass /*clazz*/, jlong ptr, jlon
   // jniThrowException(env, "java/lang/IllegalArgumentException", error_msg.c_str());
 }
 
+static void NativeThemeRebase(JNIEnv* env, jclass /*clazz*/, jlong ptr, jlong theme_ptr,
+                              jintArray style_ids, jbooleanArray force,
+                              jint style_count) {
+  // Lock both the original asset manager of the theme and the new asset manager to be used for the
+  // theme.
+  auto assetmanager = LockAndStartAssetManager(ptr);
+
+  uint32_t* style_id_args = nullptr;
+  if (style_ids != nullptr) {
+    CHECK(style_count <= env->GetArrayLength(style_ids));
+    style_id_args = reinterpret_cast<uint32_t*>(env->GetPrimitiveArrayCritical(style_ids, nullptr));
+    if (style_id_args == nullptr) {
+      return;
+    }
+  } else {
+    CHECK(style_count == 0) << "style_ids is null while style_count is non-zero";
+  }
+  auto style_id_args_copy = std::vector<uint32_t>{style_id_args, style_id_args + style_count};
+  if (style_ids != nullptr) {
+      env->ReleasePrimitiveArrayCritical(style_ids, style_id_args, JNI_ABORT);
+  }
+
+  jboolean* force_args = nullptr;
+  if (force != nullptr) {
+    CHECK(style_count <= env->GetArrayLength(force));
+    force_args = reinterpret_cast<jboolean*>(env->GetPrimitiveArrayCritical(force, nullptr));
+    if (force_args == nullptr) {
+      env->ReleasePrimitiveArrayCritical(style_ids, style_id_args, JNI_ABORT);
+      return;
+    }
+  } else {
+    CHECK(style_count == 0) << "force is null while style_count is non-zero";
+  }
+  auto force_args_copy = std::vector<jboolean>{force_args, force_args + style_count};
+  if (force != nullptr) {
+    env->ReleasePrimitiveArrayCritical(force, force_args, JNI_ABORT);
+  }
+
+  auto theme = reinterpret_cast<Theme*>(theme_ptr);
+  theme->Rebase(&(*assetmanager), style_id_args_copy.data(), force_args_copy.data(),
+                static_cast<size_t>(style_count));
+}
+
 static void NativeThemeCopy(JNIEnv* env, jclass /*clazz*/, jlong dst_asset_manager_ptr,
                             jlong dst_theme_ptr, jlong src_asset_manager_ptr, jlong src_theme_ptr) {
   Theme* dst_theme = reinterpret_cast<Theme*>(dst_theme_ptr);
   Theme* src_theme = reinterpret_cast<Theme*>(src_theme_ptr);
 
-  ScopedLock<AssetManager2> src_assetmanager(AssetManagerFromLong(src_asset_manager_ptr));
+  auto src_assetmanager = LockAndStartAssetManager(src_asset_manager_ptr);
   CHECK(src_theme->GetAssetManager() == &(*src_assetmanager));
-  (void) src_assetmanager;
 
   if (dst_asset_manager_ptr != src_asset_manager_ptr) {
-    ScopedLock<AssetManager2> dst_assetmanager(AssetManagerFromLong(dst_asset_manager_ptr));
+    auto dst_assetmanager = LockAndStartAssetManager(dst_asset_manager_ptr);
     CHECK(dst_theme->GetAssetManager() == &(*dst_assetmanager));
-    (void) dst_assetmanager;
-
-    auto result = dst_theme->SetTo(*src_theme);
-    ThrowIfIOError(env, result);
-    return;
+    dst_theme->SetTo(*src_theme);
+  } else {
+    dst_theme->SetTo(*src_theme);
   }
-
-  auto result = dst_theme->SetTo(*src_theme);
-  ThrowIfIOError(env, result);
-}
-
-static void NativeThemeClear(JNIEnv* /*env*/, jclass /*clazz*/, jlong theme_ptr) {
-  reinterpret_cast<Theme*>(theme_ptr)->Clear();
 }
 
 static jint NativeThemeGetAttributeValue(JNIEnv* env, jclass /*clazz*/, jlong ptr, jlong theme_ptr,
                                          jint resid, jobject typed_value,
                                          jboolean resolve_references) {
-  ScopedLock<AssetManager2> assetmanager(AssetManagerFromLong(ptr));
+  auto assetmanager = LockAndStartAssetManager(ptr);
+
   Theme* theme = reinterpret_cast<Theme*>(theme_ptr);
   CHECK(theme->GetAssetManager() == &(*assetmanager));
   (void) assetmanager;
@@ -1342,7 +1441,6 @@ static jint NativeThemeGetAttributeValue(JNIEnv* env, jclass /*clazz*/, jlong pt
 
   auto result = theme->GetAssetManager()->ResolveReference(*value);
   if (!result.has_value()) {
-    ThrowIfIOError(env, result);
     return ApkAssetsCookieToJavaCookie(kInvalidCookie);
   }
   return CopyValue(env, *value, typed_value);
@@ -1350,7 +1448,7 @@ static jint NativeThemeGetAttributeValue(JNIEnv* env, jclass /*clazz*/, jlong pt
 
 static void NativeThemeDump(JNIEnv* /*env*/, jclass /*clazz*/, jlong ptr, jlong theme_ptr,
                             jint priority, jstring tag, jstring prefix) {
-  ScopedLock<AssetManager2> assetmanager(AssetManagerFromLong(ptr));
+  auto assetmanager = LockAndStartAssetManager(ptr);
   Theme* theme = reinterpret_cast<Theme*>(theme_ptr);
   CHECK(theme->GetAssetManager() == &(*assetmanager));
   (void) assetmanager;
@@ -1426,89 +1524,97 @@ static jlong NativeAssetGetRemainingLength(JNIEnv* /*env*/, jclass /*clazz*/, jl
 
 // JNI registration.
 static const JNINativeMethod gAssetManagerMethods[] = {
-    // AssetManager setup methods.
-    {"nativeCreate", "()J", (void*)NativeCreate},
-    {"nativeDestroy", "(J)V", (void*)NativeDestroy},
-    {"nativeSetApkAssets", "(J[Landroid/content/res/ApkAssets;Z)V", (void*)NativeSetApkAssets},
-    {"nativeSetConfiguration", "(JIILjava/lang/String;IIIIIIIIIIIIIII)V",
-     (void*)NativeSetConfiguration},
-    {"nativeGetAssignedPackageIdentifiers", "(JZZ)Landroid/util/SparseArray;",
-     (void*)NativeGetAssignedPackageIdentifiers},
+        // AssetManager setup methods.
+        {"nativeCreate", "()J", (void*)NativeCreate},
+        {"nativeDestroy", "(J)V", (void*)NativeDestroy},
+        {"nativeSetApkAssets", "(J[Landroid/content/res/ApkAssets;ZZ)V", (void*)NativeSetApkAssets},
+        {"nativeSetConfiguration", "(JIILjava/lang/String;[Ljava/lang/String;IIIIIIIIIIIIIIIIZ)V",
+         (void*)NativeSetConfiguration},
+        {"nativeGetAssignedPackageIdentifiers", "(JZZ)Landroid/util/SparseArray;",
+         (void*)NativeGetAssignedPackageIdentifiers},
 
-    // AssetManager file methods.
-    {"nativeContainsAllocatedTable", "(J)Z", (void*)ContainsAllocatedTable},
-    {"nativeList", "(JLjava/lang/String;)[Ljava/lang/String;", (void*)NativeList},
-    {"nativeOpenAsset", "(JLjava/lang/String;I)J", (void*)NativeOpenAsset},
-    {"nativeOpenAssetFd", "(JLjava/lang/String;[J)Landroid/os/ParcelFileDescriptor;",
-     (void*)NativeOpenAssetFd},
-    {"nativeOpenNonAsset", "(JILjava/lang/String;I)J", (void*)NativeOpenNonAsset},
-    {"nativeOpenNonAssetFd", "(JILjava/lang/String;[J)Landroid/os/ParcelFileDescriptor;",
-     (void*)NativeOpenNonAssetFd},
-    {"nativeOpenXmlAsset", "(JILjava/lang/String;)J", (void*)NativeOpenXmlAsset},
-    {"nativeOpenXmlAssetFd", "(JILjava/io/FileDescriptor;)J", (void*)NativeOpenXmlAssetFd},
+        // AssetManager file methods.
+        {"nativeContainsAllocatedTable", "(J)Z", (void*)ContainsAllocatedTable},
+        {"nativeList", "(JLjava/lang/String;)[Ljava/lang/String;", (void*)NativeList},
+        {"nativeOpenAsset", "(JLjava/lang/String;I)J", (void*)NativeOpenAsset},
+        {"nativeOpenAssetFd", "(JLjava/lang/String;[J)Landroid/os/ParcelFileDescriptor;",
+         (void*)NativeOpenAssetFd},
+        {"nativeOpenNonAsset", "(JILjava/lang/String;I)J", (void*)NativeOpenNonAsset},
+        {"nativeOpenNonAssetFd", "(JILjava/lang/String;[J)Landroid/os/ParcelFileDescriptor;",
+         (void*)NativeOpenNonAssetFd},
+        {"nativeOpenXmlAsset", "(JILjava/lang/String;)J", (void*)NativeOpenXmlAsset},
+        {"nativeOpenXmlAssetFd", "(JILjava/io/FileDescriptor;)J", (void*)NativeOpenXmlAssetFd},
 
-    // AssetManager resource methods.
-    {"nativeGetResourceValue", "(JISLandroid/util/TypedValue;Z)I", (void*)NativeGetResourceValue},
-    {"nativeGetResourceBagValue", "(JIILandroid/util/TypedValue;)I",
-     (void*)NativeGetResourceBagValue},
-    {"nativeGetStyleAttributes", "(JI)[I", (void*)NativeGetStyleAttributes},
-    {"nativeGetResourceStringArray", "(JI)[Ljava/lang/String;",
-     (void*)NativeGetResourceStringArray},
-    {"nativeGetResourceStringArrayInfo", "(JI)[I", (void*)NativeGetResourceStringArrayInfo},
-    {"nativeGetResourceIntArray", "(JI)[I", (void*)NativeGetResourceIntArray},
-    {"nativeGetResourceArraySize", "(JI)I", (void*)NativeGetResourceArraySize},
-    {"nativeGetResourceArray", "(JI[I)I", (void*)NativeGetResourceArray},
+        // AssetManager resource methods.
+        {"nativeGetResourceValue", "(JISLandroid/util/TypedValue;Z)I",
+         (void*)NativeGetResourceValue},
+        {"nativeGetResourceBagValue", "(JIILandroid/util/TypedValue;)I",
+         (void*)NativeGetResourceBagValue},
+        {"nativeGetStyleAttributes", "(JI)[I", (void*)NativeGetStyleAttributes},
+        {"nativeGetResourceStringArray", "(JI)[Ljava/lang/String;",
+         (void*)NativeGetResourceStringArray},
+        {"nativeGetResourceStringArrayInfo", "(JI)[I", (void*)NativeGetResourceStringArrayInfo},
+        {"nativeGetResourceIntArray", "(JI)[I", (void*)NativeGetResourceIntArray},
+        {"nativeGetResourceArraySize", "(JI)I", (void*)NativeGetResourceArraySize},
+        {"nativeGetResourceArray", "(JI[I)I", (void*)NativeGetResourceArray},
+        {"nativeGetParentThemeIdentifier", "(JI)I", (void*)NativeGetParentThemeIdentifier},
 
-    // AssetManager resource name/ID methods.
-    {"nativeGetResourceIdentifier", "(JLjava/lang/String;Ljava/lang/String;Ljava/lang/String;)I",
-     (void*)NativeGetResourceIdentifier},
-    {"nativeGetResourceName", "(JI)Ljava/lang/String;", (void*)NativeGetResourceName},
-    {"nativeGetResourcePackageName", "(JI)Ljava/lang/String;", (void*)NativeGetResourcePackageName},
-    {"nativeGetResourceTypeName", "(JI)Ljava/lang/String;", (void*)NativeGetResourceTypeName},
-    {"nativeGetResourceEntryName", "(JI)Ljava/lang/String;", (void*)NativeGetResourceEntryName},
-    {"nativeSetResourceResolutionLoggingEnabled", "(JZ)V",
-     (void*) NativeSetResourceResolutionLoggingEnabled},
-    {"nativeGetLastResourceResolution", "(J)Ljava/lang/String;",
-     (void*) NativeGetLastResourceResolution},
-    {"nativeGetLocales", "(JZ)[Ljava/lang/String;", (void*)NativeGetLocales},
-    {"nativeGetSizeConfigurations", "(J)[Landroid/content/res/Configuration;",
-     (void*)NativeGetSizeConfigurations},
+        // AssetManager resource name/ID methods.
+        {"nativeGetResourceIdentifier",
+         "(JLjava/lang/String;Ljava/lang/String;Ljava/lang/String;)I",
+         (void*)NativeGetResourceIdentifier},
+        {"nativeGetResourceName", "(JI)Ljava/lang/String;", (void*)NativeGetResourceName},
+        {"nativeGetResourcePackageName", "(JI)Ljava/lang/String;",
+         (void*)NativeGetResourcePackageName},
+        {"nativeGetResourceTypeName", "(JI)Ljava/lang/String;", (void*)NativeGetResourceTypeName},
+        {"nativeGetResourceEntryName", "(JI)Ljava/lang/String;", (void*)NativeGetResourceEntryName},
+        {"nativeSetResourceResolutionLoggingEnabled", "(JZ)V",
+         (void*)NativeSetResourceResolutionLoggingEnabled},
+        {"nativeGetLastResourceResolution", "(J)Ljava/lang/String;",
+         (void*)NativeGetLastResourceResolution},
+        {"nativeGetLocales", "(JZ)[Ljava/lang/String;", (void*)NativeGetLocales},
+        {"nativeGetSizeConfigurations", "(J)[Landroid/content/res/Configuration;",
+         (void*)NativeGetSizeConfigurations},
+        {"nativeGetSizeAndUiModeConfigurations", "(J)[Landroid/content/res/Configuration;",
+         (void*)NativeGetSizeAndUiModeConfigurations},
 
-    // Style attribute related methods.
-    {"nativeAttributeResolutionStack", "(JJIII)[I", (void*)NativeAttributeResolutionStack},
-    {"nativeApplyStyle", "(JJIIJ[IJJ)V", (void*)NativeApplyStyle},
-    {"nativeResolveAttrs", "(JJII[I[I[I[I)Z", (void*)NativeResolveAttrs},
-    {"nativeRetrieveAttributes", "(JJ[I[I[I)Z", (void*)NativeRetrieveAttributes},
+        // Style attribute related methods.
+        {"nativeAttributeResolutionStack", "(JJIII)[I", (void*)NativeAttributeResolutionStack},
+        {"nativeApplyStyle", "(JJIIJ[IJJ)V", (void*)NativeApplyStyle},
+        {"nativeResolveAttrs", "(JJII[I[I[I[I)Z", (void*)NativeResolveAttrs},
+        {"nativeRetrieveAttributes", "(JJ[I[I[I)Z", (void*)NativeRetrieveAttributes},
 
-    // Theme related methods.
-    {"nativeThemeCreate", "(J)J", (void*)NativeThemeCreate},
-    {"nativeThemeDestroy", "(J)V", (void*)NativeThemeDestroy},
-    {"nativeThemeApplyStyle", "(JJIZ)V", (void*)NativeThemeApplyStyle},
-    {"nativeThemeCopy", "(JJJJ)V", (void*)NativeThemeCopy},
-    {"nativeThemeClear", "(J)V", (void*)NativeThemeClear},
-    {"nativeThemeGetAttributeValue", "(JJILandroid/util/TypedValue;Z)I",
-     (void*)NativeThemeGetAttributeValue},
-    {"nativeThemeDump", "(JJILjava/lang/String;Ljava/lang/String;)V", (void*)NativeThemeDump},
-    {"nativeThemeGetChangingConfigurations", "(J)I", (void*)NativeThemeGetChangingConfigurations},
+        // Theme related methods.
+        {"nativeThemeCreate", "(J)J", (void*)NativeThemeCreate},
+        {"nativeGetThemeFreeFunction", "()J", (void*)NativeGetThemeFreeFunction},
+        {"nativeThemeApplyStyle", "(JJIZ)V", (void*)NativeThemeApplyStyle},
+        {"nativeThemeRebase", "(JJ[I[ZI)V", (void*)NativeThemeRebase},
 
-    // AssetInputStream methods.
-    {"nativeAssetDestroy", "(J)V", (void*)NativeAssetDestroy},
-    {"nativeAssetReadChar", "(J)I", (void*)NativeAssetReadChar},
-    {"nativeAssetRead", "(J[BII)I", (void*)NativeAssetRead},
-    {"nativeAssetSeek", "(JJI)J", (void*)NativeAssetSeek},
-    {"nativeAssetGetLength", "(J)J", (void*)NativeAssetGetLength},
-    {"nativeAssetGetRemainingLength", "(J)J", (void*)NativeAssetGetRemainingLength},
+        {"nativeThemeCopy", "(JJJJ)V", (void*)NativeThemeCopy},
+        {"nativeThemeGetAttributeValue", "(JJILandroid/util/TypedValue;Z)I",
+         (void*)NativeThemeGetAttributeValue},
+        {"nativeThemeDump", "(JJILjava/lang/String;Ljava/lang/String;)V", (void*)NativeThemeDump},
+        {"nativeThemeGetChangingConfigurations", "(J)I",
+         (void*)NativeThemeGetChangingConfigurations},
 
-    // System/idmap related methods.
-    {"nativeGetOverlayableMap", "(JLjava/lang/String;)Ljava/util/Map;",
-     (void*)NativeGetOverlayableMap},
-    {"nativeGetOverlayablesToString", "(JLjava/lang/String;)Ljava/lang/String;",
-     (void*)NativeGetOverlayablesToString},
+        // AssetInputStream methods.
+        {"nativeAssetDestroy", "(J)V", (void*)NativeAssetDestroy},
+        {"nativeAssetReadChar", "(J)I", (void*)NativeAssetReadChar},
+        {"nativeAssetRead", "(J[BII)I", (void*)NativeAssetRead},
+        {"nativeAssetSeek", "(JJI)J", (void*)NativeAssetSeek},
+        {"nativeAssetGetLength", "(J)J", (void*)NativeAssetGetLength},
+        {"nativeAssetGetRemainingLength", "(J)J", (void*)NativeAssetGetRemainingLength},
 
-    // Global management/debug methods.
-    {"getGlobalAssetCount", "()I", (void*)NativeGetGlobalAssetCount},
-    {"getAssetAllocations", "()Ljava/lang/String;", (void*)NativeGetAssetAllocations},
-    {"getGlobalAssetManagerCount", "()I", (void*)NativeGetGlobalAssetManagerCount},
+        // System/idmap related methods.
+        {"nativeGetOverlayableMap", "(JLjava/lang/String;)Ljava/util/Map;",
+         (void*)NativeGetOverlayableMap},
+        {"nativeGetOverlayablesToString", "(JLjava/lang/String;)Ljava/lang/String;",
+         (void*)NativeGetOverlayablesToString},
+
+        // Global management/debug methods.
+        {"getGlobalAssetCount", "()I", (void*)NativeGetGlobalAssetCount},
+        {"getAssetAllocations", "()Ljava/lang/String;", (void*)NativeGetAssetAllocations},
+        {"getGlobalAssetManagerCount", "()I", (void*)NativeGetGlobalAssetManagerCount},
 };
 
 int register_android_content_AssetManager(JNIEnv* env) {
@@ -1548,6 +1654,9 @@ int register_android_content_AssetManager(JNIEnv* env) {
       GetFieldIDOrDie(env, configurationClass, "screenWidthDp", "I");
   gConfigurationOffsets.mScreenHeightDpOffset =
       GetFieldIDOrDie(env, configurationClass, "screenHeightDp", "I");
+  gConfigurationOffsets.mScreenLayoutOffset =
+          GetFieldIDOrDie(env, configurationClass, "screenLayout", "I");
+  gConfigurationOffsets.mUiMode = GetFieldIDOrDie(env, configurationClass, "uiMode", "I");
 
   jclass arrayMapClass = FindClassOrDie(env, "android/util/ArrayMap");
   gArrayMapOffsets.classObject = MakeGlobalRefOrDie(env, arrayMapClass);

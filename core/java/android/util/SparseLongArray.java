@@ -19,8 +19,6 @@ package android.util;
 import com.android.internal.util.ArrayUtils;
 import com.android.internal.util.GrowingArrayUtils;
 
-import libcore.util.EmptyArray;
-
 /**
  * SparseLongArrays map integers to longs.  Unlike a normal array of longs,
  * there can be gaps in the indices.  It is intended to be more memory efficient
@@ -42,6 +40,7 @@ import libcore.util.EmptyArray;
  * keys in ascending order, or the values corresponding to the keys in ascending
  * order in the case of <code>valueAt(int)</code>.</p>
  */
+@android.ravenwood.annotation.RavenwoodKeepWholeClass
 public class SparseLongArray implements Cloneable {
     private int[] mKeys;
     private long[] mValues;
@@ -51,7 +50,7 @@ public class SparseLongArray implements Cloneable {
      * Creates a new SparseLongArray containing no mappings.
      */
     public SparseLongArray() {
-        this(10);
+        this(0);
     }
 
     /**
@@ -164,7 +163,31 @@ public class SparseLongArray implements Cloneable {
     }
 
     /**
-     * Returns the number of key-value mappings that this SparseIntArray
+     * Adds a mapping from the specified key to the specified value,
+     * <b>adding</b> its value to the previous mapping from the specified key if there
+     * was one.
+     *
+     * <p>This differs from {@link #put} because instead of replacing any previous value, it adds
+     * (in the numerical sense) to it.
+     *
+     * @hide
+     */
+    public void incrementValue(int key, long summand) {
+        int i = ContainerHelpers.binarySearch(mKeys, mSize, key);
+
+        if (i >= 0) {
+            mValues[i] += summand;
+        } else {
+            i = ~i;
+
+            mKeys = GrowingArrayUtils.insert(mKeys, mSize, i, key);
+            mValues = GrowingArrayUtils.insert(mValues, mSize, i, summand);
+            mSize++;
+        }
+    }
+
+    /**
+     * Returns the number of key-value mappings that this SparseLongArray
      * currently stores.
      */
     public int size() {
@@ -221,6 +244,28 @@ public class SparseLongArray implements Cloneable {
     }
 
     /**
+     * Given an index in the range <code>0...size()-1</code>, sets a new
+     * value for the <code>index</code>th key-value mapping that this
+     * SparseLongArray stores.
+     *
+     * <p>For indices outside of the range <code>0...size()-1</code>, the behavior is undefined for
+     * apps targeting {@link android.os.Build.VERSION_CODES#P} and earlier, and an
+     * {@link ArrayIndexOutOfBoundsException} is thrown for apps targeting
+     * {@link android.os.Build.VERSION_CODES#Q} and later.</p>
+     *
+     * @hide
+     */
+    public void setValueAt(int index, long value) {
+        if (index >= mSize && UtilConfig.sThrowExceptionForUpperArrayOutOfBounds) {
+            // The array might be slightly bigger than mSize, in which case, indexing won't fail.
+            // Check if exception should be thrown outside of the critical path.
+            throw new ArrayIndexOutOfBoundsException(index);
+        }
+
+        mValues[index] = value;
+    }
+
+    /**
      * Returns the index for which {@link #keyAt} would return the
      * specified key, or a negative number if the specified
      * key is not mapped.
@@ -246,7 +291,7 @@ public class SparseLongArray implements Cloneable {
     }
 
     /**
-     * Removes all key-value mappings from this SparseIntArray.
+     * Removes all key-value mappings from this SparseLongArray.
      */
     public void clear() {
         mSize = 0;

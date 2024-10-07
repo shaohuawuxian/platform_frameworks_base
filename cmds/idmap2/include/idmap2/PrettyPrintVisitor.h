@@ -17,7 +17,7 @@
 #ifndef IDMAP2_INCLUDE_IDMAP2_PRETTYPRINTVISITOR_H_
 #define IDMAP2_INCLUDE_IDMAP2_PRETTYPRINTVISITOR_H_
 
-#include <iostream>
+#include <ostream>
 #include <memory>
 
 #include "androidfw/AssetManager2.h"
@@ -41,9 +41,8 @@ class PrettyPrintVisitor : public Visitor {
 
  private:
   std::ostream& stream_;
-  AssetManager2 target_am_;
-  AssetManager2 overlay_am_;
-  std::vector<std::unique_ptr<const ApkAssets>> apk_assets_;
+  std::unique_ptr<TargetResourceContainer> target_;
+  std::unique_ptr<OverlayResourceContainer> overlay_;
 };
 
 }  // namespace idmap2

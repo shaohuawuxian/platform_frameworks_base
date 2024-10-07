@@ -21,6 +21,7 @@ import android.util.ArrayMap;
 import android.util.Log;
 
 import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
 
 import com.android.systemui.statusbar.notification.collection.NotificationEntry;
 
@@ -43,6 +44,7 @@ public abstract class BindStage<Params> extends BindRequester {
     /**
      * Execute the stage asynchronously.
      *
+     * @param entry the NotificationEntry to bind
      * @param row notification top-level view to bind views to
      * @param callback callback after stage finishes
      */
@@ -64,7 +66,7 @@ public abstract class BindStage<Params> extends BindRequester {
      * Get the stage parameters for the entry. Clients should use this to modify how the stage
      * handles the notification content.
      */
-    public final Params getStageParams(@NonNull NotificationEntry entry) {
+    public final @NonNull Params getStageParams(@NonNull NotificationEntry entry) {
         Params params = mContentParams.get(entry);
         if (params == null) {
             // TODO: This should throw an exception but there are some cases of re-entrant calls
@@ -77,6 +79,17 @@ public abstract class BindStage<Params> extends BindRequester {
             return newStageParams();
         }
         return params;
+    }
+
+    // TODO(b/253081345): Remove this method.
+    /**
+     * Get the stage parameters for the entry, or null if there are no stage parameters for the
+     * entry.
+     *
+     * @see #getStageParams(NotificationEntry)
+     */
+    public final @Nullable Params tryGetStageParams(@NonNull NotificationEntry entry) {
+        return mContentParams.get(entry);
     }
 
     /**
